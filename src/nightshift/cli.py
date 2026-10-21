@@ -279,6 +279,18 @@ def spend() -> None:
     typer.echo(f"Today: ${s['today']:.2f}   Last 7 days: ${s['last_7_days']:.2f}   This month: ${s['this_month']:.2f}")
 
 
+@app.command()
+def serve(
+    port: Annotated[int, typer.Option(help="Port to listen on.")] = 8000,
+    host: Annotated[str, typer.Option(help="Interface. Keep 127.0.0.1: the app has no login.")] = "127.0.0.1",
+) -> None:
+    """Start the web app: watchlist, live jobs, reports and issue chat."""
+    import uvicorn
+
+    typer.echo(f"NightShift UI on http://{host}:{port}")
+    uvicorn.run("nightshift.web.app:app", host=host, port=port, log_level="warning")
+
+
 @app.command("db-setup")
 def db_setup() -> None:
     """Create LangGraph checkpoint tables. Run `alembic upgrade head` first for the app tables."""

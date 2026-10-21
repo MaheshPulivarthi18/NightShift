@@ -1,0 +1,123 @@
+:root {
+  --bg: #f7f7f5;
+  --panel: #ffffff;
+  --text: #1d1d1b;
+  --muted: #6b6b66;
+  --border: #e3e3de;
+  --accent: #3b5bdb;
+  --accent-soft: #e8edff;
+  --ok: #2b8a3e;
+  --warn: #b7791f;
+  --bad: #c92a2a;
+  --code: #f1f1ee;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141413;
+    --panel: #1d1d1b;
+    --text: #ecece8;
+    --muted: #9a9a93;
+    --border: #2f2f2c;
+    --accent: #8ea5ff;
+    --accent-soft: #252d4a;
+    --ok: #69db7c;
+    --warn: #ffd43b;
+    --bad: #ff8787;
+    --code: #262624;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+main { max-width: 1200px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 22px; margin: 0 0 16px; }
+h2 { font-size: 17px; margin: 24px 0 8px; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; font-weight: normal; }
+.spacer { flex: 1; }
+.inline { display: inline; margin: 0; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.error { color: var(--bad); white-space: pre-wrap; }
+
+.topbar {
+  display: flex; align-items: center; gap: 20px;
+  padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 10;
+}
+.brand { font-weight: 700; color: var(--text); }
+.topbar nav { display: flex; gap: 14px; }
+.spend { margin-left: auto; display: flex; gap: 10px; align-items: center; color: var(--muted); font-size: 13px; }
+
+button, input, select, textarea {
+  font: inherit; color: var(--text); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;
+}
+button { cursor: pointer; background: var(--accent); color: #fff; border-color: transparent; }
+button:disabled { opacity: .5; cursor: default; }
+button.ghost { background: transparent; color: var(--muted); border-color: var(--border); }
+button.danger { background: var(--bad); }
+input[name="full_name"] { min-width: 320px; }
+
+.grid { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.grid th, .grid td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.grid th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+.grid tr:last-child td { border-bottom: 0; }
+
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--code); color: var(--muted); }
+.pill.running { background: var(--accent-soft); color: var(--accent); }
+.pill.done, .pill.welcoming { color: var(--ok); }
+.pill.stopped, .pill.slow { color: var(--warn); }
+.pill.failed, .pill.hard, .pill.inactive { color: var(--bad); }
+
+.statusbar { display: flex; gap: 16px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.pipeline { display: flex; gap: 6px; list-style: none; padding: 0; margin: 12px 0 16px; flex-wrap: wrap; }
+.pipeline li { padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 13px; background: var(--panel); }
+.pipeline li.active { border-color: var(--accent); color: var(--accent); }
+.pipeline li.done { color: var(--ok); }
+.events td:first-child { white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
+.events tr.warning td, .events tr.error td { color: var(--bad); }
+.events tr.node_start td, .events tr.node_end td { font-weight: 600; }
+
+.report-head { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+.report, .item-body, .msg.assistant { overflow-wrap: anywhere; }
+.report { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 24px 24px; }
+.report table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 14px; }
+.report th, .report td { border: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top; }
+.report blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid var(--border); color: var(--muted); }
+code, pre { background: var(--code); border-radius: 4px; font-size: 13px; }
+code { padding: 1px 4px; }
+pre { padding: 10px; overflow-x: auto; }
+pre code { padding: 0; }
+.chat-link { font-size: 12px; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+
+.chat-layout { display: grid; grid-template-columns: minmax(260px, 380px) 1fr; gap: 20px; align-items: start; }
+.item { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; position: sticky; top: 64px; max-height: calc(100vh - 88px); overflow-y: auto; }
+.item h2 { margin-top: 4px; }
+.item-body { font-size: 14px; }
+.chat { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.history { display: flex; flex-direction: column; gap: 10px; }
+.msg { padding: 10px 14px; border-radius: 8px; max-width: 100%; }
+.msg.user { background: var(--accent-soft); align-self: flex-end; white-space: pre-wrap; max-width: 85%; }
+.msg.assistant { background: var(--panel); border: 1px solid var(--border); }
+.msg.live { white-space: pre-wrap; }
+.msg.tools { color: var(--muted); font-size: 13px; padding: 2px 14px; }
+.msg.error { color: var(--bad); font-size: 14px; }
+.ask { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; position: sticky; bottom: 12px; }
+.ask textarea { width: 100%; resize: vertical; border: 0; padding: 4px; background: transparent; }
+.ask textarea:focus { outline: none; }
+
+@media (max-width: 800px) {
+  .chat-layout { grid-template-columns: 1fr; }
+  .item { position: static; max-height: none; }
+  .topbar { flex-wrap: wrap; gap: 10px; }
+  .spend { margin-left: 0; }
+  input[name="full_name"] { min-width: 0; width: 100%; }
+  .grid { display: block; overflow-x: auto; }
+}

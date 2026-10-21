@@ -56,6 +56,19 @@ uv run nightshift kill          # blocks every model call; `nightshift resume` c
 
 Reports are written to `reports/<owner>__<repo>/`.
 
+## Web app
+
+```bash
+uv run nightshift serve        # http://127.0.0.1:8000
+```
+
+- **Repos:** watchlist with role, verdict and last run; add repos, switch roles, start a report.
+- **Jobs:** every run (from the app or the CLI) live: each step and agent call with what it is looking at, its cost and cache hits; stop and resume.
+- **Report:** reports as pages, with a **chat** link next to every issue and PR.
+- **Chat:** talk to Claude about one issue or PR. It has the item, related items, NightShift's analysis and the repo brief, and can list, search and read the repo's code. It drafts replies and PR text but never posts.
+
+The app has no login, so it binds to 127.0.0.1. Put it behind authentication before exposing it.
+
 ## Development
 
 ```bash

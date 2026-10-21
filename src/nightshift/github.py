@@ -10,6 +10,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import structlog
@@ -19,9 +20,11 @@ from nightshift.config import get_settings
 log = structlog.get_logger()
 
 # Bump when the fetched fields change; repos stored by an older version are refetched in full once.
-FETCH_VERSION = 2
+FETCH_VERSION = 3
 
 BODY_LIMIT = 4000
+# Closing lines of long bodies, where reporters often say they have a fix or will open a PR.
+BODY_TAIL = 1000
 COMMENT_LIMIT = 1500
 
 _COMMENT_FIELDS = "databaseId author { login } authorAssociation body createdAt"
@@ -88,6 +91,35 @@ query($owner: String!, $name: String!, $cursor: String, $first: Int!, $states: [
 """
 
 
+# Documents that tell an outside contributor how the project wants to be worked on.
+# Alias -> path at the default branch's HEAD; missing files come back as null.
+REPO_DOCS = {
+    "readme": "README.md",
+    "contributing": "CONTRIBUTING.md",
+    "contributing_github": ".github/CONTRIBUTING.md",
+    "contributing_docs": "docs/CONTRIBUTING.md",
+    "pr_template": ".github/PULL_REQUEST_TEMPLATE.md",
+    "pr_template_lower": ".github/pull_request_template.md",
+    "claude_md": "CLAUDE.md",
+    "agents_md": "AGENTS.md",
+}
+_DOC_FIELDS = "\n".join(
+    f'    {alias}: object(expression: "HEAD:{path}") {{ ... on Blob {{ text byteSize }} }}'
+    for alias, path in REPO_DOCS.items()
+)
+REPO_DOCS_QUERY = f"""
+query($owner: String!, $name: String!) {{
+  rateLimit {{ remaining resetAt }}
+  repository(owner: $owner, name: $name) {{
+    description
+    primaryLanguage {{ name }}
+    defaultBranchRef {{ name target {{ oid }} }}
+{_DOC_FIELDS}
+  }}
+}}
+"""
+
+
 class GitHubError(RuntimeError):
     pass
 
@@ -142,6 +174,66 @@ class GitHubClient:
                 log.warning("github_rate_limit_low", remaining=remaining)
             return data
         raise GitHubError("GitHub kept rate limiting; giving up for now.")
+
+    async def rest_get(self, path: str) -> Any:
+        """GET a REST endpoint (path relative to the API root), with the same backoff as GraphQL."""
+        url = self._url.removesuffix("/graphql") + path
+        for attempt in range(5):
+            resp = await self._http.get(url)
+            if resp.status_code in (403, 429, 502, 503, 504):
+                wait = float(resp.headers.get("retry-after", 2 ** (attempt + 2)))
+                log.warning("github_backoff", status=resp.status_code, wait_s=wait)
+                await asyncio.sleep(wait)
+                continue
+            if resp.status_code == 401:
+                raise GitHubError("GitHub rejected GITHUB_TOKEN (401). Check that it is valid and not expired.")
+            if resp.is_error:
+                raise GitHubError(f"GitHub returned HTTP {resp.status_code}: {resp.text[:200]}")
+            return resp.json()
+        raise GitHubError("GitHub kept rate limiting; giving up for now.")
+
+    async def fetch_repo_docs(self, full_name: str) -> dict[str, Any]:
+        """The repo's file tree at HEAD and its contribution documents. One GraphQL query plus one REST call."""
+        owner, name = full_name.split("/", 1)
+        data = await self.graphql(REPO_DOCS_QUERY, {"owner": owner, "name": name})
+        repo = data.get("repository")
+        if repo is None:
+            raise GitHubError(f"Repository {full_name} not found.")
+        branch = repo.get("defaultBranchRef") or {}
+        oid = (branch.get("target") or {}).get("oid")
+        docs = {alias: (repo.get(alias) or {}).get("text") for alias in REPO_DOCS}
+        paths: list[str] = []
+        truncated = False
+        if oid:
+            tree = await self.rest_get(f"/repos/{owner}/{name}/git/trees/{oid}?recursive=1")
+            paths = [e["path"] for e in tree.get("tree", []) if e.get("type") == "blob"]
+            truncated = bool(tree.get("truncated"))
+        return {
+            "head_oid": oid,
+            "default_branch": branch.get("name"),
+            "description": repo.get("description"),
+            "language": (repo.get("primaryLanguage") or {}).get("name"),
+            "docs": {REPO_DOCS[a]: text for a, text in docs.items() if text},
+            "paths": paths,
+            "tree_truncated": truncated,
+        }
+
+    async def read_file(self, full_name: str, path: str) -> str | None:
+        """Text of a file at HEAD, or None if it does not exist or is binary."""
+        owner, name = full_name.split("/", 1)
+        query = (
+            "query($owner: String!, $name: String!, $expr: String!) { rateLimit { remaining } "
+            "repository(owner: $owner, name: $name) { object(expression: $expr) { ... on Blob { text isBinary } } } }"
+        )
+        data = await self.graphql(query, {"owner": owner, "name": name, "expr": f"HEAD:{path}"})
+        blob = (data.get("repository") or {}).get("object") or {}
+        return None if blob.get("isBinary") else blob.get("text")
+
+    async def search_code(self, full_name: str, query: str, limit: int = 20) -> list[str]:
+        """Paths of files in the repo matching a code search query (GitHub's default-branch index)."""
+        q = quote(f"{query} repo:{full_name}")
+        result = await self.rest_get(f"/search/code?q={q}&per_page={limit}")
+        return [item["path"] for item in result.get("items", [])]
 
     async def _pages(self, query: str, variables: dict[str, Any], conn: str) -> AsyncIterator[dict[str, Any]]:
         cursor = None
@@ -272,11 +364,12 @@ def _timeline(node: dict[str, Any]) -> dict[str, Any]:
 
 def _common(node: dict[str, Any], kind: str) -> dict[str, Any]:
     comments, comment_count = _comments(node)
+    body = node.get("body") or ""
     return {
         "number": node["number"],
         "kind": kind,
         "title": node["title"],
-        "body": (node.get("body") or "")[:BODY_LIMIT],
+        "body": body[:BODY_LIMIT],
         "author": _login(node.get("author")),
         "url": node["url"],
         "labels": [lb["name"] for lb in (node.get("labels") or {}).get("nodes", [])],
@@ -289,6 +382,7 @@ def _common(node: dict[str, Any], kind: str) -> dict[str, Any]:
             "author_association": node.get("authorAssociation"),
             "author_type": (node.get("author") or {}).get("__typename"),  # "Bot" for apps like github-actions
             "first_responses": _first_responses(node),
+            "body_tail": body[-BODY_TAIL:] if len(body) > BODY_LIMIT else "",
             **_timeline(node),
         },
     }

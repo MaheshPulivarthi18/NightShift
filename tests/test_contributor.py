@@ -150,3 +150,9 @@ def test_claim_phrases_offering_a_pr(now: datetime) -> None:
     plain = make_item(31, kind="issue")
     plain.body = "Steps to reproduce: open a PR and watch CI fail."
     assert claimed_by(plain, now) is None
+
+
+def test_claim_at_the_end_of_a_long_body(now: datetime) -> None:
+    issue = make_item(40, kind="issue", body_tail="... Happy to open a PR if the approach looks right.")
+    issue.body = "x" * 4000  # stored body is cut before the closing offer
+    assert claimed_by(issue, now) == "alice"

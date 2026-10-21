@@ -160,3 +160,10 @@ async def test_truncated_json_is_retried_with_smaller_pages(monkeypatch: pytest.
     nodes = [n async for n in client._pages("q", {"owner": "o", "name": "r"}, "issues")]
     await client.aclose()
     assert len(nodes) == 1 and calls == 2
+
+
+def test_long_body_keeps_its_tail() -> None:
+    item = normalize_issue({**ISSUE_NODE, "body": "a" * 5000 + "Happy to open a PR."})
+    assert len(item["body"]) == 4000
+    assert item["data"]["body_tail"].endswith("Happy to open a PR.")
+    assert normalize_issue({**ISSUE_NODE, "body": "short"})["data"]["body_tail"] == ""

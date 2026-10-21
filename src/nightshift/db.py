@@ -163,6 +163,59 @@ class Control(Base):
     )
 
 
+class Run(Base):
+    """One report run, for the Jobs page. Written by whichever process runs it (CLI or web)."""
+
+    __tablename__ = "runs"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="running")  # running | done | stopped | failed
+    current_node: Mapped[str | None] = mapped_column(String(40))
+    error: Mapped[str | None] = mapped_column(Text)
+    report_path: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RunEvent(Base):
+    """A step in a run: a node starting or finishing, a model call starting or finishing, a warning."""
+
+    __tablename__ = "run_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # node_start | node_end | llm_start | llm_end | warning | error
+    node: Mapped[str | None] = mapped_column(String(40))
+    message: Mapped[str] = mapped_column(Text, default="")
+    data: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Chat(Base):
+    """A conversation about one issue or PR."""
+
+    __tablename__ = "chats"
+    __table_args__ = (UniqueConstraint("repo_id", "number"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id", ondelete="CASCADE"), index=True)
+    number: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ChatMessage(Base):
+    """One turn of a chat. `content` is the Messages API content (text, tool_use and tool_result blocks)."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(20))  # user | assistant
+    content: Mapped[list[dict[str, Any]]] = mapped_column(JsonType)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 

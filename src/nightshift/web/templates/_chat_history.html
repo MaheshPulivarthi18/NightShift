@@ -1,0 +1,11 @@
+{% for m in history %}
+  {% if m.role == "user" %}
+    <div class="msg user">{{ m.text }}</div>
+  {% elif m.role == "tools" %}
+    <div class="msg tools">reading: {{ m.tools|join(" · ") }}</div>
+  {% else %}
+    <div class="msg assistant">{{ m.html|safe }}</div>
+  {% endif %}
+{% else %}
+  <p class="muted">Ask anything about this item. Claude has the issue, its related items, NightShift's analysis and the repo's contribution rules, and can read the code.</p>
+{% endfor %}

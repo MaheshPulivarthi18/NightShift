@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Jobs · NightShift{% endblock %}
+{% block content %}
+<h1>Jobs</h1>
+<p class="muted">Runs from this app and from the CLI. Refreshes every 3 seconds.</p>
+<div hx-get="/jobs/table" hx-trigger="load, every 3s" hx-swap="innerHTML">
+  <p class="muted">Loading…</p>
+</div>
+{% endblock %}

@@ -16,7 +16,7 @@ from sqlalchemy import delete, select
 
 from nightshift import db, memory
 from nightshift.config import get_settings
-from nightshift.db import Repo, Report, session_scope
+from nightshift.db import Repo, Report, Run, RunEvent, session_scope
 from nightshift.github import GitHubClient, normalize_issue, normalize_pr
 from nightshift.health import agents, graph
 from nightshift.llm import LLMGateway
@@ -103,6 +103,18 @@ async def fake_fetch(
     return FIXTURE, False
 
 
+async def fake_docs(self: GitHubClient, full_name: str) -> dict[str, Any]:
+    return {
+        "head_oid": "abc",
+        "default_branch": "main",
+        "description": "A test repo",
+        "language": "Python",
+        "docs": {"CONTRIBUTING.md": "Open an issue before any feature PR."},
+        "paths": ["src/paths.py", "tests/test_paths.py", "README.md"],
+        "tree_truncated": False,
+    }
+
+
 def fake_embed(texts: list[str]) -> list[list[float]]:
     dim = get_settings().embedding_dim
     out = []
@@ -138,7 +150,17 @@ async def fake_parse(self: LLMGateway, *, agent: str, schema: type[BaseModel], u
             decision_question=None,
             closing_message="Thanks! #3 was fixed in #5.",
         )
+    if schema is agents.RepoBrief:
+        assert "Open an issue before any feature PR." in user
+        return agents.RepoBrief(
+            summary="A test repo.",
+            pr_rules=["Open an issue before any feature PR."],
+            setup_and_test=["pytest"],
+            code_map=[agents.CodeArea(path="src/", purpose="Code")],
+            source_documents=["CONTRIBUTING.md"],
+        )
     if schema is agents.ScoutResult:
+        assert "Open an issue before any feature PR." in user  # the Scout sees the brief
         return agents.ScoutResult(
             issues=[
                 agents.IssueOpportunity(
@@ -152,7 +174,7 @@ async def fake_parse(self: LLMGateway, *, agent: str, schema: type[BaseModel], u
                     claimed=False,
                     already_addressed_by=[],
                     summary="Fix the Windows path crash.",
-                    first_step="Reproduce with a path containing backslashes.",
+                    first_step="Reproduce in `src/paths.py`, then check `src/windows.py`.",
                     evidence=["#1"],
                 ),
                 agents.IssueOpportunity(  # not in the batch: must be dropped by code
@@ -191,6 +213,7 @@ async def repo_name(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIte
     monkeypatch.setattr(GitHubClient, "__init__", lambda self, *a, **k: None)
     monkeypatch.setattr(GitHubClient, "aclose", lambda self: _noop())
     monkeypatch.setattr(GitHubClient, "fetch_items", fake_fetch)
+    monkeypatch.setattr(GitHubClient, "fetch_repo_docs", fake_docs)
     monkeypatch.setattr(memory, "embed", fake_embed)
     monkeypatch.setattr(LLMGateway, "__init__", lambda self, run_id, repo_id, client=None: None)
     monkeypatch.setattr(LLMGateway, "parse", fake_parse)
@@ -222,6 +245,21 @@ async def test_full_pipeline(repo_name: str) -> None:
 
     md = Path(state["report_path"]).read_text()
     assert "## Close candidates" in md and "Already fixed" in md
+    assert "## Open issues" in md  # maintainers get issue triage from the Scout too
+
+    async with session_scope() as s:
+        run = await s.get(Run, state["run_id"])
+        steps = (
+            (
+                await s.execute(
+                    select(RunEvent.node).where(RunEvent.run_id == state["run_id"], RunEvent.kind == "node_end")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert run is not None and run.status == "done" and run.report_path == state["report_path"]
+    assert steps == ["fetch", "link", "analyse_groups", "assess_prs", "verify", "scout", "report"]
     assert "Thanks! #3 was fixed in #5." in md
 
     async with session_scope() as s:
@@ -244,3 +282,6 @@ async def test_contributor_pipeline(repo_name: str) -> None:
     assert "# Contributor report" in md
     assert "## Good places to start" in md and "Fix the Windows path crash." in md
     assert "## Close candidates" not in md  # maintainer sections are not part of this view
+    assert "## Before you open a PR here" in md and "- Open an issue before any feature PR." in md
+    assert state["opportunities"][0]["unverified_paths"] == ["src/windows.py"]
+    assert "not found in the repo, check: src/windows.py" in md

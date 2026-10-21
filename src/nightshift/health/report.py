@@ -98,6 +98,44 @@ def build_findings_for_verification(
     return findings
 
 
+def _issue_triage(
+    opportunities: list[dict[str, Any]], worked_on: list[dict[str, Any]], by_number: dict[int, Item]
+) -> list[str]:
+    """Maintainer view of open issues: what to work on next, and what is unclear or not actionable."""
+    sizes = {"small": 0, "medium": 1, "large": 2}
+    kinds = {"bug": 0, "docs": 1, "chore": 2, "feature": 3, "other": 4, "question": 5}
+    ready = sorted(
+        (o for o in opportunities if o["actionable"] and not o.get("claimed")),
+        key=lambda o: (sizes[o["size"]], kinds[o["kind"]], -o["number"]),
+    )
+    out = ["## Open issues", ""]
+    if ready:
+        out += ["| Issue | Type | Size | What to do | First step |", "| --- | --- | --- | --- | --- |"]
+        for o in ready:
+            cells = [o["summary"], o["first_step"]]
+            if o.get("unverified_paths"):
+                cells[1] += f" (not found in the repo, check: {', '.join(o['unverified_paths'])})"
+            row = " | ".join(c.replace("|", "/").replace("\n", " ") for c in cells)
+            issue = f"{_link(o['number'], by_number)} {_title(o['number'], by_number)}"
+            out.append(f"| {issue} | {o['kind']} | {o['size']} | {row} |")
+    else:
+        out.append("No actionable open issues found.")
+    out.append("")
+    unclear = [o for o in opportunities if not o["actionable"]]
+    if unclear:
+        out += ["**Unclear or not actionable** (consider asking for details or closing):", ""]
+        out += [f"- {_link(o['number'], by_number)} {_title(o['number'], by_number)}: {o['summary']}" for o in unclear]
+        out.append("")
+    taken = [w for w in worked_on if w["prs"] or w.get("by")]
+    if taken:
+        out += ["**In progress:**", ""]
+        for w in taken:
+            who = ", ".join(_link(n, by_number) for n in w["prs"]) or f"claimed by @{w.get('by')}"
+            out.append(f"- {_link(w['issue'], by_number)} {_title(w['issue'], by_number)} → {who}")
+        out.append("")
+    return out
+
+
 def _link(n: int, by_number: dict[int, Item]) -> str:
     item = by_number.get(n)
     return f"[#{n}]({item.url})" if item else f"#{n}"
@@ -138,6 +176,8 @@ async def render_report(
     stats: dict[str, Any],
     run_id: str = "",
     rejected: list[dict[str, Any]] | None = None,
+    opportunities: list[dict[str, Any]] | None = None,
+    worked_on: list[dict[str, Any]] | None = None,
 ) -> str:
 
     def L(n: int) -> str:  # noqa: N802
@@ -214,6 +254,9 @@ async def render_report(
     ] or ["None found."]
     out.append("")
 
+    if opportunities is not None:
+        out += _issue_triage(opportunities, worked_on or [], by_number)
+
     out += ["## Related clusters", ""]
     if clusters:
         for c in sorted(clusters, key=lambda c: -len(c["numbers"])):
@@ -289,6 +332,7 @@ async def render_contributor_report(
     by_number: dict[int, Item],
     stats: dict[str, Any],
     run_id: str = "",
+    brief: dict[str, Any] | None = None,
 ) -> str:
     def L(n: int) -> str:  # noqa: N802
         return _link(n, by_number)
@@ -339,6 +383,25 @@ async def render_contributor_report(
         "",
     ]
 
+    out += ["## Before you open a PR here", ""]
+    if brief is None:
+        out += ["Could not read this repo's contribution documents this run.", ""]
+    else:
+        out += [brief["summary"], ""]
+        sources = ", ".join(f"`{d}`" for d in brief["source_documents"]) or "the repo's documents"
+        if brief["pr_rules"]:
+            out += [f"**Rules for outside PRs** (from {sources}):", ""]
+            out += [f"- {r}" for r in brief["pr_rules"]]
+        else:
+            out += [f"No PR rules stated in {sources}."]
+        out.append("")
+        if brief["setup_and_test"]:
+            out += ["**Set up and test:**", "", "```", *brief["setup_and_test"], "```", ""]
+        if brief["code_map"]:
+            out += ["<details><summary>Where things live</summary>", ""]
+            out += [f"- `{a['path']}`: {a['purpose']}" for a in brief["code_map"]]
+            out += ["", "</details>", ""]
+
     def order(o: dict[str, Any]) -> tuple[int, int, int]:
         return (SIZE_ORDER[o["size"]], KIND_ORDER[o["kind"]], -o["number"])
 
@@ -348,6 +411,10 @@ async def render_contributor_report(
         prs = ", ".join(f"#{n}" for n in o.get("stalled_prs", []))
         return f" Earlier attempt {prs} stalled: you could pick it up."
 
+    def unverified_note(o: dict[str, Any]) -> str:
+        missing = o.get("unverified_paths") or []
+        return f" (not found in the repo, check: {', '.join(missing)})" if missing else ""
+
     start = sorted((o for o in actionable if not o["needs_maintainer_ok"]), key=order)
     out += ["## Good places to start", ""]
     if start:
@@ -355,7 +422,7 @@ async def render_contributor_report(
         for o in start:
             out.append(
                 f"| {L(o['number'])} {_title(o['number'], by_number)} | {o['kind']} | {o['size']} | "
-                f"{cell(o['summary'] + stalled_note(o))} | {cell(o['first_step'])} |"
+                f"{cell(o['summary'] + stalled_note(o))} | {cell(o['first_step'] + unverified_note(o))} |"
             )
     else:
         out.append("None found.")

@@ -1,6 +1,6 @@
 """The Health Report pipeline as a LangGraph state graph.
 
-maintainer repos:  fetch -> link -> analyse_groups -> assess_prs -> verify -> report
+maintainer repos:  fetch -> link -> analyse_groups -> assess_prs -> verify -> scout -> report
 contributor repos: fetch -> link -> scout -> contributor_report
 
 State holds only small, JSON-friendly values (ids, verdicts); bulky data stays in
@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any, TypedDict, cast
+from typing import Any, Protocol, TypedDict, cast
 
 import structlog
 from langchain_core.runnables import RunnableConfig
@@ -22,10 +22,12 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import func, select
 
+from nightshift import events
 from nightshift.config import get_settings
 from nightshift.db import Item, LLMCall, Repo, session_scope
-from nightshift.github import FETCH_VERSION, GitHubClient
+from nightshift.github import FETCH_VERSION, GitHubClient, GitHubError
 from nightshift.health import agents
+from nightshift.health.brief import briefer_input, missing_paths
 from nightshift.health.contributor import maintainers, prs_by_issue, pulse, work_status
 from nightshift.health.linker import Edge, candidate_groups, explicit_edges
 from nightshift.health.report import (
@@ -36,7 +38,7 @@ from nightshift.health.report import (
     save_report,
 )
 from nightshift.health.signals import pr_signals
-from nightshift.llm import AgentOutputError, LLMGateway, ModelRefused
+from nightshift.llm import AgentOutputError, BudgetExceeded, KillSwitchActive, LLMGateway, ModelRefused
 from nightshift.memory import (
     feedback_examples,
     get_or_create_repo,
@@ -70,6 +72,7 @@ class HealthState(TypedDict, total=False):
     pulse: dict[str, Any]
     opportunities: list[dict[str, Any]]
     worked_on: list[dict[str, Any]]
+    brief: dict[str, Any] | None
 
 
 async def _bounded[T](tasks: list[Callable[[], Awaitable[T]]]) -> tuple[list[T], int]:
@@ -275,22 +278,49 @@ async def report(state: HealthState) -> HealthState:
         stats,
         run_id=state["run_id"],
         rejected=state.get("rejected", []),
+        opportunities=state.get("opportunities", []),
+        worked_on=state.get("worked_on", []),
     )
     path = await save_report(
         state["repo"],
         state["repo_id"],
         state["run_id"],
-        {"findings": state["findings"], "clusters": state["clusters"], "verdicts": state["verdicts"]},
+        {
+            "findings": state["findings"],
+            "clusters": state["clusters"],
+            "verdicts": state["verdicts"],
+            "opportunities": state.get("opportunities", []),
+            "worked_on": state.get("worked_on", []),
+        },
         markdown,
         cost,
     )
     return {"report_path": path, "stats": stats}
 
 
+async def _repo_brief(llm: LLMGateway, repo: str) -> tuple[agents.RepoBrief | None, set[str]]:
+    """The Repo Briefer's summary plus the repo's file paths. A failure leaves the report without a brief."""
+    gh = GitHubClient()
+    try:
+        docs = await gh.fetch_repo_docs(repo)
+    except GitHubError as e:
+        log.warning("repo_brief_unavailable", repo=repo, error=str(e))
+        return None, set()
+    finally:
+        await gh.aclose()
+    paths = set() if docs["tree_truncated"] else set(docs["paths"])
+    try:
+        return await agents.brief_repo(llm, repo, briefer_input(docs)), paths
+    except (ModelRefused, AgentOutputError) as e:
+        log.warning("repo_brief_failed", repo=repo, error=str(e))
+        return None, paths
+
+
 async def scout(state: HealthState) -> HealthState:
     """Contributor view: who is on which issue (code), and which free issues are worth taking (Scout)."""
     settings = get_settings()
     llm = LLMGateway(state["run_id"], state["repo_id"])
+    brief, repo_paths = await _repo_brief(llm, state["repo"])
     items = await _load(state["repo_id"])
     by_number = {it.number: it for it in items}
     linked = prs_by_issue(items)
@@ -326,7 +356,7 @@ async def scout(state: HealthState) -> HealthState:
     batches = [candidates[i : i + SCOUT_CHUNK] for i in range(0, len(candidates), SCOUT_CHUNK)]
 
     def task(batch: list[tuple[Item, dict[str, Any], list[Item]]]) -> Callable[[], Awaitable[agents.ScoutResult]]:
-        return lambda: agents.scout_issues(llm, state["repo"], batch, known)
+        return lambda: agents.scout_issues(llm, state["repo"], batch, known, brief)
 
     results, skipped = await _bounded([task(b) for b in batches])
     status_of = {issue.number: st for issue, st, _ in candidates}
@@ -335,7 +365,9 @@ async def scout(state: HealthState) -> HealthState:
         if opp.already_addressed_by:
             worked_on.append({"issue": opp.number, "prs": opp.already_addressed_by, "source": "scout"})
             continue
-        opportunities.append({**opp.model_dump(), **status_of[opp.number]})
+        # Paths the Scout names that the repo does not have; shown so the reader double-checks them.
+        unverified = missing_paths(opp.first_step, repo_paths) if repo_paths else []
+        opportunities.append({**opp.model_dump(), **status_of[opp.number], "unverified_paths": unverified})
 
     stats = {
         **state["stats"],
@@ -349,6 +381,7 @@ async def scout(state: HealthState) -> HealthState:
         "pulse": pulse(items, settings.pulse_window_days).to_dict(),
         "opportunities": opportunities,
         "worked_on": worked_on,
+        "brief": brief.model_dump() if brief else None,
         "stats": stats,
     }
 
@@ -368,6 +401,7 @@ async def contributor_report(state: HealthState) -> HealthState:
         by_number,
         stats,
         run_id=state["run_id"],
+        brief=state.get("brief"),
     )
     snapshot = {
         "view": "contributor",
@@ -375,13 +409,42 @@ async def contributor_report(state: HealthState) -> HealthState:
         "pulse": state["pulse"],
         "opportunities": state["opportunities"],
         "worked_on": state["worked_on"],
+        "brief": state.get("brief"),
     }
     path = await save_report(state["repo"], state["repo_id"], state["run_id"], snapshot, markdown, cost)
     return {"report_path": path, "stats": stats}
 
 
-def _route(state: HealthState) -> str:
-    return "scout" if state.get("role") == "contributor" else "analyse_groups"
+def _is_contributor(state: HealthState) -> bool:
+    return state.get("role") == "contributor"
+
+
+def _after_link(state: HealthState) -> str:
+    return "scout" if _is_contributor(state) else "analyse_groups"
+
+
+def _after_scout(state: HealthState) -> str:
+    return "contributor_report" if _is_contributor(state) else "report"
+
+
+class NodeFn(Protocol):
+    def __call__(self, state: HealthState) -> Awaitable[HealthState]: ...
+
+
+def _tracked(name: str, fn: NodeFn) -> NodeFn:
+    """Record the node's start and end on the run's timeline (Jobs page)."""
+
+    async def node(state: HealthState) -> HealthState:
+        await events.record(state.get("run_id"), "node_start", f"{name} started", node=name)
+        try:
+            out = await fn(state)
+        except Exception as e:
+            await events.record(state.get("run_id"), "error", f"{type(e).__name__}: {e}", node=name)
+            raise
+        await events.record(state.get("run_id"), "node_end", f"{name} finished", node=name)
+        return out
+
+    return node
 
 
 def build_graph() -> StateGraph[HealthState]:
@@ -396,15 +459,15 @@ def build_graph() -> StateGraph[HealthState]:
         ("scout", scout),
         ("contributor_report", contributor_report),
     ]:
-        g.add_node(name, fn)
+        g.add_node(name, _tracked(name, fn))
     g.add_edge(START, "fetch")
     g.add_edge("fetch", "link")
-    g.add_conditional_edges("link", _route, ["analyse_groups", "scout"])
-    g.add_edge("scout", "contributor_report")
+    g.add_conditional_edges("link", _after_link, ["analyse_groups", "scout"])
+    g.add_conditional_edges("scout", _after_scout, ["contributor_report", "report"])
     g.add_edge("contributor_report", END)
     g.add_edge("analyse_groups", "assess_prs")
     g.add_edge("assess_prs", "verify")
-    g.add_edge("verify", "report")
+    g.add_edge("verify", "scout")
     g.add_edge("report", END)
     return g
 
@@ -422,9 +485,20 @@ async def run_health_report(repo: str, run_id: str | None = None, resume: bool =
     """Run (or, with `resume=True`, continue) the health report for one repo."""
     run_id = run_id or uuid.uuid4().hex
     config: RunnableConfig = {"configurable": {"thread_id": run_id}}
-    async with AsyncPostgresSaver.from_conn_string(_checkpoint_dsn()) as saver:
-        graph = build_graph().compile(checkpointer=saver)
-        initial: HealthState | None = None if resume else {"run_id": run_id, "repo": repo}
-        log.info("health_report_start", repo=repo, run_id=run_id, resume=resume)
-        result = await graph.ainvoke(initial, config)
-    return cast(HealthState, result)
+    async with session_scope() as s:
+        repo_id = (await get_or_create_repo(s, repo)).id
+    await events.start_run(run_id, repo_id)
+    try:
+        async with AsyncPostgresSaver.from_conn_string(_checkpoint_dsn()) as saver:
+            graph = build_graph().compile(checkpointer=saver)
+            initial: HealthState | None = None if resume else {"run_id": run_id, "repo": repo}
+            log.info("health_report_start", repo=repo, run_id=run_id, resume=resume)
+            result = cast(HealthState, await graph.ainvoke(initial, config))
+    except (BudgetExceeded, KillSwitchActive) as e:
+        await events.finish_run(run_id, "stopped", error=str(e))
+        raise
+    except BaseException as e:  # includes cancellation from the web app's Stop button
+        await events.finish_run(run_id, "failed", error=f"{type(e).__name__}: {e}")
+        raise
+    await events.finish_run(run_id, "done", report_path=result.get("report_path"))
+    return result

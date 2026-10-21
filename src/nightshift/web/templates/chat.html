@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}#{{ item.number }} chat · NightShift{% endblock %}
+{% block content %}
+<div class="chat-layout">
+  <aside class="item">
+    <p class="muted small">{{ repo.full_name }} · {{ item.kind }} · {{ item.state|lower }}</p>
+    <h2><a href="{{ item.url }}" target="_blank" rel="noopener">#{{ item.number }}</a> {{ item.title }}</h2>
+    <p class="muted small">by {{ item.author or "unknown" }} · opened {{ item.created_at.strftime("%b %d %Y") }}</p>
+    <div class="item-body">{{ body_html|safe }}</div>
+    <p><a href="/repos/{{ repo.full_name }}/report">← back to report</a></p>
+  </aside>
+  <section class="chat">
+    <div id="history" class="history">{% include "_chat_history.html" %}</div>
+    <div id="live" class="msg assistant live" hidden></div>
+    <form id="ask" class="ask">
+      <textarea id="message" rows="3" placeholder="Ask about #{{ item.number }}: is it a duplicate? how would I fix it? draft a reply…" required></textarea>
+      <div class="row">
+        <span class="muted small">Read-only: NightShift drafts, you post. This chat has cost ${{ "%.2f"|format(chat_cost) }}.</span>
+        <span class="spacer"></span>
+        <button id="send">Send</button>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  const url = window.location.pathname;
+  const form = document.getElementById("ask");
+  const box = document.getElementById("message");
+  const live = document.getElementById("live");
+  const history = document.getElementById("history");
+  const send = document.getElementById("send");
+
+  function addUser(text) {
+    const div = document.createElement("div");
+    div.className = "msg user";
+    div.textContent = text;
+    history.appendChild(div);
+  }
+
+  function note(text, cls) {
+    const div = document.createElement("div");
+    div.className = `msg ${cls} pending`;
+    div.textContent = text;
+    live.before(div);
+    return div;
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = box.value.trim();
+    if (!text) return;
+    addUser(text);
+    box.value = "";
+    send.disabled = true;
+    live.hidden = false;
+    live.textContent = "";
+    const resp = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({message: text})});
+    if (!resp.ok) {
+      note(`Error ${resp.status}: ${await resp.text()}`, "error");
+      send.disabled = false;
+      live.hidden = true;
+      return;
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+      let nl;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        if (!line) continue;
+        const ev = JSON.parse(line);
+        if (ev.type === "text") live.textContent += ev.text;
+        else if (ev.type === "tool") note(`reading: ${ev.name} ${ev.input.path || ev.input.query || ev.input.prefix || ev.input.number || ""}`, "tools");
+        else if (ev.type === "error") note(ev.message, "error");
+      }
+    }
+    // Replace the streamed plain text with the server-rendered (sanitized Markdown) history.
+    const fresh = await fetch(`${url}/history`);
+    history.innerHTML = await fresh.text();
+    // The saved history now shows the tool calls; errors are not saved, so their notes stay.
+    document.querySelectorAll(".msg.tools.pending").forEach((n) => n.remove());
+    live.hidden = true;
+    live.textContent = "";
+    send.disabled = false;
+    box.focus();
+  });
+
+  box.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) form.requestSubmit();
+  });
+</script>
+{% endblock %}

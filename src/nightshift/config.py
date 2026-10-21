@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     pr_assessor: AgentModel = AgentModel(model="claude-opus-5-5", effort="medium")
     verifier: AgentModel = AgentModel(model="claude-opus-5-5", effort="medium")
     scout: AgentModel = AgentModel(model="claude-opus-5-5", effort="low")
+    briefer: AgentModel = AgentModel(model="claude-opus-5-5", effort="low")
+    chat: AgentModel = AgentModel(model="claude-opus-5-5", effort="medium", max_tokens=8000)
 
     # Hard spend caps, checked before every model call.
     daily_budget_usd: float = 1.25

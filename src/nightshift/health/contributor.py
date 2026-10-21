@@ -178,7 +178,8 @@ def claimed_by(issue: Item, now: datetime | None = None) -> str | None:
     """Who has claimed the issue in its text or comments, without a PR yet (None if nobody, recently)."""
     now = now or datetime.now(UTC)
     repo_owner = issue.url.split("/")[3].lower() if issue.url.count("/") >= 4 else ""
-    posts: list[tuple[str | None, str, datetime | None]] = [(issue.author, issue.body, issue.created_at)]
+    body = issue.body + "\n" + issue.data.get("body_tail", "")
+    posts: list[tuple[str | None, str, datetime | None]] = [(issue.author, body, issue.created_at)]
     posts += [
         (c.get("author"), c.get("body") or "", _parse(c.get("created_at"))) for c in issue.data.get("comments", [])
     ]

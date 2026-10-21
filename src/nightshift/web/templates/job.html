@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}{{ repo.full_name }} run · NightShift{% endblock %}
+{% block content %}
+<h1>{{ repo.full_name }} <span class="muted small">run {{ run.run_id[:8] }}</span></h1>
+<div class="statusbar">
+  <span id="status" class="pill {{ run.status }}">{{ run.status }}</span>
+  <span>Step: <b id="node">{{ run.current_node or "-" }}</b></span>
+  <span>Cost: <b id="cost">$0.00</b></span>
+  <a id="report-link" href="/repos/{{ repo.full_name }}/report" {% if not run.report_path %}hidden{% endif %}>Open report</a>
+  <span class="spacer"></span>
+  {% if run.status == "running" and local %}
+    <form method="post" action="/jobs/{{ run.run_id }}/stop" class="inline"><button class="danger">Stop</button></form>
+  {% endif %}
+  {% if run.status in ("stopped", "failed") %}
+    <form method="post" action="/jobs/{{ run.run_id }}/resume" class="inline"><button>Resume</button></form>
+  {% endif %}
+</div>
+<p id="error" class="error" {% if not run.error %}hidden{% endif %}>{{ run.error or "" }}</p>
+
+<ol class="pipeline" id="pipeline">
+  {% set steps = ["fetch", "link", "analyse_groups", "assess_prs", "verify", "scout", "report"] if repo.role == "maintainer" else ["fetch", "link", "scout", "contributor_report"] %}
+  {% for step in steps %}<li data-node="{{ step }}">{{ step }}</li>{% endfor %}
+</ol>
+
+<table class="grid events">
+  <thead><tr><th>Time</th><th>Step</th><th>What happened</th><th>Cost</th></tr></thead>
+  <tbody id="events"></tbody>
+</table>
+{% endblock %}
+{% block scripts %}
+<script>
+  const runId = {{ run.run_id|tojson }};
+  const tbody = document.getElementById("events");
+  const pipeline = document.getElementById("pipeline");
+  const source = new EventSource(`/jobs/${runId}/events`);
+  const icons = {node_start: "▶", node_end: "✓", llm_start: "…", llm_end: "●", warning: "!", error: "✗"};
+
+  source.addEventListener("step", (e) => {
+    const ev = JSON.parse(e.data);
+    const tr = document.createElement("tr");
+    tr.className = ev.kind;
+    const cost = ev.data && ev.data.cost_usd ? `$${Number(ev.data.cost_usd).toFixed(3)}` : (ev.data && ev.data.cached ? "cached" : "");
+    for (const text of [ev.at, ev.node || "", `${icons[ev.kind] || ""} ${ev.message}`, cost]) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    tbody.prepend(tr);
+    if (ev.kind === "node_start" || ev.kind === "node_end") {
+      const li = pipeline.querySelector(`[data-node="${ev.node}"]`);
+      if (li) li.className = ev.kind === "node_start" ? "active" : "done";
+    }
+  });
+
+  source.addEventListener("status", (e) => {
+    const st = JSON.parse(e.data);
+    const pill = document.getElementById("status");
+    pill.textContent = st.status;
+    pill.className = `pill ${st.status}`;
+    document.getElementById("node").textContent = st.node || "-";
+    document.getElementById("cost").textContent = `$${st.cost_usd.toFixed(2)}`;
+    const err = document.getElementById("error");
+    err.hidden = !st.error;
+    err.textContent = st.error || "";
+    document.getElementById("report-link").hidden = !st.report;
+  });
+
+  source.addEventListener("end", () => source.close());
+</script>
+{% endblock %}

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}{{ repo.full_name }} report · NightShift{% endblock %}
+{% block content %}
+<div class="report-head">
+  <form method="get" class="inline">
+    <select name="run_id" onchange="this.form.submit()">
+      {% for r in reports %}
+        <option value="{{ r.run_id }}" {% if r.run_id == current.run_id %}selected{% endif %}>
+          {{ r.created_at.strftime("%b %d %H:%M") }} · ${{ "%.2f"|format(r.cost_usd) }}
+        </option>
+      {% endfor %}
+    </select>
+  </form>
+  <span class="muted">Use <span class="chat-link">chat</span> next to any issue or PR to ask about it.</span>
+</div>
+<article class="report">{{ html|safe }}</article>
+{% endblock %}

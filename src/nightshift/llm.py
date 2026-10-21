@@ -11,14 +11,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
 
 import anthropic
 import structlog
+from anthropic.types import MessageParam, TextBlockParam, ToolParam
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
+from nightshift import events
 from nightshift.config import FALLBACK_MODELS, PRICES, AgentModel, get_settings, openrouter_model
 from nightshift.db import AgentVerdict, Control, LLMCall, session_scope
 
@@ -96,6 +99,7 @@ class LLMGateway:
         self.repo_id = repo_id
         self.settings = get_settings()
         self.client = client or make_client()
+        self._last_cost = 0.0
 
     async def _check_controls(self, estimate: float) -> None:
         """Raise if the kill switch is on, or if this call (plus calls still in flight) could pass a cap."""
@@ -139,20 +143,31 @@ class LLMGateway:
         user: str,
         schema: type[T],
         cache_key_parts: tuple[Any, ...],
+        label: str = "",
     ) -> T:
+        """`label` says what the call is about (e.g. "PR #12") for the Jobs page."""
         key = input_hash(agent, cfg.model, system, user, schema.model_json_schema(), *cache_key_parts)
         if (hit := await self._cached(agent, key, schema)) is not None:
             log.debug("verdict_cache_hit", agent=agent)
+            await events.record(self.run_id, "llm_end", f"{agent}: {label} (cached)", agent=agent, cached=True)
             return hit
 
         global _in_flight_usd
         estimate = estimate_cost(cfg, system, user)
         await self._check_controls(estimate)
         _in_flight_usd += estimate
+        await events.record(self.run_id, "llm_start", f"{agent}: {label}", agent=agent, model=cfg.model)
         try:
-            return await self._call(agent=agent, cfg=cfg, system=system, user=user, schema=schema, key=key)
+            result = await self._call(agent=agent, cfg=cfg, system=system, user=user, schema=schema, key=key)
+        except Exception as e:
+            await events.record(self.run_id, "warning", f"{agent}: {label} failed: {e}", agent=agent)
+            raise
         finally:
             _in_flight_usd -= estimate
+        await events.record(
+            self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=cfg.model, cost_usd=self._last_cost
+        )
+        return result
 
     async def _call(self, *, agent: str, cfg: AgentModel, system: str, user: str, schema: type[T], key: str) -> T:
         kwargs: dict[str, Any] = {}
@@ -188,6 +203,7 @@ class LLMGateway:
         ledger.cache_read_tokens = usage.cache_read_input_tokens or 0
         ledger.cache_write_tokens = usage.cache_creation_input_tokens or 0
         ledger.cost_usd = call_cost(cfg.model, usage)
+        self._last_cost = round(ledger.cost_usd, 5)
 
         async with session_scope() as s:
             s.add(ledger)
@@ -211,6 +227,67 @@ class LLMGateway:
             "llm_call", agent=agent, model=cfg.model, cost_usd=round(ledger.cost_usd, 5), request_id=ledger.request_id
         )
         return result
+
+
+class ChatStream:
+    """One streamed chat call. Iterate for text deltas; `message` holds the final message afterwards."""
+
+    def __init__(
+        self,
+        gateway: LLMGateway,
+        *,
+        agent: str,
+        cfg: AgentModel,
+        system: list[TextBlockParam],
+        messages: list[MessageParam],
+        tools: list[ToolParam],
+    ) -> None:
+        self.gateway, self.agent, self.cfg = gateway, agent, cfg
+        self.system, self.messages, self.tools = system, messages, tools
+        self.message: Any = None
+        self.cost = 0.0
+
+    async def __aiter__(self) -> AsyncIterator[str]:
+        global _in_flight_usd
+        gw, cfg = self.gateway, self.cfg
+        text_len = sum(len(json.dumps(b, default=str)) for b in self.system) + len(
+            json.dumps(self.messages, default=str)
+        )
+        estimate = estimate_cost(cfg, "", "x" * text_len)
+        await gw._check_controls(estimate)
+        model = openrouter_model(cfg.model) if gw.settings.provider == "openrouter" else cfg.model
+        ledger = LLMCall(run_id=gw.run_id, agent=self.agent, model=cfg.model)
+        _in_flight_usd += estimate
+        try:
+            async with gw.client.messages.stream(
+                model=model,
+                max_tokens=cfg.max_tokens,
+                output_config={"effort": cfg.effort},
+                system=self.system,
+                messages=self.messages,
+                tools=self.tools,
+            ) as stream:
+                async for event in stream:
+                    if event.type == "text":
+                        yield event.text
+                self.message = await stream.get_final_message()
+        except anthropic.APIError as e:
+            ledger.error = f"{type(e).__name__}: {e}"
+            async with session_scope() as s:
+                s.add(ledger)
+            raise
+        finally:
+            _in_flight_usd -= estimate
+        usage = self.message.usage
+        ledger.request_id = getattr(self.message, "_request_id", None)
+        ledger.stop_reason = self.message.stop_reason
+        ledger.input_tokens = usage.input_tokens or 0
+        ledger.output_tokens = usage.output_tokens or 0
+        ledger.cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
+        ledger.cache_write_tokens = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        ledger.cost_usd = self.cost = call_cost(cfg.model, usage)
+        async with session_scope() as s:
+            s.add(ledger)
 
 
 async def spend_summary() -> dict[str, float]:

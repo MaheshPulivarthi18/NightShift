@@ -1,0 +1,17 @@
+<table class="grid">
+  <thead><tr><th>Repo</th><th>Status</th><th>Step</th><th>Cost</th><th>Started</th><th>Duration</th></tr></thead>
+  <tbody>
+  {% for run, repo in rows %}
+    <tr>
+      <td><a href="/jobs/{{ run.run_id }}">{{ repo.full_name }}</a></td>
+      <td><span class="pill {{ run.status }}">{{ run.status }}</span></td>
+      <td>{{ run.current_node or "" }}</td>
+      <td>${{ "%.2f"|format(costs.get(run.run_id, 0)) }}</td>
+      <td class="muted">{{ run.started_at.strftime("%b %d %H:%M:%S") }}</td>
+      <td class="muted">{{ ((run.finished_at or now) - run.started_at).seconds // 60 }}m {{ ((run.finished_at or now) - run.started_at).seconds % 60 }}s</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="muted">No runs yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>

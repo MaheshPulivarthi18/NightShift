@@ -3,6 +3,7 @@
 - Relevance Analyst: are the items in a candidate group really about the same problem?
 - PR Assessor: what should happen to this open PR, and why?
 - Verifier: is every claim backed by the evidence it cites?
+- Repo Briefer (contributor view): how does this project want to be contributed to?
 - Opportunity Scout (contributor view): which open issues could an outsider usefully take on?
 
 All GitHub text reaches the model inside <untrusted_github_data> tags and is treated as
@@ -113,6 +114,24 @@ class ScoutResult(BaseModel):
     issues: list[IssueOpportunity]
 
 
+class CodeArea(BaseModel):
+    path: str = Field(description="A folder or file path exactly as it appears in the folder summary")
+    purpose: str
+
+
+class RepoBrief(BaseModel):
+    summary: str = Field(description="One sentence: what the project is")
+    pr_rules: list[str] = Field(
+        description="Rules an outside PR must follow or it may be closed, each short and concrete "
+        "(limits, required tests or proof, issue-first policies, title or commit formats, sign-offs)"
+    )
+    setup_and_test: list[str] = Field(
+        description="Commands to set up and run the tests, copied exactly from the documents"
+    )
+    code_map: list[CodeArea] = Field(description="Up to 8 main areas of the code and what each holds")
+    source_documents: list[str] = Field(description="Paths of the documents the rules and commands came from")
+
+
 # ---------- prompts ----------
 
 RELEVANCE_SYSTEM = f"""You are the Relevance Analyst for NightShift, which helps open-source maintainers understand their backlog.
@@ -155,8 +174,21 @@ For every issue in the input, return one entry:
 - claimed: true when the reporter or a commenter already has a fix (for example a link to a commit or branch on their fork) or says they are taking it.
 - already_addressed_by: only PR numbers from that issue's related_prs that clearly implement the same thing. Similar wording alone is not enough.
 - size, summary and first_step: honest and concrete; do not oversell. If you cannot tell the size, say medium.
+- first_step: name real files or folders from the repo brief's code map or from the issue, in backticks (e.g. `src/app/cache.py`). Do not guess paths.
+- Read the repo brief's pr_rules: if a rule makes the issue a poor fit for an outsider (for example features need maintainer approval first), reflect it in needs_maintainer_ok.
 
 Use only issue and PR numbers from the input. Cite evidence ids exactly as given.
+
+{UNTRUSTED_RULE}"""
+
+BRIEFER_SYSTEM = f"""You are the Repo Briefer for NightShift. Your reader is an outside developer about to contribute to this repository for the first time.
+
+You get the repository's folder summary (file counts per folder) and its contribution documents: README, CONTRIBUTING, PR template, and agent guides such as CLAUDE.md or AGENTS.md.
+
+Extract only what the documents actually say:
+- pr_rules: requirements an outside PR must meet or it may be rejected or closed. Keep each rule short and concrete. Leave the list empty if the documents state none; never invent common-practice rules.
+- setup_and_test: commands copied exactly from the documents.
+- code_map: the main areas of the code, using paths from the folder summary, with what each holds.
 
 {UNTRUSTED_RULE}"""
 
@@ -238,6 +270,7 @@ async def analyse_relevance(
         user=user,
         schema=RelevanceResult,
         cache_key_parts=tuple(m.content_hash for m in members),
+        label="group " + ", ".join(m.ref for m in members),
     )
     allowed = {m.number for m in members}
     result.clusters = [
@@ -275,6 +308,7 @@ async def assess_pr(
         user=user,
         schema=PRVerdict,
         cache_key_parts=(pr.content_hash, *(r.content_hash for r in related)),
+        label=f"PR {pr.ref}",
     )
 
 
@@ -288,6 +322,7 @@ async def verify(llm: LLMGateway, repo: str, findings: list[dict[str, Any]]) -> 
         user=user,
         schema=VerifierResult,
         cache_key_parts=(),
+        label=f"{len(findings)} findings",
     )
 
 
@@ -296,6 +331,7 @@ async def scout_issues(
     repo: str,
     batch: list[tuple[Item, dict[str, Any], list[Item]]],
     maintainer_logins: set[str] | None = None,
+    brief: RepoBrief | None = None,
 ) -> ScoutResult:
     """`batch`: (issue, work_status, possibly related open PRs). Returns one entry per issue in the batch."""
     payload = [
@@ -310,9 +346,12 @@ async def scout_issues(
         agent="opportunity_scout",
         cfg=get_settings().scout,
         system=SCOUT_SYSTEM,
-        user=f"Repository: {repo}\n\nOpen issues:\n{_wrap(payload)}",
+        user=f"Repository: {repo}\n\n"
+        + (f"Repo brief (from the repo's own documents):\n{_wrap(brief.model_dump())}\n\n" if brief else "")
+        + f"Open issues:\n{_wrap(payload)}",
         schema=ScoutResult,
         cache_key_parts=tuple(x.content_hash for issue, _, rel in batch for x in (issue, *rel)),
+        label="issues " + ", ".join(issue.ref for issue, _, _ in batch),
     )
     allowed = {issue.number: {pr.number for pr in related} for issue, _, related in batch}
     kept: dict[int, IssueOpportunity] = {}
@@ -321,3 +360,16 @@ async def scout_issues(
             prs = [n for n in opp.already_addressed_by if n in allowed[opp.number]]
             kept[opp.number] = opp.model_copy(update={"already_addressed_by": prs})
     return ScoutResult(issues=list(kept.values()))
+
+
+async def brief_repo(llm: LLMGateway, repo: str, briefer_payload: dict[str, Any]) -> RepoBrief:
+    """Condense a repo's contribution documents. Cached by input, so it is paid for only when they change."""
+    return await llm.parse(
+        agent="repo_briefer",
+        cfg=get_settings().briefer,
+        system=BRIEFER_SYSTEM,
+        user=f"Repository: {repo}\n\n{_wrap(briefer_payload)}",
+        schema=RepoBrief,
+        cache_key_parts=(),
+        label="contribution docs",
+    )
