@@ -231,6 +231,40 @@ class RepoContext(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class Task(Base):
+    """One contribution: an issue taken from plan, through the operator's approval, to a reviewed fix.
+
+    status: planned (waiting at Gate 1) | approved | rejected | working | ready (fix verified and
+    reviewed) | needs_operator (stopped with work saved) | failed
+    """
+
+    __tablename__ = "tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id", ondelete="CASCADE"), index=True)
+    issue_number: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="planned")
+    base_commit: Mapped[str] = mapped_column(String(40))
+    # A rehearsal re-solves an issue that already has a fix, to test the worker; it is never published.
+    rehearsal: Mapped[bool] = mapped_column(Boolean, default=False)
+    issue: Mapped[dict[str, Any]] = mapped_column(JsonType)  # the issue as fetched when planning
+    plan: Mapped[dict[str, Any]] = mapped_column(JsonType)
+    result: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)  # baseline, checks, reviews
+    diff: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)  # the operator's note at the gate
+    error: Mapped[str | None] = mapped_column(Text)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    @property
+    def run_id(self) -> str:
+        return f"task-{self.id}"
+
+
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 

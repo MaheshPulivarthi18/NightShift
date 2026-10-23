@@ -83,6 +83,26 @@ uv run nightshift context change aayushch/laya --base e5f1610 --patch fix.diff  
 
 Outputs go to `reports/<owner>__<repo>/context/`.
 
+## Contribution tasks (M2)
+
+```bash
+uv run nightshift task plan aayushch/laya 6           # Planner; stops at Gate 1
+uv run nightshift task approve 1 [--setup ...] [--test ...]   # or: task reject 1 --note "..."
+uv run nightshift task run 1                          # setup, baseline, Coder, verification, Reviewer
+uv run nightshift task show 1
+```
+
+- **Planner** (Sonnet): the issue fetched fresh, repo brief, architecture map and the files that
+  mention the issue's terms (L2). Refuses an issue someone else has claimed (assigned, or an open PR
+  that closes, cross-references or names it); set `NIGHTSHIFT_GITHUB_LOGIN` so yours do not count.
+- **Coder** (Sonnet): reads, searches, edits and runs inside the sandbox, then submits.
+- **Verification by code:** the targeted test must fail with the source changes taken out and pass
+  with them, and every test command that passed at baseline must still pass.
+- **Reviewer** (Sonnet, independent): judges every item of related code the diff did not change;
+  changes it asks for go back to the Coder, up to `review_rounds` more times.
+- Limits per task: `task_budget_usd` ($5), `task_minutes` (30), `coder_max_steps` (60). Nothing is
+  posted to GitHub.
+
 ## Web app
 
 ```bash

@@ -33,10 +33,14 @@ sandbox_app = typer.Typer(help="Docker sandboxes where repo code runs.", no_args
 context_app = typer.Typer(
     help="Repo context for agents: architecture map (L1) and change context (L3).", no_args_is_help=True
 )
+task_app = typer.Typer(
+    help="Contribution tasks: plan an issue, approve, fix and review in a sandbox.", no_args_is_help=True
+)
 app.add_typer(watch_app, name="watch")
 app.add_typer(report_app, name="report")
 app.add_typer(sandbox_app, name="sandbox")
 app.add_typer(context_app, name="context")
+app.add_typer(task_app, name="task")
 
 log = structlog.get_logger()
 
@@ -295,17 +299,24 @@ def sandbox_try(
     from nightshift.sandbox.docker import SandboxError, prepare_repo
 
     async def run() -> bool:
+        from nightshift.worker.task import save_recipe
+        from nightshift.worker.verify import run_commands
+
         name = _repo_name(repo)
         box, cached = await prepare_repo(name, ref, setup or [], fetch_url=fetch)
         async with box:
             typer.echo(f"Sandbox ready ({'cached image' if cached else 'fresh setup, image saved'})")
-            ok = True
-            for command in test or []:
-                res = await box.exec(command)
-                status = "PASS" if res.ok else ("TIMEOUT" if res.timed_out else f"FAIL (exit {res.code})")
-                typer.echo(f"\n$ {command}\n{status} in {res.seconds:.0f}s\n{res.tail(1500)}")
-                ok = ok and res.ok
-            return ok
+            results = await run_commands(box, test or [])
+            for r in results:
+                status = "PASS" if r.ok else ("TIMEOUT" if r.timed_out else f"FAIL (exit {r.exit_code})")
+                typer.echo(f"\n$ {r.command}\n{status} in {r.seconds:.0f}s\n{r.tail[-1500:]}")
+            commit = (await box.exec("git rev-parse HEAD")).stdout.strip()
+        if results and all(r.ok for r in results):  # commands that worked are offered to the next plan
+            async with session_scope() as s:
+                repo_row = await get_or_create_repo(s, name)
+            await save_recipe(repo_row.id, commit, setup or [], results)
+            typer.echo("\nSaved as this repo's setup and test recipe.")
+        return all(r.ok for r in results)
 
     try:
         ok = asyncio.run(run())
@@ -403,6 +414,116 @@ def context_change(
         for f in ctx.unchanged_related:
             typer.echo(f"- {f.path}:{f.line + 1} {f.symbol}: {f.reason}")
         typer.echo(f"\nWritten to {folder}/{stem}.(md|json)")
+
+    _run_sandboxed(run())
+
+
+# ---------- contribution tasks ----------
+
+
+def _task_line(t: Any) -> str:
+    return (
+        f"#{t.id:<4} {t.status:15} issue #{t.issue_number:<6} ${t.cost_usd:.2f}{'  (rehearsal)' if t.rehearsal else ''}"
+    )
+
+
+@task_app.command("plan")
+def task_plan(
+    repo: str,
+    issue: int,
+    base: Annotated[str | None, typer.Option(help="Commit to work from (default: the default branch).")] = None,
+    rehearsal: Annotated[
+        bool, typer.Option(help="Re-solve an issue that already has a fix, to test the worker.")
+    ] = False,
+) -> None:
+    """Plan a fix for an issue. Stops at Gate 1: nothing runs until you approve."""
+    from nightshift.worker.task import TaskError, plan_task
+
+    async def run() -> None:
+        try:
+            task = await plan_task(_repo_name(repo), issue, base=base, rehearsal=rehearsal)
+        except TaskError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1) from e
+        typer.echo(task.plan["markdown"])
+        typer.echo(f"\nTask {task.id} planned for ${task.cost_usd:.2f}. Approve: nightshift task approve {task.id}")
+
+    _run_sandboxed(run())
+
+
+@task_app.command("show")
+def task_show(task_id: int) -> None:
+    """Show a task: its plan, and its verification and review once it has run."""
+    from nightshift.worker.task import load_task
+
+    task, repo = asyncio.run(load_task(task_id))
+    typer.echo(f"{repo.full_name} {_task_line(task)}")
+    if task.error:
+        typer.echo(f"Stopped: {task.error}")
+    typer.echo(task.plan.get("markdown", ""))
+    for r in task.result.get("reviews", []):
+        typer.echo("\n" + r["markdown"])
+
+
+@task_app.command("list")
+def task_list() -> None:
+    """All tasks, newest first."""
+    from nightshift.db import Task
+
+    async def run() -> None:
+        async with session_scope() as s:
+            rows = (await s.execute(select(Task, Repo).join(Repo).order_by(Task.id.desc()))).all()
+        for t, r in rows:
+            typer.echo(f"{r.full_name:35} {_task_line(t)}")
+
+    asyncio.run(run())
+
+
+@task_app.command("approve")
+def task_approve(
+    task_id: int,
+    note: Annotated[str | None, typer.Option()] = None,
+    setup: SetupOpt = None,
+    test: Annotated[list[str] | None, typer.Option("--test", help="Replace the plan's test commands.")] = None,
+) -> None:
+    """Gate 1: approve a plan (optionally replacing its setup or test commands)."""
+    from nightshift.worker.task import TaskError, decide
+
+    try:
+        asyncio.run(decide(task_id, True, note, setup_commands=setup or [], test_commands=test or []))
+    except TaskError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    typer.echo(f"Approved. Run it: nightshift task run {task_id}")
+
+
+@task_app.command("reject")
+def task_reject(task_id: int, note: Annotated[str | None, typer.Option()] = None) -> None:
+    """Gate 1: reject a plan."""
+    from nightshift.worker.task import decide
+
+    asyncio.run(decide(task_id, False, note))
+    typer.echo("Rejected.")
+
+
+@task_app.command("run")
+def task_run(task_id: int) -> None:
+    """Run an approved task: setup, baseline, Coder, verification, Reviewer. Never touches GitHub."""
+    from nightshift.worker.task import TaskError, load_task, run_task, task_dir
+
+    async def run() -> None:
+        try:
+            task = await run_task(task_id)
+        except TaskError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1) from e
+        _, repo = await load_task(task_id)
+        typer.echo(_task_line(task))
+        if task.error:
+            typer.echo(f"Stopped: {task.error}")
+        for r in task.result.get("reviews", []):
+            typer.echo("\n" + r["markdown"])
+        typer.echo(f"\nDiff, verification and review: {task_dir(repo.full_name, task.id)}")
 
     _run_sandboxed(run())
 

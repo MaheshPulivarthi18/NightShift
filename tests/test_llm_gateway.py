@@ -117,7 +117,7 @@ async def test_kill_switch_blocks_calls(repo_id: int) -> None:
 async def test_run_budget_blocks_calls(repo_id: int) -> None:
     msgs = FakeMessages()
     gw = _gateway(repo_id, msgs)
-    gw.settings = gw.settings.model_copy(update={"per_report_budget_usd": 0.001})
+    gw.run_budget_usd = 0.001
     with pytest.raises(BudgetExceeded):  # the call's own estimate already exceeds the cap
         await _ask(gw, uuid.uuid4().hex)
     assert msgs.calls == 0
@@ -135,7 +135,7 @@ async def test_in_flight_calls_count_against_budget(repo_id: int) -> None:
     msgs = SlowMessages()
     gw = _gateway(repo_id, msgs)
     one_call = llm.estimate_cost(CFG, "s", "x" * 32)
-    gw.settings = gw.settings.model_copy(update={"per_report_budget_usd": one_call * 1.5})
+    gw.run_budget_usd = one_call * 1.5
     first = asyncio.create_task(_ask(gw, "x" * 32))
     await asyncio.sleep(0.05)  # first call is now in flight, not yet recorded
     with pytest.raises(BudgetExceeded):

@@ -94,11 +94,19 @@ def estimate_cost(cfg: AgentModel, system: str, user: str) -> float:
 
 
 class LLMGateway:
-    def __init__(self, run_id: str, repo_id: int, client: anthropic.AsyncAnthropic | None = None) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        repo_id: int,
+        client: anthropic.AsyncAnthropic | None = None,
+        run_budget_usd: float | None = None,
+    ) -> None:
+        """`run_budget_usd` caps this run's spend; it defaults to the per-report cap."""
         self.run_id = run_id
         self.repo_id = repo_id
         self.settings = get_settings()
         self.client = client or make_client()
+        self.run_budget_usd = run_budget_usd if run_budget_usd is not None else self.settings.per_report_budget_usd
         self._last_cost = 0.0
 
     @property
@@ -129,8 +137,8 @@ class LLMGateway:
             raise BudgetExceeded(f"Daily budget reached (${day:.2f} spent of ${limits.daily_budget_usd:.2f}).")
         if month + pending > limits.monthly_budget_usd:
             raise BudgetExceeded(f"Monthly budget reached (${month:.2f} spent of ${limits.monthly_budget_usd:.2f}).")
-        if run + pending > limits.per_report_budget_usd:
-            raise BudgetExceeded(f"Report budget reached (${run:.2f} spent of ${limits.per_report_budget_usd:.2f}).")
+        if run + pending > self.run_budget_usd:
+            raise BudgetExceeded(f"Run budget reached (${run:.2f} spent of ${self.run_budget_usd:.2f}).")
 
     async def _cached(self, agent: str, key: str, schema: type[T]) -> T | None:
         async with session_scope() as s:
@@ -201,18 +209,8 @@ class LLMGateway:
                 s.add(ledger)
             raise
 
-        usage = response.usage
-        ledger.request_id = response._request_id
-        ledger.stop_reason = response.stop_reason
-        ledger.input_tokens = usage.input_tokens or 0
-        ledger.output_tokens = usage.output_tokens or 0
-        ledger.cache_read_tokens = usage.cache_read_input_tokens or 0
-        ledger.cache_write_tokens = usage.cache_creation_input_tokens or 0
-        ledger.cost_usd = call_cost(cfg.model, usage)
+        await _record(ledger, response, cfg.model)
         self._last_cost = round(ledger.cost_usd, 5)
-
-        async with session_scope() as s:
-            s.add(ledger)
 
         result = response.parsed_output
         if response.stop_reason == "refusal":
@@ -233,6 +231,63 @@ class LLMGateway:
             "llm_call", agent=agent, model=cfg.model, cost_usd=round(ledger.cost_usd, 5), request_id=ledger.request_id
         )
         return result
+
+    async def create(
+        self,
+        *,
+        agent: str,
+        cfg: AgentModel,
+        system: list[TextBlockParam],
+        messages: list[MessageParam],
+        tools: list[ToolParam],
+        label: str = "",
+    ) -> Any:
+        """One turn of a tool-using agent (not cached: each turn is unique). Returns the Message."""
+        global _in_flight_usd
+        size = sum(len(json.dumps(b, default=str)) for b in system) + len(json.dumps(messages, default=str))
+        estimate = estimate_cost(cfg, "", "x" * size)
+        await self._check_controls(estimate)
+        model = openrouter_model(cfg.model) if self.settings.provider == "openrouter" else cfg.model
+        ledger = LLMCall(run_id=self.run_id, agent=agent, model=cfg.model)
+        _in_flight_usd += estimate
+        await events.record(self.run_id, "llm_start", f"{agent}: {label}", agent=agent, model=cfg.model)
+        try:
+            response = await self.client.messages.create(
+                model=model,
+                max_tokens=cfg.max_tokens,
+                output_config={"effort": cfg.effort},
+                system=system,
+                messages=messages,
+                tools=tools,
+            )
+        except anthropic.APIError as e:
+            ledger.error = f"{type(e).__name__}: {e}"
+            async with session_scope() as s:
+                s.add(ledger)
+            await events.record(self.run_id, "warning", f"{agent}: {label} failed: {e}", agent=agent)
+            raise
+        finally:
+            _in_flight_usd -= estimate
+        await _record(ledger, response, cfg.model)
+        self._last_cost = round(ledger.cost_usd, 5)
+        await events.record(
+            self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=cfg.model, cost_usd=self._last_cost
+        )
+        return response
+
+
+async def _record(ledger: LLMCall, response: Any, model: str) -> None:
+    """Fill the ledger row from a response's usage and save it."""
+    usage = response.usage
+    ledger.request_id = getattr(response, "_request_id", None)
+    ledger.stop_reason = response.stop_reason
+    ledger.input_tokens = usage.input_tokens or 0
+    ledger.output_tokens = usage.output_tokens or 0
+    ledger.cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
+    ledger.cache_write_tokens = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    ledger.cost_usd = call_cost(model, usage)
+    async with session_scope() as s:
+        s.add(ledger)
 
 
 class ChatStream:
@@ -284,16 +339,8 @@ class ChatStream:
             raise
         finally:
             _in_flight_usd -= estimate
-        usage = self.message.usage
-        ledger.request_id = getattr(self.message, "_request_id", None)
-        ledger.stop_reason = self.message.stop_reason
-        ledger.input_tokens = usage.input_tokens or 0
-        ledger.output_tokens = usage.output_tokens or 0
-        ledger.cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
-        ledger.cache_write_tokens = getattr(usage, "cache_creation_input_tokens", 0) or 0
-        ledger.cost_usd = self.cost = call_cost(cfg.model, usage)
-        async with session_scope() as s:
-            s.add(ledger)
+        await _record(ledger, self.message, cfg.model)
+        self.cost = ledger.cost_usd
 
 
 async def spend_summary() -> dict[str, float]:

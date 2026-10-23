@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     # Read-only token for public data. Never a token that can write.
     github_token: SecretStr = Field(default=SecretStr(""), validation_alias="GITHUB_TOKEN")
     github_api_url: str = "https://api.github.com/graphql"
+    # The operator's GitHub login: their own assignments and PRs do not count as someone else's claim.
+    github_login: str = ""
 
     # Per-agent model choice. Override with e.g. NIGHTSHIFT_RELEVANCE__MODEL=claude-haiku-5-5
     relevance: AgentModel = AgentModel(model="claude-opus-5-5", effort="low")
@@ -69,6 +71,16 @@ class Settings(BaseSettings):
     briefer: AgentModel = AgentModel(model="claude-opus-5-5", effort="low")
     chat: AgentModel = AgentModel(model="claude-opus-5-5", effort="medium", max_tokens=8000)
     cartographer: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="medium", max_tokens=8000)
+    # Contribution Worker. Sonnet by default; set NIGHTSHIFT_CODER__MODEL=claude-opus-5-5 for a hard task.
+    planner: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="medium", max_tokens=8000)
+    coder: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="medium", max_tokens=16000)
+    reviewer: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="high", max_tokens=8000)
+
+    # Per-task limits; a task that hits one stops with its work saved.
+    task_budget_usd: float = 5.0
+    task_minutes: int = 30
+    coder_max_steps: int = 60
+    review_rounds: int = 2
 
     # Task sandboxes (Docker). Build the base image with `nightshift sandbox build`.
     sandbox_image: str = "nightshift-sandbox:1"

@@ -298,7 +298,7 @@ async def report(state: HealthState) -> HealthState:
     return {"report_path": path, "stats": stats}
 
 
-async def _repo_brief(llm: LLMGateway, repo: str) -> tuple[agents.RepoBrief | None, set[str]]:
+async def repo_brief(llm: LLMGateway, repo: str) -> tuple[agents.RepoBrief | None, set[str]]:
     """The Repo Briefer's summary plus the repo's file paths. A failure leaves the report without a brief."""
     gh = GitHubClient()
     try:
@@ -320,7 +320,7 @@ async def scout(state: HealthState) -> HealthState:
     """Contributor view: who is on which issue (code), and which free issues are worth taking (Scout)."""
     settings = get_settings()
     llm = LLMGateway(state["run_id"], state["repo_id"])
-    brief, repo_paths = await _repo_brief(llm, state["repo"])
+    brief, repo_paths = await repo_brief(llm, state["repo"])
     items = await _load(state["repo_id"])
     by_number = {it.number: it for it in items}
     linked = prs_by_issue(items)
