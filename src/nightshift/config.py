@@ -68,6 +68,14 @@ class Settings(BaseSettings):
     scout: AgentModel = AgentModel(model="claude-opus-5-5", effort="low")
     briefer: AgentModel = AgentModel(model="claude-opus-5-5", effort="low")
     chat: AgentModel = AgentModel(model="claude-opus-5-5", effort="medium", max_tokens=8000)
+    cartographer: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="medium", max_tokens=8000)
+
+    # Task sandboxes (Docker). Build the base image with `nightshift sandbox build`.
+    sandbox_image: str = "nightshift-sandbox:1"
+    sandbox_cpus: float = 2.0
+    sandbox_memory: str = "4g"
+    sandbox_pids: int = 1024
+    sandbox_command_timeout: int = 900  # seconds per command
 
     # Hard spend caps, checked before every model call.
     daily_budget_usd: float = 1.25

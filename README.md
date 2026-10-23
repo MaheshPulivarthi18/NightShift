@@ -56,6 +56,33 @@ uv run nightshift kill          # blocks every model call; `nightshift resume` c
 
 Reports are written to `reports/<owner>__<repo>/`.
 
+## Sandboxes and repo context (Contribution Worker, M1)
+
+Repo code only ever runs in a Docker container: no credentials or host files inside, a non-root
+user with no capabilities, CPU, memory and process caps, and a timeout on every command. After a
+repo's setup succeeds the container is saved as a per-repo image, so the next task skips the install.
+
+```bash
+uv run nightshift sandbox build                      # base image: Python, Node, uv, git, language servers
+uv run nightshift sandbox try aayushch/laya \
+  --setup "cd engine && uv venv -q .venv && uv pip install -q --python .venv/bin/python -r requirements-dev.lock" \
+  --setup "cd ui && npm ci" \
+  --test "cd engine && .venv/bin/pytest -q" --test "cd ui && npm test"
+
+uv run nightshift context map aayushch/laya           # L1 architecture map: one Sonnet call per new commit
+uv run nightshift context change aayushch/laya --base e5f1610 --patch fix.diff   # L3, no model calls
+```
+
+- **L1 architecture map:** code builds a source index inside the sandbox (imports for Python,
+  TypeScript, Svelte and Rust; entry points; central files), then the **Cartographer** maps
+  components and relationships, each citing a file. Code drops any path that does not exist.
+  Stored per commit in `repo_context`.
+- **L3 change context:** for a diff, the enclosing functions, their callers and called definitions
+  (jedi and typescript-language-server via multilspy), plus code elsewhere that uses the same string
+  keys. Code the diff did not change but probably should have is listed first.
+
+Outputs go to `reports/<owner>__<repo>/context/`.
+
 ## Web app
 
 ```bash

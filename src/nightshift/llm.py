@@ -101,6 +101,11 @@ class LLMGateway:
         self.client = client or make_client()
         self._last_cost = 0.0
 
+    @property
+    def last_cost(self) -> float:
+        """Cost of the most recent `parse` call; 0 when it was answered from the cache."""
+        return self._last_cost
+
     async def _check_controls(self, estimate: float) -> None:
         """Raise if the kill switch is on, or if this call (plus calls still in flight) could pass a cap."""
         now = datetime.now(UTC)
@@ -146,6 +151,7 @@ class LLMGateway:
         label: str = "",
     ) -> T:
         """`label` says what the call is about (e.g. "PR #12") for the Jobs page."""
+        self._last_cost = 0.0
         key = input_hash(agent, cfg.model, system, user, schema.model_json_schema(), *cache_key_parts)
         if (hit := await self._cached(agent, key, schema)) is not None:
             log.debug("verdict_cache_hit", agent=agent)
