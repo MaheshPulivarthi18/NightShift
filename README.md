@@ -1,13 +1,24 @@
 # NightShift
 
-Autonomous repo maintainer agents. Phase 0a: **Repo Health Reports**, private Markdown reports about GitHub repos. Read-only: NightShift never writes to the repos it watches.
+Agents that find open-source issues worth fixing and fix them, with you approving every step that
+is public. Two parts:
+
+1. **Repo Health Reports** (read-only): is a repo worth contributing to, and which issues are free.
+2. **Contribution Worker**: plans a fix (Gate 1: you approve), writes a failing test and the fix in a
+   Docker sandbox, verifies it by code, has it reviewed, drafts the PR, then opens it from your
+   account only after Gate 2. First PR made this way:
+   [microsoft/multilspy#169](https://github.com/microsoft/multilspy/pull/169).
+
+![Task board](docs/screenshots/tasks-board.jpg)
+
+## Repo Health Reports
 
 Each watched repo has a role that picks the report:
 
 - **contributor** (default): for repos you don't maintain. Is it worth contributing (outside PR merge rate, time to first maintainer response)? Which open issues are free and worth taking, which need a maintainer's OK first, and which are already being worked on?
 - **maintainer**: backlog triage. Related clusters, duplicates, and which PRs can be closed, merged or need a decision, each with a reason and evidence checked by a separate Verifier.
 
-## How it works
+### How reports are made
 
 ```
 maintainer:  fetch -> link -> analyse_groups -> assess_prs -> verify -> report
@@ -121,9 +132,20 @@ A React + TypeScript app (`frontend/`) on a JSON API (`/api`); the server render
 - **Chat:** talk to Claude about one issue or PR; it reads the repo's code, drafts, never posts.
 - Spend today and this month, and the kill switch, are always in the header.
 
+| | |
+| --- | --- |
+| ![Gate 2 and verification](docs/screenshots/task-gate2-verification.jpg) | ![PR draft](docs/screenshots/task-pr.jpg) |
+| **Task at Gate 2:** freshness dry run, and the fix verified by code (fails without it, passes with it) | **PR draft** in the repo's own style; the Testing section comes from the real runs |
+| ![Repos](docs/screenshots/repos.jpg) | ![Report](docs/screenshots/report.jpg) |
+| **Repos:** verdict, issues to work on, last run | **Report:** warns when it is old; **chat** and **plan** next to every issue |
+| ![Jobs](docs/screenshots/jobs.jpg) | |
+| **Jobs:** every report, task and map run with cost and duration | |
+
 The app has no login, so the server binds to 127.0.0.1 and refuses cross-site writes. Put it behind
 authentication before exposing it. For UI work, `npm run dev` in `frontend/` proxies `/api` to a
 running `nightshift serve`.
+
+Known bugs and planned work: [docs/BACKLOG.md](docs/BACKLOG.md).
 
 ## Development
 
