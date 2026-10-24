@@ -47,6 +47,9 @@ under "Found by you".
 - [ ] **Per-repo publish settings:** attribution line and branch prefix are environment variables today;
       store them per repo (multilspy: no attribution).
 
+- [x] **Sandbox had no C/C++ compiler**, so setup failed for packages built from source (headroom:
+      `hnswlib`). Fixed: image v2 has build-essential, and the base image is part of the repo-image key.
+
 ## Enhancements, in priority order
 
 1. [ ] **Screenshot evidence** (the PRD's "web evidence first"): Playwright in the sandbox, before and

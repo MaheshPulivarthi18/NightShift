@@ -214,7 +214,8 @@ async def prepare_repo(
         files = [p for p in (await _must(box, "git ls-files", "list files")).stdout.splitlines()
                  if p.rsplit("/", 1)[-1] in DEP_FILES]  # fmt: skip
         sums = (await _must(box, "sha256sum " + " ".join(map(shlex.quote, files)), "hash deps")).stdout if files else ""
-        key = hashlib.sha256((sums + "\n".join(setup)).encode()).hexdigest()[:12]
+        # The base image is part of the key: a repo image built on an older base is never reused.
+        key = hashlib.sha256((get_settings().sandbox_image + sums + "\n".join(setup)).encode()).hexdigest()[:12]
         tag = f"{repo_image_name(full_name)}:{key}"
 
         if await image_exists(tag):

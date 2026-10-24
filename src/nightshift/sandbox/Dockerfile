@@ -1,11 +1,12 @@
-# Base image for task sandboxes: Python, Node, git, uv, and the language servers the context tools use.
+# Base image for task sandboxes: Python, Node, git, uv, a C/C++ toolchain (many Python packages compile native
+# code on install, e.g. hnswlib), and the language servers the context tools use.
 # Repo code only ever runs inside containers made from this image (or a per-repo image built on it).
 FROM node:22-bookworm-slim AS node
 
 FROM python:3.12-slim-bookworm
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git ca-certificates build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=node /usr/local/bin/node /usr/local/bin/node

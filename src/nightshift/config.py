@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     review_rounds: int = 2
 
     # Task sandboxes (Docker). Build the base image with `nightshift sandbox build`.
-    sandbox_image: str = "nightshift-sandbox:1"
+    sandbox_image: str = "nightshift-sandbox:2"
     sandbox_cpus: float = 2.0
     sandbox_memory: str = "4g"
     sandbox_pids: int = 1024
