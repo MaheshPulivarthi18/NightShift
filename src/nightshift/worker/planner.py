@@ -42,7 +42,7 @@ class Plan(BaseModel):
     files_to_change: list[FileChange]
     test_plan: TestPlan
     setup_commands: list[str] = Field(
-        description="Commands run from the repo root in a fresh Linux container (Python 3.12, Node 22, uv, git; no sudo) to install what the tests need"
+        description="Commands run from the repo root in a fresh Linux container (Python 3.12, Node 22, Bun, uv, git, a C/C++ compiler; no sudo) to install what the tests need"
     )
     test_commands: list[str] = Field(description="Commands that run the full relevant test suites from the repo root")
     risks: list[str] = Field(description="What could break or be missed, e.g. other code paths that must change too")
@@ -61,6 +61,7 @@ You get the issue with its comments, the repository's contribution rules and com
 - Think about every code path the change affects: other callers, a second endpoint that builds the same response, the streaming and non-streaming versions of the same flow. List the ones that must change in files_to_change and the doubtful ones in risks.
 - The test must reproduce the issue: it fails on the current code and passes once fixed. Put it where the repo's existing tests for that area live. targeted_command runs only that test.
 - Setup and test commands run in a fresh Linux container from the repo root, with no services running and no secrets. Prefer the commands in the repo's documents or the ones that worked before. Lock files over loose requirements. Scope test_commands to the parts of the repo the change touches.
+- The container has Python 3.12, Node 22, Bun, uv, git and a C/C++ compiler, and no sudo. If <setup_failed> is present, your earlier setup commands were run there and failed with that output: propose commands that work in that container.
 - If the issue is unclear or needs a maintainer's decision first, set actionable to false and ask in questions.
 - Use only paths that appear in the input or follow the repo's layout for a new test file.
 
@@ -85,8 +86,10 @@ def unknown_paths(plan: Plan, tracked: set[str]) -> list[str]:
     return [p for p in named if p not in tracked and p != plan.test_plan.file]
 
 
-def to_markdown(plan: Plan, *, title: str, warnings: list[str]) -> str:
+def to_markdown(plan: Plan, *, title: str, warnings: list[str], checks: list[str] | None = None) -> str:
     out = [f"# Plan: {title}", "", plan.understanding, ""]
+    if checks:
+        out += ["**Checked by code:**", *[f"- {c}" for c in checks], ""]
     if warnings:
         out += ["**Warnings (checked by code):**", *[f"- {w}" for w in warnings], ""]
     if not plan.actionable:

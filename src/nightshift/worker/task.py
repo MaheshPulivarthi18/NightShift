@@ -187,16 +187,40 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, reh
             f"<commands_that_worked_before>\n{recipe or 'none yet'}\n</commands_that_worked_before>"
         )
         plan = await planner.make_plan(llm, repo=full_name, context=context)
-        warnings = [f"`{p}` does not exist in the repo" for p in planner.unknown_paths(plan, tracked)]
+
+        # Run the setup now, before Gate 1, so a plan whose commands cannot work is caught before any paid run.
+        # A failure goes back to the Planner once. Success also saves the repo image the run will start from.
+        await events.record(task.run_id, "node_start", "setup check", node="setup_check")
+        setup_error = await check_setup(full_name, commit, plan.setup_commands)
+        if setup_error:
+            await events.record(task.run_id, "warning", "setup failed; asking the Planner to fix the commands")
+            failed = "\n".join(plan.setup_commands)
+            plan = await planner.make_plan(
+                llm,
+                repo=full_name,
+                context=f"{context}\n\n<setup_failed>\nThese setup commands failed in the sandbox:\n{failed}\n\n"
+                f"Output:\n{setup_error}\n</setup_failed>",
+            )
+            setup_error = await check_setup(full_name, commit, plan.setup_commands)
+        checks = ["setup commands ran successfully in the sandbox"] if not setup_error else []
+        warnings = [f"setup failed in the sandbox: {setup_error[-600:]}"] if setup_error else []
+        warnings += [f"`{p}` does not exist in the repo" for p in planner.unknown_paths(plan, tracked)]
         warnings += [f"rehearsal: {b}" for b in blockers]
         warnings += [moved] if moved else []
-        markdown = planner.to_markdown(plan, title=f"{full_name}#{number} {issue.title}", warnings=warnings)
+        markdown = planner.to_markdown(
+            plan, title=f"{full_name}#{number} {issue.title}", warnings=warnings, checks=checks
+        )
         (task_dir(full_name, task.id) / "plan.md").write_text(markdown)
         await _save(
             task,
             status="planned",
             base_commit=commit,
-            plan={**plan.model_dump(mode="json"), "warnings": warnings, "markdown": markdown},
+            plan={
+                **plan.model_dump(mode="json"),
+                "warnings": warnings,
+                "markdown": markdown,
+                "setup_verified": not setup_error,
+            },  # fmt: skip
             result={"brief": brief_text(brief), "map_commit": amap["meta"]["commit"]},
             cost_usd=await task_cost(task),
         )
@@ -209,6 +233,16 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, reh
     finally:
         if box:
             await box.remove()
+
+
+async def check_setup(full_name: str, commit: str, setup: list[str]) -> str | None:
+    """Run the setup commands in a fresh sandbox. Returns None if they work, else the end of their output."""
+    try:
+        box, _ = await prepare_repo(full_name, commit, setup)
+    except SandboxError as e:
+        return str(e)[-3000:]
+    await box.remove()
+    return None
 
 
 async def decide(task_id: int, approve: bool, note: str | None = None, **overrides: list[str]) -> Task:

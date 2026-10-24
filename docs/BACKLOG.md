@@ -29,8 +29,9 @@ under "Found by you".
 
 ## Worker bugs and gaps
 
-- [ ] **Planner proposed setup commands that cannot work** (laya: `pip install -e` on an engine with no
-      pyproject). Check the commands against the repo's files, or run setup once, before Gate 1.
+- [x] **Planner proposed setup commands that cannot work** (laya: `pip install -e` on an engine with no
+      pyproject). Fixed: planning runs the setup in the sandbox before Gate 1; a failure goes back to the
+      Planner once, and the plan says "setup commands ran successfully" or why they failed.
 - [ ] **Planner proposed a test that cannot fail** (multilspy: a jedi test for a bug jedi does not have).
       Reproduce the issue in the sandbox before planning the test.
 - [ ] **Repo virtualenv and node tools are not on PATH** in the sandbox (`jedi-language-server` not found,
@@ -47,8 +48,9 @@ under "Found by you".
 - [ ] **Per-repo publish settings:** attribution line and branch prefix are environment variables today;
       store them per repo (multilspy: no attribution).
 
-- [x] **Sandbox had no C/C++ compiler**, so setup failed for packages built from source (headroom:
-      `hnswlib`). Fixed: image v2 has build-essential, and the base image is part of the repo-image key.
+- [x] **Sandbox lacked common toolchains**, so setup failed after approval: no C/C++ compiler (headroom:
+      `hnswlib`) and no Bun (ai-job-search). Fixed: image v3 has build-essential and Bun 1.4.4, and the base
+      image is part of the repo-image key. Rust and Go are still missing (see "Toolchains on demand").
 
 ## Enhancements, in priority order
 
