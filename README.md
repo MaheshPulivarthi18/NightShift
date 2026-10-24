@@ -103,31 +103,27 @@ uv run nightshift task show 1
 - Limits per task: `task_budget_usd` ($5), `task_minutes` (30), `coder_max_steps` (60). Nothing is
   posted to GitHub.
 
-## Task board (M3)
-
-```bash
-cd frontend && npm install && npm run build   # once, and after UI changes
-uv run nightshift serve                        # then open http://127.0.0.1:8000/app
-```
-
-Lanes by stage (waiting on you, in progress, published, stopped); a task page with the gate to act
-on at the top, then Plan, live Log, Verification, Review, Diff and PR. Keys: `j`/`k`, `enter`,
-`esc`, `1`-`6`, `n` for a new task. Gate 2 checks freshness first (the issue is still free,
-upstream has not changed the touched files) and publishes only after you type the repo name. The
-same gates are on the CLI: `task draft`, `task claim [--yes]`, `task publish [--yes]`.
-
 ## Web app
 
 ```bash
-uv run nightshift serve        # http://127.0.0.1:8000
+cd frontend && npm install && npm run build   # once, and after UI changes
+uv run nightshift serve                        # http://127.0.0.1:8000
 ```
 
-- **Repos:** watchlist with role, verdict and last run; add repos, switch roles, start a report.
-- **Jobs:** every run (from the app or the CLI) live: each step and agent call with what it is looking at, its cost and cache hits; stop and resume.
-- **Report:** reports as pages, with a **chat** link next to every issue and PR.
-- **Chat:** talk to Claude about one issue or PR. It has the item, related items, NightShift's analysis and the repo brief, and can list, search and read the repo's code. It drafts replies and PR text but never posts.
+A React + TypeScript app (`frontend/`) on a JSON API (`/api`); the server renders no HTML itself.
 
-The app has no login, so it binds to 127.0.0.1. Put it behind authentication before exposing it.
+- **Tasks:** lanes by stage, "Waiting on you" first. A task page puts the gate to act on at the top
+  (Gate 1: approve the plan and its commands; Gate 2: freshness check, then publish after typing the
+  repo name), then Plan, live Log, Verification, Review, Diff and PR.
+- **Repos:** watchlist with view, latest report and last run; add repos, switch view, run a report.
+- **Report:** the health report, with **chat** and **plan** links next to every issue.
+- **Jobs:** every run (reports, tasks, maps) from the app or the CLI, with a live log, stop and resume.
+- **Chat:** talk to Claude about one issue or PR; it reads the repo's code, drafts, never posts.
+- Spend today and this month, and the kill switch, are always in the header.
+
+The app has no login, so the server binds to 127.0.0.1 and refuses cross-site writes. Put it behind
+authentication before exposing it. For UI work, `npm run dev` in `frontend/` proxies `/api` to a
+running `nightshift serve`.
 
 ## Development
 

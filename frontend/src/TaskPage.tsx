@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, CommandResult, GateInfo, TaskDetail } from "./api";
-import { Diff, Html, StatusBadge, money } from "./ui";
+import { Diff, Html, Log, StatusBadge, money } from "./ui";
 
 const TABS = ["Plan", "Log", "Verification", "Review", "Diff", "PR"] as const;
 type Tab = (typeof TABS)[number];
@@ -10,7 +10,9 @@ export function TaskPage({ id }: { id: number }) {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("Plan");
 
-  const load = useCallback(() => api.task(id).then(setTask, (e: Error) => setError(e.message)), [id]);
+  const load = useCallback(() => {
+    api.task(id).then(setTask, (e: Error) => setError(e.message));
+  }, [id]);
 
   useEffect(() => {
     load();
@@ -44,7 +46,7 @@ export function TaskPage({ id }: { id: number }) {
 
   return (
     <div className="task">
-      <a className="back" href="#/">← Tasks <kbd>esc</kbd></a>
+      <a className="back" href="#/">← Tasks</a>
       <header className="task-head">
         <div className="mono dim">
           {task.repo}#{task.issue} · task {task.id} · base {task.base_commit.slice(0, 7) || "—"}
@@ -72,15 +74,15 @@ export function TaskPage({ id }: { id: number }) {
       <ActionPanel task={task} onChange={load} />
 
       <nav className="tabs" role="tablist">
-        {TABS.map((t, i) => (
+        {TABS.map((t) => (
           <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
-            {t} <kbd>{i + 1}</kbd>
+            {t}
           </button>
         ))}
       </nav>
       <section className="tab-body">
         {tab === "Plan" && <Html html={task.plan_html} />}
-        {tab === "Log" && <Log runId={task.run_id} />}
+        {tab === "Log" && <Log runId={task.run_id} onStatus={load} />}
         {tab === "Verification" && <Verification task={task} />}
         {tab === "Review" &&
           (task.reviews.length ? task.reviews.map((r) => <Html key={r.round} html={r.html} />) : <p className="muted">No review yet.</p>)}
@@ -258,45 +260,6 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
         {claimMsg && <p className="mono dim">{claimMsg}</p>}
       </details>
     </section>
-  );
-}
-
-interface Step {
-  id: number;
-  kind: string;
-  node: string | null;
-  message: string;
-  at: string;
-  data: { cost_usd?: number };
-}
-
-function Log({ runId }: { runId: string }) {
-  const [steps, setSteps] = useState<Step[]>([]);
-  const [live, setLive] = useState(true);
-  useEffect(() => {
-    setSteps([]);
-    const source = new EventSource(`/jobs/${runId}/events`);
-    source.addEventListener("step", (e) => setSteps((s) => [...s, JSON.parse((e as MessageEvent).data) as Step]));
-    source.addEventListener("end", () => {
-      setLive(false);
-      source.close();
-    });
-    return () => source.close();
-  }, [runId]);
-  return (
-    <div className="log">
-      <p className="muted">{live ? "Live" : "Finished"} · {steps.length} steps</p>
-      <ol>
-        {steps.map((s) => (
-          <li key={s.id} className={`step step-${s.kind}`}>
-            <span className="mono dim">{s.at}</span>
-            <span className="kind">{s.kind.replace("_", " ")}</span>
-            <span>{s.message}</span>
-            {s.data?.cost_usd != null && <span className="mono dim">{money(s.data.cost_usd)}</span>}
-          </li>
-        ))}
-      </ol>
-    </div>
   );
 }
 

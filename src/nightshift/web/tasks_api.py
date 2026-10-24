@@ -1,11 +1,7 @@
-"""JSON API for the task board (the React app under /app).
+"""JSON API for contribution tasks: plan, Gate 1, run, PR draft, claim and Gate 2.
 
-The server has no login, so every call that changes something must come from the app itself: a
-JSON body (which a cross-site form cannot send without a CORS preflight this server never answers)
-and, when the browser sends one, an Origin of this server. That matters most for Gate 2, which
-pushes code and opens a PR under the operator's name.
-
-Markdown from GitHub and from models is rendered and sanitized here (nh3), never in the browser.
+Gate 2 pushes code and opens a PR under the operator's name, so every write is guarded
+(web/common.py) and publishing needs an explicit confirm.
 """
 
 from __future__ import annotations
@@ -14,11 +10,12 @@ import asyncio
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from nightshift.db import Repo, Task, session_scope
+from nightshift.web.common import Guard, render_markdown
 from nightshift.worker import task as worker
 from nightshift.worker.publish import PublishError
 
@@ -30,20 +27,6 @@ STAGES = {
     "planning": "plan", "planned": "gate1", "approved": "work", "working": "work", "ready": "gate2",
     "published": "done", "rejected": "closed", "needs_operator": "stopped", "failed": "stopped",
 }  # fmt: skip
-
-
-async def same_origin(request: Request) -> None:
-    if request.headers.get("content-type", "").split(";")[0] != "application/json":
-        raise HTTPException(415, "JSON only")
-    origin = request.headers.get("origin")
-    host = request.headers.get("host", "")
-    if origin and origin.split("://", 1)[-1] != host:
-        raise HTTPException(403, "Cross-site request refused")
-    if request.headers.get("sec-fetch-site") not in (None, "same-origin", "none"):
-        raise HTTPException(403, "Cross-site request refused")
-
-
-Guard = Depends(same_origin)
 
 
 def _background(key: str, coro: Any) -> None:
@@ -60,8 +43,6 @@ def _background(key: str, coro: Any) -> None:
 
 
 def _md(text: str, repo: str | None = None) -> str:
-    from nightshift.web.app import render_markdown
-
     return render_markdown(text or "", repo)
 
 

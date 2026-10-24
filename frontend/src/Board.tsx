@@ -9,7 +9,7 @@ const LANES: { key: string; title: string; stages: Stage[]; hint: string }[] = [
   { key: "stopped", title: "Stopped", stages: ["stopped", "closed"], hint: "Needs you, failed or rejected" },
 ];
 
-export function Board() {
+export function Board({ prefillRepo, prefillIssue }: { prefillRepo: string; prefillIssue: string }) {
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cursor, setCursor] = useState(0);
@@ -36,10 +36,6 @@ export function Board() {
       if (e.key === "j") setCursor((c) => Math.min(c + 1, ordered.length - 1));
       if (e.key === "k") setCursor((c) => Math.max(c - 1, 0));
       if (e.key === "Enter" && ordered[cursor]) window.location.hash = `#/tasks/${ordered[cursor].id}`;
-      if (e.key === "n") {
-        e.preventDefault();
-        document.getElementById("new-repo")?.focus();
-      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -57,7 +53,7 @@ export function Board() {
             {tasks === null ? "Loading…" : `${tasks.length} tasks · ${waiting} waiting on you · ${money(spent)} spent`}
           </p>
         </div>
-        <NewTask onCreated={load} />
+        <NewTask key={prefillRepo + prefillIssue} repo0={prefillRepo} issue0={prefillIssue} onCreated={load} />
       </section>
       {error && <p className="error">{error}</p>}
       <div className="lanes">
@@ -99,9 +95,9 @@ export function Board() {
   );
 }
 
-function NewTask({ onCreated }: { onCreated: () => void }) {
-  const [repo, setRepo] = useState("");
-  const [issue, setIssue] = useState("");
+function NewTask({ repo0, issue0, onCreated }: { repo0: string; issue0: string; onCreated: () => void }) {
+  const [repo, setRepo] = useState(repo0);
+  const [issue, setIssue] = useState(issue0);
   const [base, setBase] = useState("");
   const [rehearsal, setRehearsal] = useState(false);
   const [state, setState] = useState<{ busy: boolean; msg: string | null }>({ busy: false, msg: null });
@@ -111,7 +107,8 @@ function NewTask({ onCreated }: { onCreated: () => void }) {
     setState({ busy: true, msg: null });
     api.create(repo.trim(), Number(issue), base.trim(), rehearsal).then(
       () => {
-        setState({ busy: false, msg: "Planning started. The plan appears under “Waiting on you” in a minute or two." });
+        setState({ busy: false, msg: "Planning started. The plan appears under “Waiting on you” in about a minute." });
+        window.location.hash = "#/";
         setIssue("");
         onCreated();
       },
@@ -129,16 +126,19 @@ function NewTask({ onCreated }: { onCreated: () => void }) {
         <span>Issue</span>
         <input className="mono" inputMode="numeric" placeholder="42" value={issue} onChange={(e) => setIssue(e.target.value)} required pattern="\d+" />
       </label>
-      <label className="narrow">
-        <span>Base</span>
-        <input className="mono" placeholder="default" value={base} onChange={(e) => setBase(e.target.value)} />
-      </label>
-      <label className="check">
-        <input type="checkbox" checked={rehearsal} onChange={(e) => setRehearsal(e.target.checked)} />
-        <span>Rehearsal</span>
-      </label>
+      <details className="options">
+        <summary>Options</summary>
+        <label>
+          <span>Base commit</span>
+          <input className="mono" placeholder="default branch" value={base} onChange={(e) => setBase(e.target.value)} />
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={rehearsal} onChange={(e) => setRehearsal(e.target.checked)} />
+          <span>Rehearsal (re-solve an issue that already has a fix; never published)</span>
+        </label>
+      </details>
       <button className="primary" disabled={state.busy}>
-        {state.busy ? "Starting…" : "Plan issue"} <kbd>n</kbd>
+        {state.busy ? "Starting…" : "Plan issue"}
       </button>
       {state.msg && <p className="form-msg">{state.msg}</p>}
     </form>
