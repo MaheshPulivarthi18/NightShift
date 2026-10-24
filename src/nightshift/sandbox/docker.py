@@ -33,6 +33,7 @@ TOOLS_MOUNT = "/opt/nightshift"
 TOOLS_PYTHON = "/opt/ns-tools/bin/python"
 REPO_DIR = "/work/repo"
 RESULT_MARKER = "@@NIGHTSHIFT_RESULT@@"
+BASE_LABEL = "nightshift.base"  # on a repo image: the environment image it was built on
 OUTPUT_LIMIT = 200_000  # characters kept from each end of a command's output
 
 # Files whose contents decide what a repo's setup installs. A change to any of them means a new image.
@@ -171,8 +172,11 @@ class Sandbox:
         if not res.ok:
             raise SandboxError(f"Could not write {path}: {res.tail(500)}")
 
-    async def commit(self, tag: str) -> None:
-        res = await _docker("commit", "--change", 'CMD ["sleep", "infinity"]', self.name, tag, timeout=600)
+    async def commit(self, tag: str, base: str) -> None:
+        res = await _docker(
+            "commit", "--change", 'CMD ["sleep", "infinity"]', "--change", f"LABEL {BASE_LABEL}={base}",
+            self.name, tag, timeout=600,
+        )  # fmt: skip
         if not res.ok:
             raise SandboxError(f"Could not save image {tag}: {res.tail(500)}")
 
@@ -185,11 +189,24 @@ async def image_exists(tag: str) -> bool:
     return (await _docker("image", "inspect", tag, timeout=30)).ok
 
 
-async def newest_repo_image(full_name: str) -> str | None:
-    """The most recently built image of this repo (docker lists images newest first), or None."""
+async def newest_repo_image(full_name: str, base: str) -> str | None:
+    """The most recently built image of this repo on `base` (docker lists images newest first), or None.
+
+    Images saved before environments existed carry no label; they were all built on the default base."""
     res = await _docker("images", repo_image_name(full_name), "--format", "{{.Repository}}:{{.Tag}}", timeout=30)
     tags = [t for t in res.stdout.splitlines() if t and not t.endswith(":<none>")]
-    return tags[0] if res.ok and tags else None
+    if not res.ok or not tags:
+        return None
+    labels = await _docker(
+        "image", "inspect", "--format", f'{{{{index .Config.Labels "{BASE_LABEL}"}}}}', *tags, timeout=30
+    )
+    if not labels.ok:
+        return None
+    default = get_settings().sandbox_image
+    for tag, built_on in zip(tags, labels.stdout.splitlines(), strict=False):
+        if (built_on.strip().replace("<no value>", "") or default) == base:
+            return tag
+    return None
 
 
 async def _must(
@@ -219,22 +236,25 @@ async def prepare_repo(
     setup: list[str],
     *,
     fetch_url: str | None = None,
+    image: str | None = None,
 ) -> tuple[Sandbox, bool]:
     """A running sandbox with `full_name` checked out at `ref` and its setup commands done.
 
     Returns (sandbox, from_cache). `fetch_url` fetches `ref` from another remote first (a fork).
+    `image` is the environment to start from (see envimage); the default is the base image.
     The caller owns the sandbox and must remove it.
     """
     url = f"https://github.com/{full_name}.git"
-    box = await Sandbox.start()
+    base = image or get_settings().sandbox_image
+    box = await Sandbox.start(base)
     try:
         await _must(box, f"git clone --quiet --filter=blob:none {url} {REPO_DIR}", "clone", 600, "/work")
         await _checkout(box, ref, fetch_url)
         files = [p for p in (await _must(box, "git ls-files", "list files")).stdout.splitlines()
                  if p.rsplit("/", 1)[-1] in DEP_FILES]  # fmt: skip
         sums = (await _must(box, "sha256sum " + " ".join(map(shlex.quote, files)), "hash deps")).stdout if files else ""
-        # The base image is part of the key: a repo image built on an older base is never reused.
-        key = hashlib.sha256((get_settings().sandbox_image + sums + "\n".join(setup)).encode()).hexdigest()[:12]
+        # The base image is part of the key: a repo image built on another base is never reused.
+        key = hashlib.sha256((base + sums + "\n".join(setup)).encode()).hexdigest()[:12]
         tag = f"{repo_image_name(full_name)}:{key}"
 
         if await image_exists(tag):
@@ -247,7 +267,7 @@ async def prepare_repo(
 
         # No exact match: start from this repo's newest image, if any, and run the setup on top of it, so
         # only packages that changed are downloaded. Setup commands must tolerate an existing install.
-        if previous := await newest_repo_image(full_name):
+        if previous := await newest_repo_image(full_name, base):
             await box.remove()
             box = await Sandbox.start(previous)
             await _must(box, "git fetch --quiet --filter=blob:none origin", "fetch")
@@ -262,7 +282,7 @@ async def prepare_repo(
                 res = await box.exec(command)  # a download that timed out usually works the second time
             if not res.ok:
                 raise SandboxError(f"setup command `{command}` failed (exit {res.code}):\n{res.tail()}")
-        await box.commit(tag)
+        await box.commit(tag, base)
         log.info("sandbox_image_saved", repo=full_name, image=tag)
         return box, False
     except BaseException:

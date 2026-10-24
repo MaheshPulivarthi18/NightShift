@@ -13,6 +13,23 @@ export interface RepoRow {
   findings: number | null;
   report_at: string | null;
   run: { run_id: string; status: string; started_at: string } | null;
+  environment: RepoEnvironment | null;
+  setup_run: { run_id: string; status: string } | null;
+}
+
+// How the Setup agent installs and tests a repo in the sandbox.
+export interface RepoEnvironment {
+  status: "ready" | "blocked" | "failed";
+  commit: string;
+  at: string;
+  detail: string;
+  setup_commands: string[];
+  tests: { command: string; ok: boolean }[];
+  system_packages: string[];
+  tools: string[];
+  sources: string[];
+  attempts: string[];
+  cost_usd: number;
 }
 
 export interface ReportView {
@@ -161,6 +178,7 @@ export const api = {
   addRepo: (full_name: string, role: string) => call<RepoRow[]>("/repos", { full_name, role }),
   setRole: (repo: string, role: string) => call<RepoRow[]>(`/repos/${repo}/role`, { role }),
   runReport: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/run`, {}),
+  setupRepo: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/setup`, {}),
   report: (repo: string, runId?: string) => call<ReportView>(`/repos/${repo}/report${runId ? `?run_id=${runId}` : ""}`),
   jobs: () => call<JobRow[]>("/jobs"),
   job: (id: string) => call<JobDetail>(`/jobs/${id}`),

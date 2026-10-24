@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { api, RepoRow, ReportView } from "./api";
+import { api, RepoEnvironment, RepoRow, ReportView } from "./api";
 import { Html, StatusBadge, ago, money, usePoll } from "./ui";
 
 export function Repos() {
@@ -9,6 +9,8 @@ export function Repos() {
   const runReport = (repo: string) =>
     api.runReport(repo).then((r) => (window.location.hash = `#/jobs/${r.run_id}`), (e: Error) => setMsg(e.message));
   const setRole = (repo: string, role: string) => api.setRole(repo, role).then(reload, (e: Error) => setMsg(e.message));
+  const setup = (repo: string) =>
+    api.setupRepo(repo).then((r) => (window.location.hash = `#/jobs/${r.run_id}`), (e: Error) => setMsg(e.message));
 
   return (
     <div className="page">
@@ -28,16 +30,17 @@ export function Repos() {
               <th>View</th>
               <th>Latest report</th>
               <th>Last run</th>
+              <th>Environment</th>
               <th />
             </tr>
           </thead>
           <tbody>
             {rows?.length === 0 && (
               <tr>
-                <td colSpan={5} className="muted">No repos yet. Add one above.</td>
+                <td colSpan={6} className="muted">No repos yet. Add one above.</td>
               </tr>
             )}
-            {rows?.map((r) => <RepoLine key={r.full_name} r={r} onRun={runReport} onRole={setRole} />)}
+            {rows?.map((r) => <RepoLine key={r.full_name} r={r} onRun={runReport} onRole={setRole} onSetup={setup} />)}
           </tbody>
         </table>
       </div>
@@ -45,8 +48,19 @@ export function Repos() {
   );
 }
 
-function RepoLine({ r, onRun, onRole }: { r: RepoRow; onRun: (repo: string) => void; onRole: (repo: string, role: string) => void }) {
+function RepoLine({
+  r,
+  onRun,
+  onRole,
+  onSetup,
+}: {
+  r: RepoRow;
+  onRun: (repo: string) => void;
+  onRole: (repo: string, role: string) => void;
+  onSetup: (repo: string) => void;
+}) {
   const running = r.run?.status === "running";
+  const settingUp = r.setup_run?.status === "running";
   return (
     <tr>
       <td>
@@ -84,12 +98,57 @@ function RepoLine({ r, onRun, onRole }: { r: RepoRow; onRun: (repo: string) => v
           <span className="muted">never</span>
         )}
       </td>
-      <td className="right">
+      <td>
+        {settingUp && r.setup_run ? (
+          <a className="summary-link" href={`#/jobs/${r.setup_run.run_id}`}>
+            <StatusBadge status="running" />
+            <span className="dim">Setup agent</span>
+          </a>
+        ) : r.environment ? (
+          <EnvironmentSummary env={r.environment} />
+        ) : (
+          <span className="muted">found on first plan</span>
+        )}
+      </td>
+      <td className="right nowrap">
+        <button className="ghost small" disabled={settingUp} onClick={() => onSetup(r.full_name)}>
+          {r.environment ? "Redo setup" : "Set up"}
+        </button>{" "}
         <button className="ghost small" disabled={running} onClick={() => onRun(r.full_name)}>
           {running ? "Running…" : "Run report"}
         </button>
       </td>
     </tr>
+  );
+}
+
+function EnvironmentSummary({ env }: { env: RepoEnvironment }) {
+  const passing = env.tests.filter((t) => t.ok).length;
+  return (
+    <details className="env">
+      <summary>
+        <span className={`badge env-${env.status}`}>{env.status}</span>
+        <span className="dim">
+          {env.status === "ready" ? `${passing}/${env.tests.length} test commands pass` : env.detail.slice(0, 60)}
+        </span>
+      </summary>
+      <div className="env-body">
+        {env.detail && <p className="muted">{env.detail}</p>}
+        {(env.system_packages.length > 0 || env.tools.length > 0) && (
+          <p className="mono dim">{[...env.tools, ...env.system_packages].join(" ")}</p>
+        )}
+        {env.setup_commands.length > 0 && <pre className="block">{env.setup_commands.join("\n")}</pre>}
+        {env.tests.map((t) => (
+          <p key={t.command} className="mono">
+            <span className={t.ok ? "pass" : "fail"}>{t.ok ? "pass" : "fail"}</span> {t.command}
+          </p>
+        ))}
+        <p className="dim">
+          {env.attempts.length} attempts · {money(env.cost_usd)} · {env.commit.slice(0, 7)} · {ago(env.at)}
+          {env.sources.length > 0 && ` · from ${env.sources.slice(0, 3).join(", ")}`}
+        </p>
+      </div>
+    </details>
   );
 }
 

@@ -1,6 +1,7 @@
 """A contribution task from issue to reviewed fix: plan, Gate 1, then Coder and Reviewer in a sandbox.
 
-    plan_task:  fresh issue -> sandbox -> brief (L0), map (L1), relevant files (L2) -> Planner -> "planned"
+    plan_task:  fresh issue -> sandbox -> brief (L0), map (L1), relevant files (L2), environment (Setup
+                agent, once per repo) -> Planner -> "planned"
     approve / reject:  Gate 1, the operator's decision
     run_task:   setup -> baseline tests -> Coder -> verification -> Reviewer (-> Coder again, up to the
                 review-round limit) -> "ready" with a diff, or "needs_operator" with the work saved
@@ -31,10 +32,12 @@ from nightshift.health.graph import repo_brief
 from nightshift.llm import BudgetExceeded, KillSwitchActive, LLMGateway
 from nightshift.memory import get_or_create_repo
 from nightshift.sandbox.docker import Sandbox, SandboxError, prepare_repo
+from nightshift.sandbox.envimage import ensure_env_image
 from nightshift.worker import planner, prwriter, publish, reviewer
 from nightshift.worker.coder import CoderRun
 from nightshift.worker.issue import IssueView, fetch_issue
 from nightshift.worker.relevant import relevant_files
+from nightshift.worker.setup_agent import ensure_environment
 from nightshift.worker.verify import CommandResult, FixCheck, diff, run_commands
 
 log = structlog.get_logger()
@@ -176,6 +179,8 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, reh
             box, f"{issue.title}\n{issue.body}\n" + "\n".join(c["body"] for c in issue.comments)
         )
         recipe = await _recipe(repo.id)
+        env = await ensure_environment(llm, repo, box, commit)
+        image = await ensure_env_image(env.system_packages, env.tools) if env.status == "ready" else None
         tracked = set((await box.exec("git ls-files")).stdout.splitlines())
 
         await events.record(task.run_id, "node_start", "plan", node="plan")
@@ -184,6 +189,7 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, reh
             f"<repo_brief>\n{brief_text(brief)}\n</repo_brief>\n\n"
             f"<architecture_map>\n{archmap.to_markdown(amap)}\n</architecture_map>\n\n"
             f"<relevant_files>\n{l2}\n</relevant_files>\n\n"
+            f"<sandbox_environment>\n{env.text()}\n</sandbox_environment>\n\n"
             f"<commands_that_worked_before>\n{recipe or 'none yet'}\n</commands_that_worked_before>"
         )
         plan = await planner.make_plan(llm, repo=full_name, context=context)
@@ -191,7 +197,7 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, reh
         # Run the setup now, before Gate 1, so a plan whose commands cannot work is caught before any paid run.
         # A failure goes back to the Planner once. Success also saves the repo image the run will start from.
         await events.record(task.run_id, "node_start", "setup check", node="setup_check")
-        setup_error = await check_setup(full_name, commit, plan.setup_commands)
+        setup_error = await check_setup(full_name, commit, plan.setup_commands, image)
         if setup_error:
             await events.record(task.run_id, "warning", "setup failed; asking the Planner to fix the commands")
             failed = "\n".join(plan.setup_commands)
@@ -201,9 +207,15 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, reh
                 context=f"{context}\n\n<setup_failed>\nThese setup commands failed in the sandbox:\n{failed}\n\n"
                 f"Output:\n{setup_error}\n</setup_failed>",
             )
-            setup_error = await check_setup(full_name, commit, plan.setup_commands)
+            setup_error = await check_setup(full_name, commit, plan.setup_commands, image)
         checks = ["setup commands ran successfully in the sandbox"] if not setup_error else []
         warnings = [f"setup failed in the sandbox: {setup_error[-600:]}"] if setup_error else []
+        if env.status == "ready":
+            passing, total = sum(t.ok for t in env.tests), len(env.tests)
+            checks.append(f"sandbox environment ready: {passing} of {total} test commands pass on {env.commit[:7]}")
+        else:
+            why = ": ".join(filter(None, [env.blocker, env.detail]))
+            warnings.append(f"Setup agent: environment {env.status}: {why}")
         warnings += [f"`{p}` does not exist in the repo" for p in planner.unknown_paths(plan, tracked)]
         warnings += [f"rehearsal: {b}" for b in blockers]
         warnings += [moved] if moved else []
@@ -220,6 +232,9 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, reh
                 "warnings": warnings,
                 "markdown": markdown,
                 "setup_verified": not setup_error,
+                "environment": {"system_packages": env.system_packages, "tools": env.tools}
+                if env.status == "ready"
+                else {},
             },  # fmt: skip
             result={"brief": brief_text(brief), "map_commit": amap["meta"]["commit"]},
             cost_usd=await task_cost(task),
@@ -235,10 +250,10 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, reh
             await box.remove()
 
 
-async def check_setup(full_name: str, commit: str, setup: list[str]) -> str | None:
+async def check_setup(full_name: str, commit: str, setup: list[str], image: str | None = None) -> str | None:
     """Run the setup commands in a fresh sandbox. Returns None if they work, else the end of their output."""
     try:
-        box, _ = await prepare_repo(full_name, commit, setup)
+        box, _ = await prepare_repo(full_name, commit, setup, image=image)
     except SandboxError as e:
         return str(e)[-3000:]
     await box.remove()
@@ -323,7 +338,9 @@ async def run_task(task_id: int) -> Task:
     box: Sandbox | None = None
     try:
         await events.record(task.run_id, "node_start", "setup", node="setup")
-        box, cached = await prepare_repo(repo.full_name, task.base_commit, plan["setup_commands"])
+        env = plan.get("environment") or {}
+        image = await ensure_env_image(env.get("system_packages", []), env.get("tools", []))
+        box, cached = await prepare_repo(repo.full_name, task.base_commit, plan["setup_commands"], image=image)
         await events.record(task.run_id, "node_start", "baseline", node="baseline")
         baseline = await run_commands(box, plan["test_commands"])
         result["baseline"] = [b.model_dump() for b in baseline]

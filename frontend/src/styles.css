@@ -336,3 +336,14 @@ ol.log { list-style: none; margin: 8px 0 0; padding: 0; border-left: 1px solid v
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes pulse { 50% { opacity: 0.3; } }
 @media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
+
+/* Environment found by the Setup agent (Repos page) */
+.env-ready { background: var(--ok-soft); color: var(--ok); }
+.env-blocked { background: var(--lamp-soft); color: var(--lamp); }
+.env-failed { background: var(--bad-soft); color: var(--bad); }
+details.env > summary { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; list-style: none; }
+details.env .env-body { margin-top: 8px; max-width: 520px; }
+details.env .env-body p { margin: 4px 0; }
+details.env .pass { color: var(--ok); }
+details.env .fail { color: var(--bad); }
+.nowrap { white-space: nowrap; }

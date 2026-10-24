@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     chat: AgentModel = AgentModel(model="claude-opus-5-5", effort="medium", max_tokens=8000)
     cartographer: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="medium", max_tokens=8000)
     # Contribution Worker. Sonnet by default; set NIGHTSHIFT_CODER__MODEL=claude-opus-5-5 for a hard task.
+    setup: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="medium", max_tokens=8000)
     planner: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="medium", max_tokens=12000)
     coder: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="medium", max_tokens=16000)
     reviewer: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="high", max_tokens=20000)
@@ -85,6 +86,9 @@ class Settings(BaseSettings):
     task_minutes: int = 30
     coder_max_steps: int = 60
     review_rounds: int = 2
+    # Setup agent: tries an environment for a repo this many times, within this budget, once per repo.
+    setup_attempts: int = 5
+    setup_budget_usd: float = 1.0
 
     # Task sandboxes (Docker). Build the base image with `nightshift sandbox build`.
     sandbox_image: str = "nightshift-sandbox:3"

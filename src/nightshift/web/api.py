@@ -17,12 +17,13 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from nightshift.chat import chat_turn, get_or_create_chat, load_messages
-from nightshift.db import Control, Item, LLMCall, Repo, Report, Run, RunEvent, session_scope
+from nightshift.db import Control, Item, LLMCall, Repo, RepoContext, Report, Run, RunEvent, session_scope
 from nightshift.health.graph import run_health_report
 from nightshift.health.report import is_opportunity
 from nightshift.llm import spend_summary
 from nightshift.memory import get_or_create_repo
 from nightshift.web.common import Guard, render_markdown
+from nightshift.worker.setup_agent import ENVIRONMENT, Environment, setup_repo, setup_run_id
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/api")
@@ -69,6 +70,41 @@ def _start(repo: str, run_id: str, resume: bool = False) -> None:
     _runs[run_id] = asyncio.create_task(job())
 
 
+def _start_setup(repo: str, run_id: str) -> None:
+    async def job() -> None:
+        try:
+            await setup_repo(repo, run_id)
+        except Exception as e:  # recorded on the run by setup_repo
+            log.warning("web_setup_failed", repo=repo, run_id=run_id, error=str(e))
+        finally:
+            _runs.pop(run_id, None)
+
+    _runs[run_id] = asyncio.create_task(job())
+
+
+def _job_kind(run_id: str) -> str:
+    for prefix in ("task", "map", "setup"):
+        if run_id.startswith(f"{prefix}-"):
+            return prefix
+    return "report"
+
+
+def _environment_view(env: Environment, at: datetime) -> dict[str, Any]:
+    return {
+        "status": env.status,
+        "commit": env.commit,
+        "at": _iso(at),
+        "detail": ": ".join(filter(None, [env.blocker, env.detail])),
+        "setup_commands": env.setup_commands,
+        "tests": [{"command": t.command, "ok": t.ok} for t in env.tests],
+        "system_packages": env.system_packages,
+        "tools": env.tools,
+        "sources": env.sources,
+        "attempts": env.attempts,
+        "cost_usd": env.cost_usd,
+    }
+
+
 # ---------- overview and controls ----------
 
 
@@ -101,7 +137,17 @@ async def set_kill(body: KillIn) -> dict[str, Any]:
 async def list_repos() -> list[dict[str, Any]]:
     async with session_scope() as s:
         repos = list((await s.execute(select(Repo).order_by(Repo.full_name))).scalars())
-        runs = {r.repo_id: r for r in (await s.execute(select(Run).order_by(Run.started_at))).scalars()}
+        all_runs = list((await s.execute(select(Run).order_by(Run.started_at))).scalars())
+        runs = {r.repo_id: r for r in all_runs if _job_kind(r.run_id) == "report"}
+        setups = {r.repo_id: r for r in all_runs if _job_kind(r.run_id) == "setup"}
+        envs = {
+            c.repo_id: c
+            for c in (
+                await s.execute(
+                    select(RepoContext).where(RepoContext.kind == ENVIRONMENT).order_by(RepoContext.created_at)
+                )
+            ).scalars()
+        }
         reports = {r.repo_id: r for r in (await s.execute(select(Report).order_by(Report.created_at))).scalars()}
     out = []
     for repo in repos:
@@ -118,6 +164,10 @@ async def list_repos() -> list[dict[str, Any]]:
                 "run": {"run_id": run.run_id, "status": run.status, "started_at": _iso(run.started_at)}
                 if run
                 else None,
+                "environment": _environment_view(Environment.model_validate(env.data), env.created_at)
+                if (env := envs.get(repo.id))
+                else None,
+                "setup_run": {"run_id": su.run_id, "status": su.status} if (su := setups.get(repo.id)) else None,
             }
         )
     return out
@@ -157,6 +207,17 @@ async def start_run(owner: str, name: str) -> dict[str, str]:
     repo = await _repo(f"{owner}/{name}")
     run_id = uuid.uuid4().hex
     _start(repo.full_name, run_id)
+    return {"run_id": run_id}
+
+
+@router.post("/repos/{owner}/{name}/setup", dependencies=[Guard])
+async def start_setup(owner: str, name: str) -> dict[str, str]:
+    """Run the Setup agent again for this repo, at the head of its default branch."""
+    repo = await _repo(f"{owner}/{name}")
+    if any(r.startswith(f"setup-{repo.id}-") for r in _runs):
+        raise HTTPException(409, "The Setup agent is already running for this repo.")
+    run_id = setup_run_id(repo.id)
+    _start_setup(repo.full_name, run_id)
     return {"run_id": run_id}
 
 
@@ -201,7 +262,7 @@ async def list_jobs() -> list[dict[str, Any]]:
         {
             "run_id": run.run_id,
             "repo": repo.full_name,
-            "kind": "task" if run.run_id.startswith("task-") else "map" if run.run_id.startswith("map-") else "report",
+            "kind": _job_kind(run.run_id),
             "status": run.status,
             "node": run.current_node,
             "cost_usd": round(costs.get(run.run_id, 0.0), 4),

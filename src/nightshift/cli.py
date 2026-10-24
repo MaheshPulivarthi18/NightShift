@@ -326,6 +326,26 @@ def sandbox_try(
     raise typer.Exit(0 if ok else 1)
 
 
+@sandbox_app.command("setup")
+def sandbox_setup(repo: str) -> None:
+    """Let the Setup agent work out how to install and test a repo, and prove it in the sandbox."""
+    from nightshift.worker.setup_agent import setup_repo
+
+    async def run() -> None:
+        env = await setup_repo(_repo_name(repo))
+        for line in env.attempts:
+            typer.echo(f"- {line}")
+        typer.echo(f"\nEnvironment {env.status} (${env.cost_usd:.2f})")
+        if env.status != "ready":
+            typer.echo(": ".join(filter(None, [env.blocker, env.detail])))
+            raise typer.Exit(1)
+        typer.echo(f"Packages: {env.system_packages or 'none'}  Tools: {env.tools or 'none'}")
+        typer.echo("Setup:\n" + "\n".join(f"  {c}" for c in env.setup_commands))
+        typer.echo("Tests:\n" + "\n".join(f"  {t.line()}" for t in env.tests))
+
+    _run_sandboxed(run())
+
+
 def _run_sandboxed(coro: Coroutine[Any, Any, None]) -> None:
     """Run a sandbox command, turning sandbox and budget failures into a message and exit code 1."""
     from nightshift.sandbox.docker import SandboxError
