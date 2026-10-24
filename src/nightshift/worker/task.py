@@ -202,6 +202,18 @@ async def decide(task_id: int, approve: bool, note: str | None = None, **overrid
     return task
 
 
+async def revise(task_id: int, note: str) -> Task:
+    """Send a finished or stopped task back for another run, with the operator's correction added to
+    the approved plan. The run starts again from the same base commit; the old result is replaced."""
+    task, _ = await load_task(task_id)
+    if task.status not in ("ready", "needs_operator", "failed"):
+        raise TaskError(f"Task {task_id} is {task.status}; only a ready, stopped or failed task can be revised.")
+    combined = f"{task.note}\n\nRevision: {note}" if task.note else f"Revision: {note}"
+    keep = {k: v for k, v in task.result.items() if k in ("brief", "map_commit")}
+    await _save(task, status="approved", note=combined, result=keep, diff=None, error=None)
+    return task
+
+
 # ---------- work ----------
 
 
@@ -211,7 +223,11 @@ async def run_task(task_id: int) -> Task:
     task, repo = await load_task(task_id)
     if task.status != "approved":
         raise TaskError(f"Task {task_id} is {task.status}; only an approved plan can run.")
-    plan = task.plan
+    plan = dict(task.plan)
+    if task.note:  # the operator's word at Gate 1 is part of what was approved, for the Coder and the Reviewer
+        plan["markdown"] += (
+            f"\n\n## Developer's note at approval (overrides the plan where they conflict)\n\n{task.note}"
+        )
     issue = IssueView.model_validate(task.issue)
     folder = task_dir(repo.full_name, task.id)
     deadline = time.monotonic() + settings.task_minutes * 60

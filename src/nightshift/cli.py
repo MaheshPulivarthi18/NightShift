@@ -508,6 +508,21 @@ def task_reject(task_id: int, note: Annotated[str | None, typer.Option()] = None
     typer.echo("Rejected.")
 
 
+@task_app.command("revise")
+def task_revise(
+    task_id: int, note: Annotated[str, typer.Option(help="What to change; added to the approved plan.")]
+) -> None:
+    """Send a ready or stopped task back to the Coder with a correction, then run it again."""
+    from nightshift.worker.task import TaskError, revise
+
+    try:
+        asyncio.run(revise(task_id, note))
+    except TaskError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    typer.echo(f"Revised. Run it: nightshift task run {task_id}")
+
+
 @task_app.command("run")
 def task_run(task_id: int) -> None:
     """Run an approved task: setup, baseline, Coder, verification, Reviewer. Never touches GitHub."""

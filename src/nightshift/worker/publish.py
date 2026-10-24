@@ -14,6 +14,7 @@ Rehearsal tasks can never be published.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shutil
 from pathlib import Path
@@ -40,9 +41,12 @@ class Prepared(BaseModel):
 
 
 async def _run(*args: str, cwd: Path | None = None, stdin: str | None = None, check: bool = True) -> str:
+    """Run git or gh as the operator (their gh login and SSH keys), never with NightShift's token."""
+    env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN")}
     proc = await asyncio.create_subprocess_exec(
         *args,
         cwd=cwd,
+        env=env,
         stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -55,7 +59,7 @@ async def _run(*args: str, cwd: Path | None = None, stdin: str | None = None, ch
 
 def branch_name(task: Task) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", str(task.issue.get("title", "")).lower()).strip("-")[:40].strip("-")
-    return f"nightshift/{task.issue_number}-{slug or 'fix'}"
+    return f"{get_settings().branch_prefix}/{task.issue_number}-{slug or 'fix'}"
 
 
 async def freshness(full_name: str, task: Task) -> list[str]:
@@ -105,9 +109,17 @@ async def publish(repo: Repo, task: Task, prepared: Prepared, *, title: str, bod
         )  # fmt: skip
     wd = Path(prepared.workdir)
     await _run("git", "commit", "--quiet", "-F", "-", cwd=wd, stdin=message)
-    await _run("gh", "repo", "fork", repo.full_name, "--clone=false", "--remote=false", check=False)
+    await _run("gh", "repo", "fork", repo.full_name, "--clone=false")  # no-op when the fork exists
     name = repo.full_name.split("/", 1)[1]
-    fork = (await _run("gh", "repo", "view", f"{login}/{name}", "--json", "sshUrl", "--jq", ".sshUrl")).strip()
+    fork = ""
+    for _ in range(12):  # GitHub creates forks asynchronously
+        fork = await _run("gh", "repo", "view", f"{login}/{name}", "--json", "sshUrl", "--jq", ".sshUrl", check=False)
+        if fork.strip():
+            break
+        await asyncio.sleep(5)
+    fork = fork.strip()
+    if not fork:
+        raise PublishError(f"The fork {login}/{name} did not appear on GitHub.")
     await _run("git", "push", "--quiet", fork, f"HEAD:refs/heads/{prepared.branch}", cwd=wd)
     url = await _run(
         "gh", "pr", "create", "--repo", repo.full_name, "--base", prepared.default_branch,
