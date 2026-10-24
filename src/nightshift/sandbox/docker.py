@@ -185,6 +185,13 @@ async def image_exists(tag: str) -> bool:
     return (await _docker("image", "inspect", tag, timeout=30)).ok
 
 
+async def newest_repo_image(full_name: str) -> str | None:
+    """The most recently built image of this repo (docker lists images newest first), or None."""
+    res = await _docker("images", repo_image_name(full_name), "--format", "{{.Repository}}:{{.Tag}}", timeout=30)
+    tags = [t for t in res.stdout.splitlines() if t and not t.endswith(":<none>")]
+    return tags[0] if res.ok and tags else None
+
+
 async def _must(
     box: Sandbox, command: str, what: str, timeout: float | None = None, workdir: str = REPO_DIR
 ) -> ExecResult:
@@ -237,6 +244,15 @@ async def prepare_repo(
             await _checkout(box, ref, fetch_url)
             log.info("sandbox_from_cache", repo=full_name, image=tag)
             return box, True
+
+        # No exact match: start from this repo's newest image, if any, and run the setup on top of it, so
+        # only packages that changed are downloaded. Setup commands must tolerate an existing install.
+        if previous := await newest_repo_image(full_name):
+            await box.remove()
+            box = await Sandbox.start(previous)
+            await _must(box, "git fetch --quiet --filter=blob:none origin", "fetch")
+            await _checkout(box, ref, fetch_url)
+            log.info("sandbox_from_previous_image", repo=full_name, image=previous)
 
         for command in setup:
             log.info("sandbox_setup", repo=full_name, command=command)
