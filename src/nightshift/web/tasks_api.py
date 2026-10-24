@@ -14,8 +14,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from nightshift.config import model_id
 from nightshift.db import LLMCall, Repo, Task, session_scope
-from nightshift.web.common import Guard, render_markdown
+from nightshift.router import CHOOSABLE, agent_routes, choices
+from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker import task as worker
 from nightshift.worker.publish import PublishError
 
@@ -69,6 +71,19 @@ async def list_tasks() -> list[dict[str, Any]]:
     return [_summary(t, r) for t, r in rows]
 
 
+async def _model_choices() -> dict[str, Any]:
+    """For Gate 1: per choosable agent, the model the router would try first and the ones to pick from."""
+    out: dict[str, Any] = {}
+    for agent in CHOOSABLE:
+        first = (await agent_routes(agent))[0]
+        out[agent] = {
+            "default": first.info.id,
+            "why": first.why,
+            "options": [model_view(m) for m in await choices(agent)],
+        }
+    return out
+
+
 async def _models_used(run_id: str) -> list[dict[str, Any]]:
     """Which models each agent used in this task, in order, with what they cost (from the ledger)."""
     async with session_scope() as s:
@@ -80,7 +95,8 @@ async def _models_used(run_id: str) -> list[dict[str, Any]]:
             )
         ).all()
     agents: dict[str, dict[str, Any]] = {}
-    for agent, model, cost, error in rows:
+    for agent, name, cost, error in rows:
+        model = model_id(name)  # rows from before OpenRouter ids say e.g. claude-sonnet-5-5
         a = agents.setdefault(agent, {"agent": agent, "models": [], "failed": [], "cost_usd": 0.0})
         if model not in a["models"]:
             a["models"].append(model)
@@ -100,6 +116,8 @@ async def get_task(task_id: int) -> dict[str, Any]:
     pr = res.get("pr")
     return {
         "models": await _models_used(t.run_id),
+        "chosen_models": t.plan.get("models") or {},
+        "model_choices": await _model_choices() if t.status == "planned" else None,
         **_summary(t, r),
         "issue_url": t.issue.get("url"),
         "run_id": t.run_id,
@@ -151,13 +169,14 @@ class Decision(BaseModel):
     note: str | None = None
     setup_commands: list[str] = []
     test_commands: list[str] = []
+    models: dict[str, str] = {}  # agent -> model to try first (router.CHOOSABLE)
 
 
 @router.post("/tasks/{task_id}/decision", dependencies=[Guard])
 async def decide(task_id: int, body: Decision) -> dict[str, Any]:
     try:
-        await worker.decide(task_id, body.approve, body.note, setup_commands=body.setup_commands,
-                            test_commands=body.test_commands)  # fmt: skip
+        await worker.decide(task_id, body.approve, body.note, models=body.models,
+                            setup_commands=body.setup_commands, test_commands=body.test_commands)  # fmt: skip
     except worker.TaskError as e:
         raise HTTPException(409, str(e)) from e
     return await get_task(task_id)

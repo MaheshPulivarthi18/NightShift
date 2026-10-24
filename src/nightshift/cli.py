@@ -535,12 +535,17 @@ def task_approve(
     note: Annotated[str | None, typer.Option()] = None,
     setup: SetupOpt = None,
     test: Annotated[list[str] | None, typer.Option("--test", help="Replace the plan's test commands.")] = None,
+    model: Annotated[
+        list[str] | None,
+        typer.Option("--model", help="AGENT=MODEL to try first, e.g. coder=openai/gpt-5.6-sol. Repeatable."),
+    ] = None,
 ) -> None:
-    """Gate 1: approve a plan (optionally replacing its setup or test commands)."""
+    """Gate 1: approve a plan (optionally replacing its commands or choosing models)."""
     from nightshift.worker.task import TaskError, decide
 
+    models = dict(m.split("=", 1) for m in model or [] if "=" in m)
     try:
-        asyncio.run(decide(task_id, True, note, setup_commands=setup or [], test_commands=test or []))
+        asyncio.run(decide(task_id, True, note, models=models, setup_commands=setup or [], test_commands=test or []))
     except TaskError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1) from e

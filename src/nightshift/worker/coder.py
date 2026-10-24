@@ -158,13 +158,20 @@ class CoderRun:
     check: FixCheck | None = None
     stopped: str | None = None  # why it stopped without a passing check
     level: int = 0  # where on the Coder's model ladder it works (router.RouteHint)
+    prefer: str | None = None  # the model the operator chose at Gate 1
     model: str = ""  # the model that took the last step
     max_steps: int = 0  # 0: settings.coder_max_steps; an escalation adds steps
+
+    @property
+    def ladder(self) -> list[str]:
+        """The Coder's models in ladder order: the operator's choice first, when there is one."""
+        models = get_settings().coder.models
+        return [self.prefer, *[m for m in models if m != self.prefer]] if self.prefer else models
 
     def escalate(self) -> bool:
         """Move one step up the Coder's model ladder, with half a run's steps more. False at the top."""
         settings = get_settings()
-        if self.level + 1 >= len(settings.coder.models):
+        if self.level + 1 >= len(self.ladder):
             return False
         self.level += 1
         self.max_steps = self.steps + settings.coder_max_steps // 2
@@ -280,7 +287,7 @@ class CoderRun:
                 messages=self._request_messages(),
                 tools=TOOLS,
                 label=f"step {self.steps}",
-                route=RouteHint(level=self.level),
+                route=RouteHint(level=self.level, prefer=self.prefer),
             )
             self.model = msg.model
             content = [b.model_dump(mode="json", exclude_none=True) for b in msg.content]

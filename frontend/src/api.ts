@@ -136,6 +136,46 @@ export interface TaskDetail extends TaskSummary {
   pr_url: string | null;
   coder_steps: number | null;
   models: ModelUse[];
+  chosen_models: Record<string, string>;
+  // At Gate 1 only: per agent whose model can be chosen, the router's first pick and the options.
+  model_choices: Record<string, { default: string; why: string; options: ModelView[] }> | null;
+}
+
+// A model from OpenRouter's catalog. Prices in USD per million tokens; scores from Artificial Analysis.
+export interface ModelView {
+  id: string;
+  name: string;
+  input_per_m: number;
+  output_per_m: number;
+  context: number;
+  intelligence: number | null;
+  coding: number | null;
+  agentic: number | null;
+  tools: boolean;
+  structured: boolean;
+}
+
+export interface ModelStats {
+  calls: number;
+  failed_calls: number;
+  tasks: number;
+  tasks_ok: number;
+  cost_usd: number;
+  latency_ms: number | null;
+}
+
+export interface AgentModels {
+  agent: string;
+  tools: boolean;
+  effort: string;
+  configured: string[];
+  routes: (ModelView & { why: string; stats: ModelStats })[];
+  error?: string;
+}
+
+export interface ModelsPage {
+  learning: boolean;
+  agents: AgentModels[];
 }
 
 // Which models one agent used in a task (from the ledger): in order, the ones that failed, the cost.
@@ -199,8 +239,15 @@ export const api = {
   task: (id: number) => call<TaskDetail>(`/tasks/${id}`),
   create: (repo: string, issue: number, base: string, rehearsal: boolean) =>
     call<{ status: string; repo: string; note: string }>("/tasks", { repo, issue, base: base || null, rehearsal }),
-  decide: (id: number, approve: boolean, note: string, setup: string[], test: string[]) =>
-    call<TaskDetail>(`/tasks/${id}/decision`, { approve, note: note || null, setup_commands: setup, test_commands: test }),
+  decide: (id: number, approve: boolean, note: string, setup: string[], test: string[], models: Record<string, string> = {}) =>
+    call<TaskDetail>(`/tasks/${id}/decision`, {
+      approve,
+      note: note || null,
+      setup_commands: setup,
+      test_commands: test,
+      models,
+    }),
+  models: () => call<ModelsPage>("/models"),
   run: (id: number) => call<{ status: string }>(`/tasks/${id}/run`, {}),
   revise: (id: number, note: string, latest: boolean) => call<TaskDetail>(`/tasks/${id}/revise`, { note, latest }),
   claim: (id: number, confirm: boolean) => call<{ result: string }>(`/tasks/${id}/claim`, { confirm }),

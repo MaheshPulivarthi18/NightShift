@@ -16,13 +16,17 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
+from nightshift import outcomes
+from nightshift.catalog import ModelConfigError
 from nightshift.chat import chat_turn, get_or_create_chat, load_messages
+from nightshift.config import get_settings
 from nightshift.db import Control, Item, LLMCall, Repo, RepoContext, Report, Run, RunEvent, session_scope
 from nightshift.health.graph import run_health_report
 from nightshift.health.report import is_opportunity
 from nightshift.llm import spend_summary
 from nightshift.memory import get_or_create_repo
-from nightshift.web.common import Guard, render_markdown
+from nightshift.router import AGENTS, agent_routes
+from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker.setup_agent import ENVIRONMENT, Environment, setup_repo, setup_run_id
 
 log = structlog.get_logger()
@@ -247,6 +251,28 @@ async def report(owner: str, name: str, run_id: str | None = None) -> dict[str, 
 
 
 # ---------- jobs ----------
+
+
+# ---------- models ----------
+
+
+@router.get("/models")
+async def models_page() -> dict[str, Any]:
+    """Each agent's models in the order the router uses now, why, and how each has done."""
+    agents = []
+    for agent, (field, tools) in AGENTS.items():
+        cfg = getattr(get_settings(), field)
+        row: dict[str, Any] = {"agent": agent, "tools": tools, "effort": cfg.effort, "configured": cfg.models}
+        try:
+            st = await outcomes.stats(agent)
+            row["routes"] = [
+                {**model_view(r.info), "why": r.why, "stats": vars(st.get(r.info.id) or outcomes.ModelStats())}
+                for r in await agent_routes(agent)
+            ]
+        except ModelConfigError as e:
+            row["routes"], row["error"] = [], str(e)
+        agents.append(row)
+    return {"learning": get_settings().router_learning, "agents": agents}
 
 
 @router.get("/jobs")

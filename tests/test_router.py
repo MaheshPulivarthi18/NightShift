@@ -9,11 +9,11 @@ import pytest
 from fake_openrouter import FakeOpenRouter, reply
 from pydantic import BaseModel
 
-from nightshift import llm
+from nightshift import llm, outcomes
 from nightshift.catalog import ModelConfigError
 from nightshift.config import AgentModel
 from nightshift.llm import LLMGateway, ModelAPIError
-from nightshift.router import RouteHint, family, routes
+from nightshift.router import RouteHint, check_choice, choices, family, routes
 
 SONNET, OPUS, SOL = "anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5", "openai/gpt-5.6-sol"
 CODER = AgentModel(model=SONNET, ladder=[OPUS])
@@ -137,3 +137,45 @@ def test_reasoning_goes_only_to_the_model_that_wrote_it() -> None:
     ]}]  # fmt: skip
     assert "reasoning_details" in llm.to_wire([], messages, SONNET)[0]
     assert "reasoning_details" not in llm.to_wire([], messages, SOL)[0]
+
+
+# ---------- the operator's choice at Gate 1 ----------
+
+
+async def test_the_operators_choice_goes_first_whatever_else_applies(
+    models: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def learned(_: str) -> dict[str, Any]:
+        return {SOL: outcomes.ModelStats(calls=10, failed_calls=9)}  # learning would demote it
+
+    monkeypatch.setattr(outcomes, "stats", learned)
+    rs = await routes(REVIEWER, RouteHint(prefer=SOL, avoid="openai"), agent="reviewer")
+    assert [r.info.id for r in rs] == [SOL, SONNET, OPUS]  # not demoted, not moved for its family
+    assert rs[0].why == "chosen at Gate 1"
+    picked = await routes(CODER, RouteHint(prefer=SOL, level=1))  # escalation moves past the choice
+    assert [r.info.id for r in picked] == [SONNET, OPUS, SOL]  # up the ladder first, the choice last
+
+
+async def test_a_choice_must_be_a_model_that_can_do_the_job(models: Any) -> None:
+    assert (await check_choice("coder", SOL)).id == SOL
+    with pytest.raises(ModelConfigError, match="not on OpenRouter"):
+        await check_choice("coder", "nobody/nothing")
+    with pytest.raises(ModelConfigError, match="cannot call tools"):
+        await check_choice("coder", "old/no-tools")
+    with pytest.raises(ModelConfigError, match="cannot be chosen per task"):
+        await check_choice("planner", SONNET)
+
+
+async def test_choices_start_with_the_agents_own_ladder(models: Any) -> None:
+    ids = [m.id for m in await choices("reviewer")]
+    assert ids[:3] == ["openai/gpt-5.6-sol", SONNET, OPUS]
+    assert "old/no-tools" not in ids
+
+
+def test_the_coder_ladder_puts_the_choice_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nightshift.worker.coder import CoderRun
+
+    coder = CoderRun(None, None, "base", [], [], "")  # type: ignore[arg-type]
+    coder.prefer = SOL
+    assert coder.ladder[0] == SOL and SOL not in coder.ladder[1:]
+    assert coder.escalate() and coder.level == 1

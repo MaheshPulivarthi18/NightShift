@@ -21,6 +21,7 @@ import structlog
 from sqlalchemy import func, select
 
 from nightshift import events, outcomes
+from nightshift.catalog import ModelConfigError
 from nightshift.config import get_settings
 from nightshift.context import archmap
 from nightshift.context.change import change_context
@@ -31,7 +32,7 @@ from nightshift.health.agents import RepoBrief
 from nightshift.health.graph import repo_brief
 from nightshift.llm import BudgetExceeded, KillSwitchActive, LLMGateway
 from nightshift.memory import get_or_create_repo
-from nightshift.router import family
+from nightshift.router import check_choice, family
 from nightshift.sandbox.docker import Sandbox, SandboxError, prepare_repo
 from nightshift.sandbox.envimage import ensure_env_image
 from nightshift.worker import planner, prwriter, publish, reviewer
@@ -273,8 +274,15 @@ async def check_setup(full_name: str, commit: str, setup: list[str], image: str 
     return None
 
 
-async def decide(task_id: int, approve: bool, note: str | None = None, **overrides: list[str]) -> Task:
-    """Gate 1. `overrides` may replace the plan's setup_commands or test_commands."""
+async def decide(
+    task_id: int,
+    approve: bool,
+    note: str | None = None,
+    models: dict[str, str] | None = None,
+    **overrides: list[str],
+) -> Task:
+    """Gate 1. `overrides` may replace the plan's setup_commands or test_commands; `models` picks the
+    model to try first for the Coder, the Reviewer or the PR writer (router.CHOOSABLE)."""
     task, _ = await load_task(task_id)
     if task.status != "planned":
         raise TaskError(f"Task {task_id} is {task.status}, not waiting for approval.")
@@ -282,6 +290,13 @@ async def decide(task_id: int, approve: bool, note: str | None = None, **overrid
     plan.update({k: v for k, v in overrides.items() if v})
     if approve and (why := run_blocker(plan)):
         raise TaskError(why)
+    chosen = {agent: model.strip() for agent, model in (models or {}).items() if model and model.strip()}
+    for agent, model in chosen.items():
+        try:
+            await check_choice(agent, model)
+        except ModelConfigError as e:
+            raise TaskError(str(e)) from e
+    plan["models"] = chosen
     if approve:
         await _save(task, status="approved", plan=plan, note=note, approved_at=datetime.now(UTC))
     else:
@@ -401,8 +416,11 @@ async def run_task(task_id: int) -> Task:
             + "\n".join(b.line() for b in baseline)
             + "\n</baseline_tests>"
         )
+        chosen = plan.get("models") or {}  # the operator's picks at Gate 1
         coder = CoderRun(box, llm, task.base_commit, plan["test_commands"], baseline, context)
-        coder.level = 1 if plan.get("size") == "large" else 0  # a large task starts one step up the ladder
+        coder.prefer = chosen.get("coder")
+        # A large task starts one step up the ladder, unless the operator chose the model.
+        coder.level = 1 if plan.get("size") == "large" and not coder.prefer else 0
         escalated = False
         instruction = (
             "Fix the issue following the approved plan. Start by reading the files it names. "
@@ -417,7 +435,7 @@ async def run_task(task_id: int) -> Task:
             failed = coder.check is None or not coder.check.passed
             if failed and not escalated and time.monotonic() < deadline and coder.escalate():
                 escalated = True  # once per task: a stronger model takes over the same conversation
-                stronger = settings.coder.models[coder.level]
+                stronger = coder.ladder[coder.level]
                 await events.record(task.run_id, "node_start", f"coder escalated to {stronger}", node="coder")
                 await coder.work(
                     "A stronger model takes over this task, with the conversation so far. The previous attempt "
@@ -441,6 +459,7 @@ async def run_task(task_id: int) -> Task:
                 rules=result.get("brief", ""),
                 change_context=pack,
                 avoid=family(coder.model),
+                prefer=chosen.get("reviewer"),
             )
             reviews.append(
                 {"round": round_no, **rv.model_dump(mode="json"), "markdown": reviewer.to_markdown(rv, round_no)}
@@ -526,6 +545,7 @@ async def draft_pr(task: Task, repo: Repo, llm: LLMGateway | None = None) -> dic
         rules=task.result.get("brief", ""),
         template=template,
         recent_titles=titles,
+        prefer=(task.plan.get("models") or {}).get("pr_writer"),
     )
     pr = {
         "title": draft.title,

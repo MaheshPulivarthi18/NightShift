@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, CommandResult, GateInfo, ModelUse, TaskDetail } from "./api";
+import { api, CommandResult, GateInfo, ModelUse, ModelView, TaskDetail } from "./api";
 import { Diff, Html, Log, StatusBadge, money } from "./ui";
 
 const TABS = ["Plan", "Log", "Verification", "Review", "Diff", "PR"] as const;
@@ -169,10 +169,11 @@ function ApproveForm({ task, onChange }: { task: TaskDetail; onChange: () => voi
   const [setup, setSetup] = useState(task.setup_commands.join("\n"));
   const [tests, setTests] = useState(task.test_commands.join("\n"));
   const [note, setNote] = useState("");
+  const [models, setModels] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState<string | null>(null);
 
   const decide = (approve: boolean) =>
-    api.decide(task.id, approve, note, lines(setup), lines(tests)).then(onChange, (e: Error) => setMsg(e.message));
+    api.decide(task.id, approve, note, lines(setup), lines(tests), models).then(onChange, (e: Error) => setMsg(e.message));
 
   return (
     <section className="gate">
@@ -191,6 +192,9 @@ function ApproveForm({ task, onChange }: { task: TaskDetail; onChange: () => voi
           <textarea className="mono" rows={4} value={tests} onChange={(e) => setTests(e.target.value)} />
         </label>
       </div>
+      {task.model_choices && (
+        <ModelPickers choices={task.model_choices} value={models} onChange={setModels} />
+      )}
       <label className="full">
         <span>Note (optional)</span>
         <input value={note} onChange={(e) => setNote(e.target.value)} />
@@ -205,6 +209,42 @@ function ApproveForm({ task, onChange }: { task: TaskDetail; onChange: () => voi
   );
 }
 
+const AGENT_LABEL: Record<string, string> = { coder: "Coder", reviewer: "Reviewer", pr_writer: "PR writer" };
+
+export const modelLabel = (m: ModelView) =>
+  `${m.id} · $${m.input_per_m}/$${m.output_per_m} per M${m.intelligence ? ` · score ${m.intelligence}` : ""}`;
+
+// The router picks each agent's model; here the operator may pick another one for this task instead.
+function ModelPickers({
+  choices,
+  value,
+  onChange,
+}: {
+  choices: NonNullable<TaskDetail["model_choices"]>;
+  value: Record<string, string>;
+  onChange: (v: Record<string, string>) => void;
+}) {
+  return (
+    <div className="gate-grid models-pick">
+      {Object.entries(choices).map(([agent, c]) => (
+        <label key={agent}>
+          <span>{AGENT_LABEL[agent] ?? agent} model</span>
+          <select value={value[agent] ?? ""} onChange={(e) => onChange({ ...value, [agent]: e.target.value })}>
+            <option value="">
+              Router decides: {c.default} ({c.why})
+            </option>
+            {c.options.map((m) => (
+              <option key={m.id} value={m.id}>
+                {modelLabel(m)}
+              </option>
+            ))}
+          </select>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function RunPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   const [msg, setMsg] = useState<string | null>(null);
   return (
@@ -212,6 +252,14 @@ function RunPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }
       <header>
         <h2>Plan approved</h2>
         <p className="muted">Runs setup, a baseline, the Coder, verification and the Reviewer. Limits: $5, 30 minutes.</p>
+        {Object.keys(task.chosen_models).length > 0 && (
+          <p className="mono dim">
+            Chosen models:{" "}
+            {Object.entries(task.chosen_models)
+              .map(([agent, model]) => `${AGENT_LABEL[agent] ?? agent} ${model}`)
+              .join(" · ")}
+          </p>
+        )}
       </header>
       <div className="actions">
         <button className="primary" onClick={() => api.run(task.id).then(onChange, (e: Error) => setMsg(e.message))}>

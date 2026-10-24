@@ -3,12 +3,13 @@ import { api, Overview } from "./api";
 import { Board } from "./Board";
 import { Chat } from "./Chat";
 import { Job, Jobs } from "./Jobs";
+import { Models } from "./Models";
 import { Report, Repos } from "./Repos";
 import { TaskPage } from "./TaskPage";
 import { money } from "./ui";
 
 // Hash routes, so the server only serves one page:
-//   #/  tasks · #/tasks/12 · #/repos · #/repos/o/r/report · #/jobs · #/jobs/<id> · #/chat/o/r/42
+//   #/  tasks · #/tasks/12 · #/repos · #/repos/o/r/report · #/jobs · #/jobs/<id> · #/models · #/chat/o/r/42
 function useHash(): string {
   const [hash, setHash] = useState(window.location.hash || "#/");
   useEffect(() => {
@@ -31,6 +32,7 @@ function route(hash: string): { page: string; el: JSX.Element } {
   if (parts[0] === "repos") return { page: "repos", el: <Repos /> };
   if (parts[0] === "jobs" && parts[1]) return { page: "jobs", el: <Job id={parts[1]} /> };
   if (parts[0] === "jobs") return { page: "jobs", el: <Jobs /> };
+  if (parts[0] === "models") return { page: "models", el: <Models /> };
   if (parts[0] === "chat" && parts.length === 4)
     return { page: "repos", el: <Chat repo={`${parts[1]}/${parts[2]}`} number={Number(parts[3])} /> };
   const q = new URLSearchParams(query);
@@ -50,6 +52,7 @@ export function App() {
           <a href="#/" className={page === "tasks" ? "active" : ""}>Tasks</a>
           <a href="#/repos" className={page === "repos" ? "active" : ""}>Repos</a>
           <a href="#/jobs" className={page === "jobs" ? "active" : ""}>Jobs</a>
+          <a href="#/models" className={page === "models" ? "active" : ""}>Models</a>
         </nav>
         <Spend />
       </header>

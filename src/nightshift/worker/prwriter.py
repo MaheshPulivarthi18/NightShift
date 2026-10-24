@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from nightshift.config import get_settings
 from nightshift.health.agents import UNTRUSTED_RULE
 from nightshift.llm import LLMGateway
+from nightshift.router import RouteHint
 from nightshift.worker.verify import FixCheck
 
 DIFF_CHARS = 30_000
@@ -47,6 +48,7 @@ async def draft_pr(
     rules: str,
     template: str,
     recent_titles: list[str],
+    prefer: str | None = None,
 ) -> PRDraft:
     clipped = diff if len(diff) <= DIFF_CHARS else diff[:DIFF_CHARS] + "\n[diff cut here]"
     user = (
@@ -64,6 +66,7 @@ async def draft_pr(
         schema=PRDraft,
         cache_key_parts=(),
         label="PR draft",
+        route=RouteHint(prefer=prefer),
     )
 
 

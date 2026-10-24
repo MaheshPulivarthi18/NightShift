@@ -71,3 +71,13 @@ async def test_an_issue_that_is_not_free_is_refused_with_the_reason(
     resp = await client.post("/api/tasks", json={"repo": "o/r", "issue": 705}, headers={"Origin": "http://test"})
     assert resp.status_code == 409
     assert "not free" in resp.json()["detail"]
+
+
+async def test_models_page_lists_every_agent_in_router_order(client: httpx.AsyncClient, models: object) -> None:
+    resp = await client.get("/api/models")
+    assert resp.status_code == 200
+    data = resp.json()
+    agents = {a["agent"]: a for a in data["agents"]}
+    assert {"coder", "reviewer", "planner", "setup"} <= set(agents)
+    coder = agents["coder"]["routes"]
+    assert coder[0]["why"] == "first choice" and "calls" in coder[0]["stats"]

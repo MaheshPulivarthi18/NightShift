@@ -72,8 +72,10 @@ async def review(
     rules: str,
     change_context: str,
     avoid: str | None = None,
+    prefer: str | None = None,
 ) -> Review:
-    """`avoid`: the model family that wrote the code; another family reviews it when the ladder allows."""
+    """`avoid`: the model family that wrote the code; another family reviews it when the ladder allows.
+    `prefer`: the model the operator chose at Gate 1."""
     clipped = diff if len(diff) <= DIFF_CHARS else diff[:DIFF_CHARS] + "\n[diff cut here]"
     user = (
         f"Repository: {repo}\n\n<untrusted_github_data>\n<issue>\n{issue}\n</issue>\n</untrusted_github_data>\n\n"
@@ -89,7 +91,7 @@ async def review(
         schema=Review,
         cache_key_parts=(),
         label="review",
-        route=RouteHint(avoid=avoid),
+        route=RouteHint(avoid=avoid, prefer=prefer),
     )
 
 

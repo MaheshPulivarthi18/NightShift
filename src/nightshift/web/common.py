@@ -11,10 +11,13 @@ sanitized here (nh3), never in the browser.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import nh3
 from fastapi import Depends, HTTPException, Request
 from markdown_it import MarkdownIt
+
+from nightshift.catalog import ModelInfo
 
 _md = MarkdownIt("commonmark", {"html": True}).enable("table")
 
@@ -48,3 +51,19 @@ async def same_origin(request: Request) -> None:
 
 
 Guard = Depends(same_origin)
+
+
+def model_view(m: ModelInfo) -> dict[str, Any]:
+    """A catalog model for the UI: prices per million tokens, benchmark scores, what it can do."""
+    return {
+        "id": m.id,
+        "name": m.name,
+        "input_per_m": round(m.prompt * 1e6, 3),
+        "output_per_m": round(m.completion * 1e6, 3),
+        "context": m.context_length,
+        "intelligence": m.intelligence,
+        "coding": m.coding,
+        "agentic": m.agentic,
+        "tools": m.tools,
+        "structured": m.structured,
+    }

@@ -50,10 +50,41 @@ async def agent_routes(agent: str) -> list[Route]:
     return await routes(getattr(get_settings(), field), tools=tools, structured=not tools, agent=agent)
 
 
+# The agents of a task run whose model the operator can choose at Gate 1.
+CHOOSABLE = ("coder", "reviewer", "pr_writer")
+
+
+async def choices(agent: str, limit: int = 12) -> list[ModelInfo]:
+    """Models the operator can pick for this agent: its ladder, then the strongest models on OpenRouter
+    (by intelligence score) that can do the job."""
+    field, tools = AGENTS[agent]
+    ladder = getattr(get_settings(), field).models
+
+    def fits(m: ModelInfo) -> bool:
+        return m.tools if tools else m.structured
+
+    own = [m for m in [await catalog.model_info(x) for x in ladder] if m and fits(m)]
+    taken = {m.id for m in own}
+    others = [
+        m for m in await catalog.all_models() if fits(m) and m.intelligence and ":" not in m.id and m.id not in taken
+    ]
+    others.sort(key=lambda m: -(m.intelligence or 0))
+    return own + others[:limit]
+
+
+async def check_choice(agent: str, model: str) -> ModelInfo:
+    """The operator's pick for an agent, if that model exists and can do the job; else ModelConfigError."""
+    if agent not in CHOOSABLE:
+        raise ModelConfigError(f"The model for {agent} cannot be chosen per task.")
+    tools = AGENTS[agent][1]
+    return await catalog.require(model, tools=tools, structured=not tools)
+
+
 @dataclass(frozen=True)
 class RouteHint:
     level: int = 0
     avoid: str | None = None  # a model family, e.g. "anthropic"
+    prefer: str | None = None  # the operator's choice at Gate 1: first, whatever learning or `avoid` say
 
 
 @dataclass(frozen=True)
@@ -77,16 +108,20 @@ async def routes(
 ) -> list[Route]:
     """The models to try for one call, best first, each with the reason it is in that place."""
     hint = hint or RouteHint()
-    ladder = cfg.models
+    if hint.prefer:  # the operator chose: their model first, then the agent's ladder as fallback
+        ladder = [hint.prefer, *[m for m in cfg.models if m != hint.prefer]]
+        order = [(m, "chosen at Gate 1" if i == 0 else f"ladder step {i}") for i, m in enumerate(ladder)]
+    else:
+        ladder = cfg.models
+        order = [(m, "first choice" if i == 0 else f"ladder step {i}") for i, m in enumerate(ladder)]
+        if agent and get_settings().router_learning:
+            order = outcomes.adjust(order, await outcomes.stats(agent))
     start = max(0, min(hint.level, len(ladder) - 1))
-    order = [(m, "first choice" if i == 0 else f"ladder step {i}") for i, m in enumerate(ladder)]
-    if agent and get_settings().router_learning:
-        order = outcomes.adjust(order, await outcomes.stats(agent))
     # From the starting rung upwards, then back down: a weaker model still beats no answer.
     order = order[start:] + order[:start][::-1]
     if start:
         order[0] = (order[0][0], f"escalated to ladder step {start}")
-    if hint.avoid:
+    if hint.avoid and not hint.prefer:
         other = [(m, f"{why}, not {hint.avoid} like the code it checks") for m, why in order if family(m) != hint.avoid]
         order = other + [(m, why) for m, why in order if family(m) == hint.avoid]
 
