@@ -100,17 +100,19 @@ function NewTask({ repo0, issue0, onCreated }: { repo0: string; issue0: string; 
   const [issue, setIssue] = useState(issue0);
   const [base, setBase] = useState("");
   const [rehearsal, setRehearsal] = useState(false);
+  const [note, setNote] = useState("");
   const [state, setState] = useState<{ busy: boolean; msg: string | null; error?: boolean }>({ busy: false, msg: null });
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     setState({ busy: true, msg: null });
-    api.create(repo.trim(), Number(issue), base.trim(), rehearsal).then(
+    api.create(repo.trim(), Number(issue), base.trim(), rehearsal, note.trim()).then(
       (r) => {
         const moved = r.note ? ` ${r.note}.` : "";
         setState({ busy: false, msg: `Planning started.${moved} The plan appears under “Waiting on you” in about a minute.` });
         window.location.hash = "#/";
         setIssue("");
+        setNote("");
         onCreated();
       },
       (err: Error) => setState({ busy: false, msg: err.message, error: true }),
@@ -136,6 +138,15 @@ function NewTask({ repo0, issue0, onCreated }: { repo0: string; issue0: string; 
         <label className="check">
           <input type="checkbox" checked={rehearsal} onChange={(e) => setRehearsal(e.target.checked)} />
           <span>Rehearsal (re-solve an issue that already has a fix; never published)</span>
+        </label>
+        <label className="note">
+          <span>Note to the Planner (your instruction; it sets the scope)</span>
+          <textarea
+            rows={2}
+            placeholder="e.g. Treat this as a docs task: add a section on header files with clangd to the README."
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
         </label>
       </details>
       <button className="primary" disabled={state.busy}>

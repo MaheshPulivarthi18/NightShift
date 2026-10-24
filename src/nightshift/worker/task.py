@@ -168,8 +168,11 @@ async def precheck(
     return current, issue, blockers, moved
 
 
-async def plan_task(full_name: str, number: int, *, base: str | None = None, rehearsal: bool = False) -> Task:
-    """Plan a fix for an issue and stop at Gate 1. A rehearsal may plan an issue someone already fixed."""
+async def plan_task(
+    full_name: str, number: int, *, base: str | None = None, rehearsal: bool = False, note: str = ""
+) -> Task:
+    """Plan a fix for an issue and stop at Gate 1. A rehearsal may plan an issue someone already fixed.
+    `note` is the developer's own instruction to the Planner, e.g. "treat this as a docs task"."""
     settings = get_settings()
     full_name, issue, blockers, moved = await precheck(full_name, number, rehearsal)
 
@@ -206,6 +209,8 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, reh
             f"<sandbox_environment>\n{env.text()}\n</sandbox_environment>\n\n"
             f"<commands_that_worked_before>\n{recipe or 'none yet'}\n</commands_that_worked_before>"
         )
+        if note.strip():  # written by the developer in NightShift, not on GitHub: trusted, and it sets the scope
+            context += f"\n\n<developer_note>\n{note.strip()}\n</developer_note>"
         plan = await planner.make_plan(llm, repo=full_name, context=context)
 
         # Run the setup now, before Gate 1, so a plan whose commands cannot work is caught before any paid run.
@@ -234,7 +239,7 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, reh
         warnings += [f"rehearsal: {b}" for b in blockers]
         warnings += [moved] if moved else []
         markdown = planner.to_markdown(
-            plan, title=f"{full_name}#{number} {issue.title}", warnings=warnings, checks=checks
+            plan, title=f"{full_name}#{number} {issue.title}", warnings=warnings, checks=checks, note=note.strip()
         )
         (task_dir(full_name, task.id) / "plan.md").write_text(markdown)
         await _save(
@@ -246,6 +251,7 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, reh
                 "warnings": warnings,
                 "markdown": markdown,
                 "setup_verified": not setup_error,
+                "planning_note": note.strip(),
                 "environment": {"system_packages": env.system_packages, "tools": env.tools}
                 if env.status == "ready"
                 else {},

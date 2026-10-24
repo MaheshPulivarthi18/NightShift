@@ -149,6 +149,7 @@ class NewTask(BaseModel):
     issue: int = Field(gt=0)
     base: str | None = None
     rehearsal: bool = False
+    note: str = Field(default="", max_length=4000)  # the developer's instruction to the Planner
 
 
 @router.post("/tasks", status_code=202, dependencies=[Guard])
@@ -159,8 +160,8 @@ async def new_task(body: NewTask) -> dict[str, str]:
     except worker.TaskError as e:
         raise HTTPException(409, str(e)) from e
     body.repo = current
-    _background(f"plan-{body.repo}-{body.issue}", worker.plan_task(body.repo, body.issue, base=body.base or None,
-                                                                    rehearsal=body.rehearsal))  # fmt: skip
+    planning = worker.plan_task(body.repo, body.issue, base=body.base or None, rehearsal=body.rehearsal, note=body.note)
+    _background(f"plan-{body.repo}-{body.issue}", planning)
     return {"status": "planning", "repo": current, "note": moved or ""}
 
 

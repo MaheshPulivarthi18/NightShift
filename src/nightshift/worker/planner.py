@@ -64,6 +64,7 @@ You get the issue with its comments, the repository's contribution rules and com
 - Setup and test commands run in a fresh Linux container from the repo root, with no services running and no secrets. If <sandbox_environment> is ready, its setup commands were run in that container and work: use them as they are, adding only what the fix needs, and pick test_commands from its test commands, scoped to the change. A test command that fails there already fails on the default branch. Otherwise prefer the commands in the repo's documents or the ones that worked before. Lock files over loose requirements. Scope test_commands to the parts of the repo the change touches.
 - The container has Python 3.12, Node 22, Bun, uv, git and a C/C++ compiler, plus the system packages and tools in <sandbox_environment>, and no sudo. If <setup_failed> is present, your earlier setup commands were run there and failed with that output: propose commands that work in that container.
 - If the issue is unclear or needs a maintainer's decision first, set actionable to false and ask in questions.
+- <developer_note>, when present, is the developer's own instruction, written in NightShift (not on GitHub): follow it. It sets the scope, e.g. "treat this as a docs task" makes a question issue actionable as that docs change. Set actionable to false only if the note's task itself cannot be done from the repo.
 - Use only paths that appear in the input or follow the repo's layout for a new test file.
 
 {UNTRUSTED_RULE}"""
@@ -87,8 +88,11 @@ def unknown_paths(plan: Plan, tracked: set[str]) -> list[str]:
     return [p for p in named if p not in tracked and p != plan.test_plan.file]
 
 
-def to_markdown(plan: Plan, *, title: str, warnings: list[str], checks: list[str] | None = None) -> str:
-    out = [f"# Plan: {title}", "", plan.understanding, ""]
+def to_markdown(plan: Plan, *, title: str, warnings: list[str], checks: list[str] | None = None, note: str = "") -> str:
+    out = [f"# Plan: {title}", ""]
+    if note:
+        out += ["**Developer's note to the Planner:**", "", *[f"> {line}" for line in note.splitlines()], ""]
+    out += [plan.understanding, ""]
     if checks:
         out += ["**Checked by code:**", *[f"- {c}" for c in checks], ""]
     if warnings:

@@ -485,13 +485,14 @@ def task_plan(
     rehearsal: Annotated[
         bool, typer.Option(help="Re-solve an issue that already has a fix, to test the worker.")
     ] = False,
+    note: Annotated[str, typer.Option(help='Your instruction to the Planner, e.g. "treat this as a docs task".')] = "",
 ) -> None:
     """Plan a fix for an issue. Stops at Gate 1: nothing runs until you approve."""
     from nightshift.worker.task import TaskError, plan_task
 
     async def run() -> None:
         try:
-            task = await plan_task(_repo_name(repo), issue, base=base, rehearsal=rehearsal)
+            task = await plan_task(_repo_name(repo), issue, base=base, rehearsal=rehearsal, note=note)
         except TaskError as e:
             typer.echo(str(e), err=True)
             raise typer.Exit(1) from e

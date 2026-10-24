@@ -237,8 +237,8 @@ export const api = {
   chat: (repo: string, n: number) => call<ChatView>(`/chat/${repo}/${n}`),
   tasks: () => call<TaskSummary[]>("/tasks"),
   task: (id: number) => call<TaskDetail>(`/tasks/${id}`),
-  create: (repo: string, issue: number, base: string, rehearsal: boolean) =>
-    call<{ status: string; repo: string; note: string }>("/tasks", { repo, issue, base: base || null, rehearsal }),
+  create: (repo: string, issue: number, base: string, rehearsal: boolean, note = "") =>
+    call<{ status: string; repo: string; note: string }>("/tasks", { repo, issue, base: base || null, rehearsal, note }),
   decide: (id: number, approve: boolean, note: string, setup: string[], test: string[], models: Record<string, string> = {}) =>
     call<TaskDetail>(`/tasks/${id}/decision`, {
       approve,

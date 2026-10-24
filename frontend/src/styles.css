@@ -360,3 +360,5 @@ details.env .fail { color: var(--bad); }
 .agent-models h2 { margin: 0; font-size: 16px; }
 .agent-models .bad { color: var(--bad); }
 .tag.learned, .learned-why { color: var(--lamp); }
+.new-task .options label.note { max-width: 640px; }
+.new-task .options label.note textarea { width: 100%; }

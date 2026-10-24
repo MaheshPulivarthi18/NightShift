@@ -43,3 +43,17 @@ async def test_a_coder_that_stops_says_why() -> None:
         "the Coder stopped without submitting. It said: The plan says to ask the maintainers first."
     )
     assert coder.steps == 2
+
+
+def test_the_developers_note_heads_the_plan() -> None:
+    from nightshift.worker.planner import FileChange, Plan, TestPlan, to_markdown
+
+    plan = Plan(
+        understanding="Docs for headers.", actionable=True, questions=[], approach=["Add a README section"],
+        files_to_change=[FileChange(path="README.md", why="docs")],
+        test_plan=TestPlan(file="", asserts="", targeted_command=""), setup_commands=[], test_commands=["pytest -q"],
+        risks=[], size="small", claim_comment="",
+    )  # fmt: skip
+    text = to_markdown(plan, title="o/r#1 Docs", warnings=[], note="Treat this as a docs task.\nKeep it short.")
+    assert "**Developer's note to the Planner:**\n\n> Treat this as a docs task.\n> Keep it short." in text
+    assert "Developer's note" not in to_markdown(plan, title="o/r#1 Docs", warnings=[])
