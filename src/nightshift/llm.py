@@ -18,7 +18,7 @@ from typing import Any, TypeVar
 import anthropic
 import structlog
 from anthropic.types import MessageParam, TextBlockParam, ToolParam
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 
 from nightshift import events
@@ -208,6 +208,11 @@ class LLMGateway:
             async with session_scope() as s:
                 s.add(ledger)
             raise
+        except ValidationError as e:  # the SDK parses while reading: a cut-off answer is not valid JSON
+            ledger.error = f"output did not match {schema.__name__}: {str(e)[:300]}"
+            async with session_scope() as s:
+                s.add(ledger)
+            raise AgentOutputError(f"{agent} returned output that does not match its schema (likely cut off).") from e
 
         await _record(ledger, response, cfg.model)
         self._last_cost = round(ledger.cost_usd, 5)

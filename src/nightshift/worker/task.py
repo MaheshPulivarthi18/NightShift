@@ -401,6 +401,12 @@ async def run_task(task_id: int) -> Task:
         await events.finish_run(task.run_id, "stopped", error=str(e))
         return task
     except BaseException as e:
+        if box:  # keep the Coder's work, whatever stopped the run
+            try:
+                result["partial_diff"] = await diff(box, task.base_commit)
+                (folder / "partial.patch").write_text(result["partial_diff"])
+            except Exception:
+                pass
         await _save(task, status="failed", result=result, error=f"{type(e).__name__}: {e}",
                     cost_usd=await task_cost(task))  # fmt: skip
         await events.finish_run(task.run_id, "failed", error=str(e))
