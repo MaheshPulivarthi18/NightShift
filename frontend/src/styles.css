@@ -139,6 +139,7 @@ tr.clickable:hover td { background: var(--bg-sunk); }
 .verdict-inactive, .verdict-unwelcoming, .verdict-closed { background: var(--bad-soft); color: var(--bad); }
 
 .report { border-top: 1px solid var(--line); padding-top: 8px; }
+.stale { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 0 0 14px; padding: 10px 14px; border-radius: var(--radius); background: var(--lamp-soft); border: 1px solid color-mix(in srgb, var(--lamp) 40%, var(--line)); font-size: 14px; }
 .report .prose { max-width: none; }
 .prose table { border-collapse: collapse; margin: 10px 0; font-size: 14px; display: block; overflow-x: auto; }
 .prose th, .prose td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }

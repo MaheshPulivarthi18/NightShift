@@ -143,9 +143,33 @@ export function Report({ repo }: { repo: string }) {
           </select>
         )}
       </header>
+      <Freshness repo={rep.repo} createdAt={rep.created_at} />
       <article className="report">
         <Html html={rep.html} />
       </article>
+    </div>
+  );
+}
+
+/** A report is a snapshot: issues it lists as free may have been taken since. Say so once it is old. */
+function Freshness({ repo, createdAt }: { repo: string; createdAt: string }) {
+  const [msg, setMsg] = useState<string | null>(null);
+  const hours = (Date.now() - new Date(createdAt).getTime()) / 3_600_000;
+  if (hours < 24) return null;
+  const age = hours < 48 ? "a day" : `${Math.floor(hours / 24)} days`;
+  return (
+    <div className="stale">
+      <span>
+        This report is {age} old. Issues it lists as free may have been taken since; <b>plan</b> always checks GitHub
+        first.
+      </span>
+      <button
+        className="ghost small"
+        onClick={() => api.runReport(repo).then((r) => (window.location.hash = `#/jobs/${r.run_id}`), (e: Error) => setMsg(e.message))}
+      >
+        Run it again
+      </button>
+      {msg && <span className="error">{msg}</span>}
     </div>
   );
 }
