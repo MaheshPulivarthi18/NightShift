@@ -103,6 +103,19 @@ uv run nightshift task show 1
 - Limits per task: `task_budget_usd` ($5), `task_minutes` (30), `coder_max_steps` (60). Nothing is
   posted to GitHub.
 
+## Task board (M3)
+
+```bash
+cd frontend && npm install && npm run build   # once, and after UI changes
+uv run nightshift serve                        # then open http://127.0.0.1:8000/app
+```
+
+Lanes by stage (waiting on you, in progress, published, stopped); a task page with the gate to act
+on at the top, then Plan, live Log, Verification, Review, Diff and PR. Keys: `j`/`k`, `enter`,
+`esc`, `1`-`6`, `n` for a new task. Gate 2 checks freshness first (the issue is still free,
+upstream has not changed the touched files) and publishes only after you type the repo name. The
+same gates are on the CLI: `task draft`, `task claim [--yes]`, `task publish [--yes]`.
+
 ## Web app
 
 ```bash

@@ -39,6 +39,7 @@ REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 app = FastAPI(title="NightShift")
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
+APP_DIR = HERE / "static" / "app"  # the task board, built from frontend/ with `npm run build`
 templates = Jinja2Templates(directory=HERE / "templates")
 _md = MarkdownIt("commonmark", {"html": True}).enable("table")
 
@@ -378,6 +379,19 @@ async def toggle_kill() -> RedirectResponse:
     return RedirectResponse("/repos", status_code=303)
 
 
+@app.get("/app", response_class=HTMLResponse)
+async def task_board() -> HTMLResponse:
+    index = APP_DIR / "index.html"
+    if not index.exists():
+        raise HTTPException(404, "Task board not built. Run: cd frontend && npm install && npm run build")
+    return HTMLResponse(index.read_text())
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "time": datetime.now(UTC).isoformat()}
+
+
+from nightshift.web.tasks_api import router as tasks_router  # noqa: E402  (imports render_markdown from here)
+
+app.include_router(tasks_router)

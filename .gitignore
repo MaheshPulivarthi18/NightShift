@@ -6,3 +6,7 @@ reports/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+
+# Task board: dependencies and the build output (build with `cd frontend && npm install && npm run build`)
+frontend/node_modules/
+src/nightshift/web/static/app/
