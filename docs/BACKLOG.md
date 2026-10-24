@@ -41,6 +41,9 @@ under "Found by you".
 - [ ] **Reviewer missed the event-loop bug** in the first multilspy fix (the issue's own `SyncLanguageServer`
       case). When feasible, run the issue's reproduction as part of review.
 - [ ] **Decide the Reviewer policy on error and fallback paths** that skip a new field (laya `ws_router.py`).
+- [ ] **A run that dies leaves its task "working" forever** (process killed, session closed), and
+      `task revise` refuses "working" tasks; its sandbox container can also be left running. Add a heartbeat
+      so stale runs become "needs you", remove orphaned `ns-task-*` containers at startup, and allow revise.
 - [ ] **Health reports go stale:** #705 was "free" in a 4-day-old report. Re-check listed issues when the
       report is opened, or re-run reports older than a day.
 - [ ] **Report claim detection misses timeline cross-references** with the read-only token (planning now
