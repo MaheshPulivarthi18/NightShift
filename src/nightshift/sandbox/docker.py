@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import shlex
 import time
 import uuid
@@ -41,6 +42,14 @@ DEP_FILES = {
     "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
     "Cargo.toml", "Cargo.lock", "go.mod", "go.sum",
 }  # fmt: skip
+
+
+# Failures worth one retry: the network, not the repo.
+NETWORK_ERROR = re.compile(
+    r"operation timed out|timed out|Request failed after \d+ retries|ECONNRESET|ETIMEDOUT|EAI_AGAIN"
+    r"|Temporary failure in name resolution|Connection reset|Read timed out|503 Service Unavailable",
+    re.IGNORECASE,
+)
 
 
 class SandboxError(RuntimeError):
@@ -114,6 +123,9 @@ class Sandbox:
             "--pids-limit", str(settings.sandbox_pids),
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--volume", f"{INSIDE_DIR}:{TOOLS_MOUNT}:ro",
+            # Package downloads: patient timeouts and retries (no secrets; these are plain tool settings).
+            "--env", "UV_HTTP_TIMEOUT=120", "--env", "UV_HTTP_RETRIES=6",
+            "--env", "PIP_DEFAULT_TIMEOUT=120", "--env", "npm_config_fetch_retries=5",
             image, "sleep", "infinity",
         )  # fmt: skip
         if not res.ok:
@@ -228,7 +240,12 @@ async def prepare_repo(
 
         for command in setup:
             log.info("sandbox_setup", repo=full_name, command=command)
-            await _must(box, command, f"setup command `{command}`")
+            res = await box.exec(command)
+            if not res.ok and not res.timed_out and NETWORK_ERROR.search(res.tail(4000)):
+                log.warning("sandbox_setup_network_retry", repo=full_name, command=command)
+                res = await box.exec(command)  # a download that timed out usually works the second time
+            if not res.ok:
+                raise SandboxError(f"setup command `{command}` failed (exit {res.code}):\n{res.tail()}")
         await box.commit(tag)
         log.info("sandbox_image_saved", repo=full_name, image=tag)
         return box, False
