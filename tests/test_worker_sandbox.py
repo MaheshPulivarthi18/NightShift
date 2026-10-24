@@ -9,7 +9,7 @@ from test_sandbox import pytestmark as needs_docker
 
 from nightshift.sandbox.docker import REPO_DIR, Sandbox
 from nightshift.worker.coder import CoderRun, ToolError, safe_path
-from nightshift.worker.verify import check_fix, is_test_path, run_commands
+from nightshift.worker.verify import check_docs, check_fix, is_doc_path, is_test_path, run_commands
 
 pytestmark = needs_docker
 
@@ -92,3 +92,32 @@ def test_test_paths() -> None:
         assert is_test_path(p), p
     for p in ("engine/laya/api/chat_api.py", "ui/src/lib/utils/toolLabels.ts", "contest.py"):
         assert not is_test_path(p), p
+
+
+async def test_a_docs_change_passes_with_docs_only(repo: tuple[Sandbox, str]) -> None:
+    box, base = repo
+    baseline = await run_commands(box, SUITE)
+    await box.write_file(f"{REPO_DIR}/README.md", "# calc\n\n`add(a, b)` returns the sum.\n")
+    check = await check_docs(box, base, SUITE, baseline)
+    assert check.passed, check.report()
+    assert check.kind == "docs" and check.source_files == ["README.md"]
+    assert "Docs change" in check.report()
+
+
+async def test_a_docs_change_may_not_touch_code(repo: tuple[Sandbox, str]) -> None:
+    box, base = repo
+    baseline = await run_commands(box, SUITE)
+    await box.write_file(f"{REPO_DIR}/README.md", "# calc\n")
+    await box.write_file(f"{REPO_DIR}/calc.py", CALC.replace("a - b", "a + b"))
+    check = await check_docs(box, base, SUITE, baseline)
+    assert not check.passed
+    assert any("must not touch other files" in p and "calc.py" in p for p in check.problems)
+    nothing = await check_docs(box, base, SUITE, baseline)  # still no docs-only change
+    assert not nothing.passed
+
+
+def test_doc_paths() -> None:
+    for p in ("README.md", "docs/guide/install.rst", "doc/index.txt", "CONTRIBUTING", "pkg/README", "CHANGELOG.md"):
+        assert is_doc_path(p), p
+    for p in ("src/multilspy/clangd.py", "docsify.py", "tests/test_readme.py", "readme_utils.ts"):
+        assert not is_doc_path(p), p

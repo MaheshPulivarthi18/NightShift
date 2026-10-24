@@ -38,6 +38,11 @@ class Plan(BaseModel):
         description="False if the issue is unclear, needs a maintainer decision, or is not a code change"
     )
     questions: list[str] = Field(description="What must be answered before working; empty if actionable")
+    kind: Literal["code", "docs"] = Field(
+        default="code",
+        description="docs: the change only touches documentation files (README, docs/, other prose files), "
+        "so there is no failing-first test; code: anything else, docstrings and comments included",
+    )
     approach: list[str] = Field(description="Ordered steps of the fix")
     files_to_change: list[FileChange]
     test_plan: TestPlan
@@ -65,6 +70,7 @@ You get the issue with its comments, the repository's contribution rules and com
 - The container has Python 3.12, Node 22, Bun, uv, git and a C/C++ compiler, plus the system packages and tools in <sandbox_environment>, and no sudo. If <setup_failed> is present, your earlier setup commands were run there and failed with that output: propose commands that work in that container.
 - If the issue is unclear or needs a maintainer's decision first, set actionable to false and ask in questions.
 - <developer_note>, when present, is the developer's own instruction, written in NightShift (not on GitHub): follow it. It sets the scope, e.g. "treat this as a docs task" makes a question issue actionable as that docs change. Set actionable to false only if the note's task itself cannot be done from the repo.
+- kind docs is for a change to documentation files only. It has no reproducing test: leave the test_plan's file and targeted_command empty, keep test_commands as a sanity run of the suites, and plan to check every statement and example against the code that implements it.
 - Use only paths that appear in the input or follow the repo's layout for a new test file.
 
 {UNTRUSTED_RULE}"""
@@ -93,6 +99,12 @@ def to_markdown(plan: Plan, *, title: str, warnings: list[str], checks: list[str
     if note:
         out += ["**Developer's note to the Planner:**", "", *[f"> {line}" for line in note.splitlines()], ""]
     out += [plan.understanding, ""]
+    if plan.kind == "docs":
+        out += [
+            "**Docs change.** No failing-first test: verification checks that only documentation files "
+            "change and the suites still pass; the Reviewer checks every claim against the code.",
+            "",
+        ]
     if checks:
         out += ["**Checked by code:**", *[f"- {c}" for c in checks], ""]
     if warnings:
@@ -102,7 +114,10 @@ def to_markdown(plan: Plan, *, title: str, warnings: list[str], checks: list[str
     out += ["## Approach", *[f"{i}. {s}" for i, s in enumerate(plan.approach, 1)], ""]
     out += ["## Files", *[f"- `{f.path}`: {f.why}" for f in plan.files_to_change], ""]
     t = plan.test_plan
-    out += ["## Test", f"- File: `{t.file}`", f"- Checks: {t.asserts}", f"- Run: `{t.targeted_command}`", ""]
+    if plan.kind == "docs" and not t.targeted_command:
+        out += ["## Test", "- None: a docs change has no failing-first test (see above).", ""]
+    else:
+        out += ["## Test", f"- File: `{t.file}`", f"- Checks: {t.asserts}", f"- Run: `{t.targeted_command}`", ""]
     out += ["## Commands", "Setup:", *[f"- `{c}`" for c in plan.setup_commands], "Tests:"]
     out += [f"- `{c}`" for c in plan.test_commands]
     out += ["", "## Risks", *[f"- {r}" for r in plan.risks]]

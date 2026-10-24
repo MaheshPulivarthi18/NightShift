@@ -12,6 +12,8 @@ task_minutes and coder_max_steps.
 
 from __future__ import annotations
 
+import re
+import shlex
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -59,7 +61,8 @@ def run_blocker(plan: dict[str, Any]) -> str | None:
             "and plan it again once they are answered."
         )
     if not plan.get("test_commands"):
-        return "The plan has no test command, so a fix could not be verified. Add one before approving."
+        what = "the suites could not be checked" if plan.get("kind") == "docs" else "a fix could not be verified"
+        return f"The plan has no test command, so {what}. Add one before approving."
     return None
 
 
@@ -356,6 +359,27 @@ async def revise(
 # ---------- work ----------
 
 
+CODE_PATH = re.compile(r"[\w./-]+\.(?:py|pyi|ts|tsx|js|jsx|go|rs|java|kt|c|h|cc|cpp|hpp|cs|rb|php|swift)\b")
+DOCS_SOURCE_CHARS = 40_000
+
+
+async def _docs_sources(box: Sandbox, plan_markdown: str) -> str:
+    """For reviewing a docs change: the code files the plan names, so each claim can be checked."""
+    tracked = set((await box.exec("git ls-files")).stdout.splitlines())
+    paths = [p for p in dict.fromkeys(CODE_PATH.findall(plan_markdown)) if p in tracked]
+    if not paths:  # the plan names a file by its base name only, e.g. clangd_language_server.py
+        names = {p.rsplit("/", 1)[-1] for p in CODE_PATH.findall(plan_markdown)}
+        paths = [p for p in sorted(tracked) if p.rsplit("/", 1)[-1] in names]
+    parts, total = [], 0
+    for path in paths[:8]:
+        text = (await box.exec(f"head -c 15000 -- {shlex.quote(path)}")).stdout
+        if total + len(text) > DOCS_SOURCE_CHARS:
+            break
+        parts.append(f'<file path="{path}">\n{text}\n</file>')
+        total += len(text)
+    return "\n".join(parts)
+
+
 async def _coder_outcome(task: Task, coder: CoderRun) -> None:
     """What the router learns from a Coder round: did this model's fix pass verification?"""
     passed = bool(coder.check and coder.check.passed)
@@ -425,13 +449,23 @@ async def run_task(task_id: int) -> Task:
         chosen = plan.get("models") or {}  # the operator's picks at Gate 1
         coder = CoderRun(box, llm, task.base_commit, plan["test_commands"], baseline, context)
         coder.prefer = chosen.get("coder")
+        coder.kind = plan.get("kind", "code")
         # A large task starts one step up the ladder, unless the operator chose the model.
         coder.level = 1 if plan.get("size") == "large" and not coder.prefer else 0
         escalated = False
-        instruction = (
-            "Fix the issue following the approved plan. Start by reading the files it names. "
-            f"The plan's targeted test command is `{plan['test_plan']['targeted_command']}`."
-        )
+        if plan.get("kind") == "docs":
+            instruction = (
+                "This is a docs change: write the documentation the approved plan describes, editing only "
+                "documentation files. Read the code each statement and example describes first, and run an "
+                "example when you can: nothing may claim behaviour the code does not have. Then call submit "
+                "with an empty targeted test command; code checks that only documentation files changed and "
+                "that the suites still pass."
+            )
+        else:
+            instruction = (
+                "Fix the issue following the approved plan. Start by reading the files it names. "
+                f"The plan's targeted test command is `{plan['test_plan']['targeted_command']}`."
+            )
         reviews: list[dict[str, Any]] = []
         status, why = "needs_operator", ""
         for round_no in range(1, settings.review_rounds + 2):
@@ -466,6 +500,7 @@ async def run_task(task_id: int) -> Task:
                 change_context=pack,
                 avoid=family(coder.model),
                 prefer=chosen.get("reviewer"),
+                sources=await _docs_sources(box, plan["markdown"]) if coder.kind == "docs" else "",
             )
             reviews.append(
                 {"round": round_no, **rv.model_dump(mode="json"), "markdown": reviewer.to_markdown(rv, round_no)}

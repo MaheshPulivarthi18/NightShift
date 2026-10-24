@@ -5,6 +5,10 @@
 2. Fail before, pass after: the source changes are taken out and the targeted test must FAIL; they are
    put back and it must PASS. A test that passes without the fix proves nothing.
 3. No regressions: every test command that passed at baseline must still pass.
+
+A docs change (the plan's kind is "docs") has no failing-first test: `check_docs` instead proves that
+only documentation files changed and that the suites still pass. Whether what the docs say is true is
+the Reviewer's job, against the code.
 """
 
 from __future__ import annotations
@@ -19,6 +23,8 @@ from nightshift.sandbox.docker import ExecResult, Sandbox
 _TEST_RE = re.compile(
     r"(^|/)(tests?|__tests__|spec|testing)/|(^|/)test_[^/]*$|_test\.[a-z]+$|\.(test|spec)\.[a-z]+$|(^|/)conftest\.py$"
 )
+# Documentation: prose files and anything under a docs folder. A docstring is code, so it is not here.
+_DOC_RE = re.compile(r"(^|/)docs?/|\.(md|mdx|rst|txt|adoc)$|(^|/)(README|CHANGELOG|CONTRIBUTING|AUTHORS)[^/]*$")
 PATCH = "/tmp/ns-source.patch"
 # Build and test output that is never part of a change, even in a repo whose .gitignore misses it.
 EXCLUDES = [
@@ -41,6 +47,10 @@ async def run_fresh(box: Sandbox, command: str) -> CommandResult:
 
 def is_test_path(path: str) -> bool:
     return bool(_TEST_RE.search(path.lower()))
+
+
+def is_doc_path(path: str) -> bool:
+    return bool(_DOC_RE.search(path) or _DOC_RE.search(path.lower()))
 
 
 class CommandResult(BaseModel):
@@ -93,6 +103,7 @@ async def diff(box: Sandbox, base: str) -> str:
 
 class FixCheck(BaseModel):
     passed: bool
+    kind: str = "code"  # or "docs": no failing-first test; only documentation files may change
     test_files: list[str]
     source_files: list[str]
     fails_without_fix: CommandResult | None = None
@@ -105,8 +116,12 @@ class FixCheck(BaseModel):
     def report(self) -> str:
         """Plain text for the Coder (what to fix) and the Reviewer (what was proven)."""
         out = [f"Verification {'PASSED' if self.passed else 'FAILED'}."]
-        out.append(f"Test files changed: {', '.join(self.test_files) or 'none'}")
-        out.append(f"Source files changed: {', '.join(self.source_files) or 'none'}")
+        if self.kind == "docs":
+            out.append("Docs change: no failing-first test; only documentation files may change, suites must pass.")
+            out.append(f"Documentation files changed: {', '.join(self.source_files) or 'none'}")
+        else:
+            out.append(f"Test files changed: {', '.join(self.test_files) or 'none'}")
+            out.append(f"Source files changed: {', '.join(self.source_files) or 'none'}")
         out += [f"- Problem: {p}" for p in self.problems]
         if self.fails_without_fix:
             out.append(f"Without the fix: {self.fails_without_fix.line()}\n{self.fails_without_fix.tail[-1500:]}")
@@ -165,6 +180,31 @@ async def check_fix(
     if not check.passes_with_fix.ok:
         check.problems.append("the targeted test FAILS with the fix")
 
+    await _suites(check, box, suite, baseline)
+    check.passed = not check.problems
+    return check
+
+
+async def check_docs(box: Sandbox, base: str, suite: list[str], baseline: list[CommandResult]) -> FixCheck:
+    """A docs change: documentation files changed, nothing else did, and the suites still pass."""
+    files = await changed_files(box, base)
+    docs = [p for p in files if is_doc_path(p)]
+    check = FixCheck(passed=False, kind="docs", test_files=[], source_files=docs)
+    if not docs:
+        check.problems.append("no documentation file was changed")
+    if others := [p for p in files if not is_doc_path(p)]:
+        check.problems.append(
+            "a docs change must not touch other files; undo these or ask for a code task: " + ", ".join(others)
+        )
+    if check.problems:
+        return check
+    await _suites(check, box, suite, baseline)
+    check.passed = not check.problems
+    return check
+
+
+async def _suites(check: FixCheck, box: Sandbox, suite: list[str], baseline: list[CommandResult]) -> None:
+    """Run the suites and compare with the baseline: a command that passed before must pass now."""
     check.suite = await run_commands(box, suite)
     was_ok = {r.command: r.ok for r in baseline}
     for r in check.suite:
@@ -174,6 +214,3 @@ async def check_fix(
             check.already_failing.append(r.command)
     if check.regressions:
         check.problems.append("these passed before the change and fail now: " + ", ".join(check.regressions))
-
-    check.passed = not check.problems
-    return check

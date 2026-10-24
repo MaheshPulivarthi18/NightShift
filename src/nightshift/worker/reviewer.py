@@ -40,7 +40,7 @@ class Review(BaseModel):
     summary: str = Field(description="Two or three sentences a maintainer would write")
     solves_issue: bool = Field(description="Does the change fully solve what the issue asks, including its comments?")
     test_reproduces_issue: bool = Field(
-        description="Does the new test check the issue's behaviour, not an incidental detail?"
+        description="Does the new test check the issue's behaviour, not an incidental detail? For a docs change, which has no test: true"
     )
     related: list[RelatedCheck] = Field(description="One entry per item in the 'related code NOT changed' list")
     issues: list[ReviewIssue]
@@ -55,6 +55,8 @@ Check:
 - For EACH item under "related code NOT changed", decide whether it needs the same change, and say why from what the code does. An error or fallback path that builds the same response shape usually does.
 - Does the test check the issue's behaviour, and is it written like the repo's tests?
 - Scope: no unrelated changes, no weakened tests, no new dependencies, the repo's rules and style followed.
+
+For a docs change (the verification says so), there is no test to judge. Check instead that every statement and code example is true of the code under <code_the_docs_describe>: names, signatures, defaults, behaviour. A claim the code does not support, or an example that would not run, is a major issue. Also check the text fits where it is placed and the repo's docs style.
 
 Verdict changes_needed if there is any blocker or major issue; otherwise approve. Report minor issues without blocking. Be specific: path, line, problem, and the fix.
 
@@ -73,6 +75,7 @@ async def review(
     change_context: str,
     avoid: str | None = None,
     prefer: str | None = None,
+    sources: str = "",
 ) -> Review:
     """`avoid`: the model family that wrote the code; another family reviews it when the ladder allows.
     `prefer`: the model the operator chose at Gate 1."""
@@ -83,6 +86,8 @@ async def review(
         f"<verification>\n{verification}\n</verification>\n\n<diff>\n{clipped}\n</diff>\n\n"
         f"<change_context>\n{change_context}\n</change_context>"
     )
+    if sources:
+        user += f"\n\n<code_the_docs_describe>\n{sources}\n</code_the_docs_describe>"
     return await llm.parse(
         agent="reviewer",
         cfg=get_settings().reviewer,

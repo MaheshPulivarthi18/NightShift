@@ -57,3 +57,5 @@ def test_the_developers_note_heads_the_plan() -> None:
     text = to_markdown(plan, title="o/r#1 Docs", warnings=[], note="Treat this as a docs task.\nKeep it short.")
     assert "**Developer's note to the Planner:**\n\n> Treat this as a docs task.\n> Keep it short." in text
     assert "Developer's note" not in to_markdown(plan, title="o/r#1 Docs", warnings=[])
+    assert "Docs change" not in text  # kind defaults to code
+    assert "**Docs change.**" in to_markdown(plan.model_copy(update={"kind": "docs"}), title="t", warnings=[])

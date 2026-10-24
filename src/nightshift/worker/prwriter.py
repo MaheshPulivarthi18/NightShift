@@ -78,6 +78,8 @@ def _tail(text: str) -> str:
 def evidence_section(check: FixCheck) -> str:
     """The testing section, built only from what ran. Output is fenced so it renders as plain text."""
     out = ["## Testing", ""]
+    if check.kind == "docs":
+        out += ["Documentation-only change (" + ", ".join(f"`{f}`" for f in check.source_files) + ").", ""]
     if check.fails_without_fix and check.passes_with_fix:
         cmd = check.fails_without_fix.command
         out += [

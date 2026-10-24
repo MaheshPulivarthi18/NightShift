@@ -21,7 +21,7 @@ from nightshift.context.change import to_markdown as change_markdown
 from nightshift.llm import INVALID_ARGS, LLMGateway, MessageParam, TextBlockParam, ToolParam
 from nightshift.router import RouteHint
 from nightshift.sandbox.docker import OUTPUT_LIMIT, REPO_DIR, Sandbox
-from nightshift.worker.verify import CommandResult, FixCheck, check_fix
+from nightshift.worker.verify import CommandResult, FixCheck, check_docs, check_fix
 
 READ_WINDOW = 400
 RUN_OUTPUT = 8000
@@ -122,7 +122,10 @@ TOOLS: list[ToolParam] = [
             "type": "object",
             "properties": {
                 "summary": {"type": "string", "description": "What was wrong and what you changed, for the PR"},
-                "targeted_test_command": {"type": "string"},
+                "targeted_test_command": {
+                    "type": "string",
+                    "description": "Runs only the new test from the repo root; empty for a docs change",
+                },
             },
             "required": ["summary", "targeted_test_command"],
         },
@@ -159,6 +162,7 @@ class CoderRun:
     stopped: str | None = None  # why it stopped without a passing check
     level: int = 0  # where on the Coder's model ladder it works (router.RouteHint)
     prefer: str | None = None  # the model the operator chose at Gate 1
+    kind: str = "code"  # "docs": submit checks a docs-only change (verify.check_docs)
     model: str = ""  # the model that took the last step
     max_steps: int = 0  # 0: settings.coder_max_steps; an escalation adds steps
 
@@ -241,9 +245,12 @@ class CoderRun:
             return text
         if name == "submit":
             self.summary = str(args.get("summary", ""))
-            self.check = await check_fix(
-                box, self.base, str(args.get("targeted_test_command", "")), self.suite, self.baseline
-            )
+            if self.kind == "docs":
+                self.check = await check_docs(box, self.base, self.suite, self.baseline)
+            else:
+                self.check = await check_fix(
+                    box, self.base, str(args.get("targeted_test_command", "")), self.suite, self.baseline
+                )
             if not self.check.passed:
                 raise ToolError(self.check.report())
             return self.check.report()
