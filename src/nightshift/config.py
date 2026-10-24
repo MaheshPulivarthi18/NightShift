@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     task_minutes: int = 30
     coder_max_steps: int = 60
     review_rounds: int = 2
+    # The router reorders each agent's ladder from past outcomes (see outcomes.py). False: config order only.
+    router_learning: bool = True
     # Setup agent: tries an environment for a repo this many times, within this budget, once per repo.
     setup_attempts: int = 5
     setup_budget_usd: float = 1.0

@@ -20,6 +20,7 @@ import hashlib
 import json
 import time
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
 
@@ -28,7 +29,7 @@ import structlog
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 
-from nightshift import events
+from nightshift import events, outcomes
 from nightshift.catalog import ModelConfigError, ModelInfo
 from nightshift.config import AgentModel, get_settings
 from nightshift.db import AgentVerdict, Control, LLMCall, session_scope
@@ -303,6 +304,9 @@ def input_hash(*parts: Any) -> str:
 # concurrent calls all see the same "spent so far" and together overshoot a cap.
 _in_flight_usd = 0.0
 TYPICAL_OUTPUT_TOKENS = 3000
+# What the current parse/create call has spent so far, across repairs and fallbacks. Per asyncio
+# context, so concurrent calls on one gateway (the scout runs several at once) never mix their costs.
+_spent: ContextVar[list[float] | None] = ContextVar("_spent", default=None)
 
 
 def estimate_cost(info: ModelInfo, cfg: AgentModel, chars: int) -> float:
@@ -336,6 +340,7 @@ class LLMGateway:
         self.client = client or make_client()
         self.run_budget_usd = run_budget_usd if run_budget_usd is not None else self.settings.per_report_budget_usd
         self._last_cost = 0.0
+        self.last_model = ""  # the model that gave the most recent answer
 
     @property
     def last_cost(self) -> float:
@@ -393,7 +398,8 @@ class LLMGateway:
             _in_flight_usd -= estimate
         choice = (data.get("choices") or [{}])[0]
         await _record(ledger, data, info, choice.get("finish_reason"), started)
-        self._last_cost += ledger.cost_usd
+        if (spent := _spent.get()) is not None:
+            spent.append(ledger.cost_usd)
         return data
 
     async def parse(
@@ -417,20 +423,16 @@ class LLMGateway:
             await events.record(self.run_id, "llm_end", f"{agent}: {label} (cached)", agent=agent, cached=True)
             return hit
 
-        candidates = await routes(cfg, route, structured=True)
-        result, used = None, candidates[0].info
-        for n, r in enumerate(candidates):
-            await self._start(agent, label, r)
-            try:
-                result = await self._structured(agent, cfg, r.info, system, user, schema)
-                used = r.info
-                break
-            except (ModelAPIError, ModelRefused, AgentOutputError) as e:
-                await self._failed(agent, label, r, e, candidates[n + 1] if n + 1 < len(candidates) else None)
-        assert result is not None
-        await events.record(
-            self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=used.id, cost_usd=round(self._last_cost, 5)
-        )
+        candidates = await routes(cfg, route, structured=True, agent=agent)
+        spent: list[float] = []
+        token = _spent.set(spent)
+        try:
+            result, used = await self._first_answer(agent, label, cfg, candidates, system, user, schema)
+        finally:
+            _spent.reset(token)
+            cost = self._last_cost = round(sum(spent), 5)
+        self.last_model = used.id
+        await events.record(self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=used.id, cost_usd=cost)
         async with session_scope() as s:
             s.add(
                 AgentVerdict(
@@ -438,8 +440,20 @@ class LLMGateway:
                     model=used.id,
                 )
             )  # fmt: skip
-        log.info("llm_call", agent=agent, model=used.id, cost_usd=round(self._last_cost, 5))
+        log.info("llm_call", agent=agent, model=used.id, cost_usd=cost)
         return result
+
+    async def _first_answer(
+        self, agent: str, label: str, cfg: AgentModel, candidates: list[Route], system: str, user: str, schema: type[T]
+    ) -> tuple[T, ModelInfo]:
+        """The answer of the first model on the route that gives a usable one."""
+        for n, r in enumerate(candidates):
+            await self._start(agent, label, r)
+            try:
+                return await self._structured(agent, cfg, r.info, system, user, schema), r.info
+            except (ModelAPIError, ModelRefused, AgentOutputError) as e:
+                await self._failed(agent, label, r, e, candidates[n + 1] if n + 1 < len(candidates) else None)
+        raise AssertionError("unreachable: the last route either answers or raises")
 
     async def _start(self, agent: str, label: str, r: Route) -> None:
         await events.record(
@@ -449,6 +463,9 @@ class LLMGateway:
     async def _failed(self, agent: str, label: str, r: Route, e: Exception, after: Route | None) -> None:
         """Move on to the next model on the route, or re-raise when there is none or it would not help."""
         account = isinstance(e, ModelAPIError) and e.status in (401, 402, 403)  # the key or credits, not the model
+        if not account:  # API errors are in the ledger too; the "api:" prefix keeps them from counting twice
+            kind = "api" if isinstance(e, ModelAPIError) else type(e).__name__
+            await outcomes.record(agent, r.info.id, ok=False, kind="call", run_id=self.run_id, detail=f"{kind}: {e}")
         if after is None or account:
             await events.record(self.run_id, "warning", f"{agent}: {label} failed on {r.info.id}: {e}", agent=agent)
             raise e
@@ -504,7 +521,28 @@ class LLMGateway:
         """One turn of a tool-using agent (not cached: each turn is unique), from the first model on the
         route that answers. A refusal moves on to the next model too; the last one's refusal is returned."""
         self._last_cost = 0.0
-        candidates = await routes(cfg, route, tools=True)
+        candidates = await routes(cfg, route, tools=True, agent=agent)
+        spent: list[float] = []
+        token = _spent.set(spent)
+        try:
+            turn = await self._first_turn(agent, label, cfg, candidates, system, messages, tools)
+        finally:
+            _spent.reset(token)
+            cost = self._last_cost = round(sum(spent), 5)
+        self.last_model = turn.model
+        await events.record(self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=turn.model, cost_usd=cost)
+        return turn
+
+    async def _first_turn(
+        self,
+        agent: str,
+        label: str,
+        cfg: AgentModel,
+        candidates: list[Route],
+        system: list[TextBlockParam],
+        messages: list[MessageParam],
+        tools: list[ToolParam],
+    ) -> Turn:
         for n, r in enumerate(candidates):
             after = candidates[n + 1] if n + 1 < len(candidates) else None
             body = {**_request(r.info, cfg, to_wire(system, messages, r.info.id)), "tools": to_wire_tools(tools)}
@@ -521,10 +559,6 @@ class LLMGateway:
             if turn.stop_reason == "refusal" and after:
                 await self._failed(agent, label, r, ModelRefused(f"declined by {r.info.id}"), after)
                 continue
-            await events.record(
-                self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=r.info.id,
-                cost_usd=round(self._last_cost, 5),
-            )  # fmt: skip
             return turn
         raise AssertionError("unreachable: the last route either returns or raises")
 

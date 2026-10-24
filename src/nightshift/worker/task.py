@@ -20,7 +20,7 @@ from typing import Any
 import structlog
 from sqlalchemy import func, select
 
-from nightshift import events
+from nightshift import events, outcomes
 from nightshift.config import get_settings
 from nightshift.context import archmap
 from nightshift.context.change import change_context
@@ -286,6 +286,7 @@ async def decide(task_id: int, approve: bool, note: str | None = None, **overrid
         await _save(task, status="approved", plan=plan, note=note, approved_at=datetime.now(UTC))
     else:
         await _save(task, status="rejected", note=note)
+    await _planner_outcome(task, approve)
     return task
 
 
@@ -332,6 +333,31 @@ async def revise(
 
 
 # ---------- work ----------
+
+
+async def _coder_outcome(task: Task, coder: CoderRun) -> None:
+    """What the router learns from a Coder round: did this model's fix pass verification?"""
+    passed = bool(coder.check and coder.check.passed)
+    why = "fix verified" if passed else (coder.stopped or "verification did not pass")
+    await outcomes.record("coder", coder.model, ok=passed, kind="task", run_id=task.run_id, detail=why)
+
+
+async def _planner_outcome(task: Task, approved: bool) -> None:
+    """Gate 1 teaches the router about the Planner: an approved plan is a success, a rejected one a
+    failure. A plan that asked questions instead (not actionable) is not held against the model."""
+    if not approved and task.plan.get("actionable") is False:
+        return
+    async with session_scope() as s:
+        model = (
+            await s.execute(
+                select(LLMCall.model)
+                .where(LLMCall.run_id == task.run_id, LLMCall.agent == "planner", LLMCall.error.is_(None))
+                .order_by(LLMCall.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    detail = "plan approved" if approved else "plan rejected"
+    await outcomes.record("planner", model or "", ok=approved, kind="task", run_id=task.run_id, detail=detail)
 
 
 async def run_task(task_id: int) -> Task:
@@ -387,6 +413,7 @@ async def run_task(task_id: int) -> Task:
         for round_no in range(1, settings.review_rounds + 2):
             await events.record(task.run_id, "node_start", f"coder round {round_no}", node="coder")
             await coder.work(instruction, deadline)
+            await _coder_outcome(task, coder)
             failed = coder.check is None or not coder.check.passed
             if failed and not escalated and time.monotonic() < deadline and coder.escalate():
                 escalated = True  # once per task: a stronger model takes over the same conversation
@@ -398,6 +425,7 @@ async def run_task(task_id: int) -> Task:
                     "then finish the fix and call submit.",
                     deadline,
                 )
+                await _coder_outcome(task, coder)
             if coder.check is None or not coder.check.passed:
                 why = coder.stopped or "verification did not pass"
                 break

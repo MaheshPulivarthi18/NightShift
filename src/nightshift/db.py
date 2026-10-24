@@ -124,6 +124,23 @@ class LLMCall(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class ModelOutcome(Base):
+    """How a model did at an agent's job: a task outcome (the Coder's fix verified, the plan approved,
+    the environment ready) or a failed call (an API error, a refusal, unusable output). The router
+    learns its ordering from these."""
+
+    __tablename__ = "model_outcomes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    agent: Mapped[str] = mapped_column(String(40), index=True)
+    model: Mapped[str] = mapped_column(String(120))
+    run_id: Mapped[str | None] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(20))  # "task" or "call"
+    ok: Mapped[bool] = mapped_column(Boolean)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class ModelCatalog(Base):
     """OpenRouter's model list: price, context, capabilities and benchmark scores, refreshed daily."""
 

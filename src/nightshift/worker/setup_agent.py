@@ -22,7 +22,7 @@ import structlog
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from nightshift import events
+from nightshift import events, outcomes
 from nightshift.config import get_settings
 from nightshift.db import Repo, RepoContext, session_scope
 from nightshift.health.agents import UNTRUSTED_RULE
@@ -287,6 +287,10 @@ async def find_environment(
         result.detail = f"{why}; last: {result.detail}" if attempts else why
     result.attempts = [a.summary() for a in attempts]
     result.cost_usd = round(spent, 4)
+    if result.status != "blocked":  # a blocked repo says nothing about the model
+        why = "environment ready" if result.status == "ready" else result.detail
+        model = getattr(llm, "last_model", "")
+        await outcomes.record("setup", model, ok=result.status == "ready", kind="task", run_id=llm.run_id, detail=why)
     return result
 
 

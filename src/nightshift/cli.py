@@ -349,6 +349,31 @@ def sandbox_setup(repo: str) -> None:
     _run_sandboxed(run())
 
 
+@app.command("models")
+def models_cmd(agent: Annotated[str | None, typer.Argument(help="One agent, e.g. coder")] = None) -> None:
+    """Each agent's models in the order the router uses now, why, and how each has done."""
+    from nightshift import outcomes
+    from nightshift.router import AGENTS, agent_routes
+
+    async def run() -> None:
+        for name in [agent] if agent else list(AGENTS):
+            if name not in AGENTS:
+                typer.echo(f"Unknown agent {name}. Agents: {', '.join(AGENTS)}", err=True)
+                raise typer.Exit(1)
+            st = await outcomes.stats(name)
+            typer.echo(f"\n{name}")
+            for i, r in enumerate(await agent_routes(name), 1):
+                s = st.get(r.info.id) or outcomes.ModelStats()
+                tasks = f"tasks {s.tasks_text()} ok" if s.tasks else "no task outcomes"
+                latency = f"{s.latency_ms / 1000:.1f}s avg" if s.latency_ms else "-"
+                typer.echo(
+                    f"  {i}. {r.info.id:34} {r.why}\n"
+                    f"     {s.calls} calls, {s.failed_calls} failed · {tasks} · ${s.cost_usd:.2f} · {latency}"
+                )
+
+    asyncio.run(run())
+
+
 def _run_sandboxed(coro: Coroutine[Any, Any, None]) -> None:
     """Run a sandbox command, turning sandbox and budget failures into a message and exit code 1."""
     from nightshift.sandbox.docker import SandboxError
