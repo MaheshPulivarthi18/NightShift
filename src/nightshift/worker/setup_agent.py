@@ -28,6 +28,7 @@ from nightshift.db import Repo, RepoContext, session_scope
 from nightshift.health.agents import UNTRUSTED_RULE
 from nightshift.llm import BudgetExceeded, LLMGateway
 from nightshift.memory import get_or_create_repo
+from nightshift.router import RouteHint
 from nightshift.sandbox.docker import DEP_FILES, Sandbox, SandboxError, prepare_repo
 from nightshift.sandbox.envimage import TOOLS, ensure_env_image
 from nightshift.worker.verify import CommandResult, run_commands
@@ -196,6 +197,8 @@ async def _ask(
         schema=Proposal,
         cache_key_parts=(),
         label=f"environment, attempt {len(attempts) + 1}",
+        # After two failed attempts, a stronger model reads the errors.
+        route=RouteHint(level=1 if sum(not a.passed for a in attempts) >= 2 else 0),
     )
 
 

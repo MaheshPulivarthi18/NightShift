@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from nightshift.config import get_settings
 from nightshift.health.agents import UNTRUSTED_RULE
 from nightshift.llm import LLMGateway
+from nightshift.router import RouteHint
 
 DIFF_CHARS = 60_000
 
@@ -61,8 +62,18 @@ Verdict changes_needed if there is any blocker or major issue; otherwise approve
 
 
 async def review(
-    llm: LLMGateway, *, repo: str, issue: str, plan: str, diff: str, verification: str, rules: str, change_context: str
+    llm: LLMGateway,
+    *,
+    repo: str,
+    issue: str,
+    plan: str,
+    diff: str,
+    verification: str,
+    rules: str,
+    change_context: str,
+    avoid: str | None = None,
 ) -> Review:
+    """`avoid`: the model family that wrote the code; another family reviews it when the ladder allows."""
     clipped = diff if len(diff) <= DIFF_CHARS else diff[:DIFF_CHARS] + "\n[diff cut here]"
     user = (
         f"Repository: {repo}\n\n<untrusted_github_data>\n<issue>\n{issue}\n</issue>\n</untrusted_github_data>\n\n"
@@ -78,6 +89,7 @@ async def review(
         schema=Review,
         cache_key_parts=(),
         label="review",
+        route=RouteHint(avoid=avoid),
     )
 
 

@@ -31,6 +31,7 @@ from nightshift.health.agents import RepoBrief
 from nightshift.health.graph import repo_brief
 from nightshift.llm import BudgetExceeded, KillSwitchActive, LLMGateway
 from nightshift.memory import get_or_create_repo
+from nightshift.router import family
 from nightshift.sandbox.docker import Sandbox, SandboxError, prepare_repo
 from nightshift.sandbox.envimage import ensure_env_image
 from nightshift.worker import planner, prwriter, publish, reviewer
@@ -375,6 +376,8 @@ async def run_task(task_id: int) -> Task:
             + "\n</baseline_tests>"
         )
         coder = CoderRun(box, llm, task.base_commit, plan["test_commands"], baseline, context)
+        coder.level = 1 if plan.get("size") == "large" else 0  # a large task starts one step up the ladder
+        escalated = False
         instruction = (
             "Fix the issue following the approved plan. Start by reading the files it names. "
             f"The plan's targeted test command is `{plan['test_plan']['targeted_command']}`."
@@ -384,6 +387,17 @@ async def run_task(task_id: int) -> Task:
         for round_no in range(1, settings.review_rounds + 2):
             await events.record(task.run_id, "node_start", f"coder round {round_no}", node="coder")
             await coder.work(instruction, deadline)
+            failed = coder.check is None or not coder.check.passed
+            if failed and not escalated and time.monotonic() < deadline and coder.escalate():
+                escalated = True  # once per task: a stronger model takes over the same conversation
+                stronger = settings.coder.models[coder.level]
+                await events.record(task.run_id, "node_start", f"coder escalated to {stronger}", node="coder")
+                await coder.work(
+                    "A stronger model takes over this task, with the conversation so far. The previous attempt "
+                    f"stopped because: {coder.stopped or 'verification did not pass'}. Check the work so far, "
+                    "then finish the fix and call submit.",
+                    deadline,
+                )
             if coder.check is None or not coder.check.passed:
                 why = coder.stopped or "verification did not pass"
                 break
@@ -398,6 +412,7 @@ async def run_task(task_id: int) -> Task:
                 verification=coder.check.report(),
                 rules=result.get("brief", ""),
                 change_context=pack,
+                avoid=family(coder.model),
             )
             reviews.append(
                 {"round": round_no, **rv.model_dump(mode="json"), "markdown": reviewer.to_markdown(rv, round_no)}

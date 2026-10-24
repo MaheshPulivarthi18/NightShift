@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, CommandResult, GateInfo, TaskDetail } from "./api";
+import { api, CommandResult, GateInfo, ModelUse, TaskDetail } from "./api";
 import { Diff, Html, Log, StatusBadge, money } from "./ui";
 
 const TABS = ["Plan", "Log", "Verification", "Review", "Diff", "PR"] as const;
@@ -57,6 +57,7 @@ export function TaskPage({ id }: { id: number }) {
           <StatusBadge status={task.status} busy={task.busy} />
           <span className="mono">{money(task.cost_usd)}</span>
           {task.coder_steps != null && <span className="mono dim">{task.coder_steps} coder steps</span>}
+          <ModelsUsed uses={task.models} />
           {task.issue_url && (
             <a href={task.issue_url} target="_blank" rel="noreferrer">
               issue ↗
@@ -100,6 +101,21 @@ export function TaskPage({ id }: { id: number }) {
           ))}
       </section>
     </div>
+  );
+}
+
+// "coder sonnet-5.5 → opus-5.5": the router's choices, so a run's models are never a guess.
+function ModelsUsed({ uses }: { uses: ModelUse[] }) {
+  if (!uses.length) return null;
+  const short = (m: string) => m.split("/").pop();
+  return (
+    <span className="models dim">
+      {uses.map((u) => (
+        <span key={u.agent} title={`${u.agent}: ${u.models.join(" → ")}${u.failed.length ? ` (failed: ${u.failed.join(", ")})` : ""} · ${money(u.cost_usd)}`}>
+          {u.agent} <span className="mono">{u.models.map(short).join(" → ")}</span>
+        </span>
+      ))}
+    </span>
   );
 }
 

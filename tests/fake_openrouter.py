@@ -19,6 +19,8 @@ MODELS = [
     ModelInfo(id="anthropic/claude-sonnet-5.5", prompt=2e-6, completion=1e-5, supported=ALL,
               efforts=["low", "medium", "high", "xhigh", "max"]),
     ModelInfo(id="deepseek/deepseek-v4.1-flash", prompt=2e-8, completion=1e-6, supported=ALL),
+    ModelInfo(id="openai/gpt-5.6-sol", prompt=4e-6, completion=2e-5, supported=ALL),
+    ModelInfo(id="openai/gpt-5.6-luna", prompt=2e-7, completion=1.2e-6, supported=ALL),
     ModelInfo(id="old/no-tools", prompt=1e-6, completion=1e-6, supported=["response_format"]),
 ]  # fmt: skip
 

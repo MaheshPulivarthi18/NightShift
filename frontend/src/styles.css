@@ -347,3 +347,6 @@ details.env .env-body p { margin: 4px 0; }
 details.env .pass { color: var(--ok); }
 details.env .fail { color: var(--bad); }
 .nowrap { white-space: nowrap; }
+
+/* Models the router chose for each agent of a task */
+.models { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; }

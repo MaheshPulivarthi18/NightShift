@@ -135,6 +135,15 @@ export interface TaskDetail extends TaskSummary {
   pr: { title: string; html: string; commit: string } | null;
   pr_url: string | null;
   coder_steps: number | null;
+  models: ModelUse[];
+}
+
+// Which models one agent used in a task (from the ledger): in order, the ones that failed, the cost.
+export interface ModelUse {
+  agent: string;
+  models: string[];
+  failed: string[];
+  cost_usd: number;
 }
 
 export interface GateInfo {

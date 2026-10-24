@@ -28,10 +28,11 @@ import structlog
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 
-from nightshift import catalog, events
+from nightshift import events
 from nightshift.catalog import ModelConfigError, ModelInfo
 from nightshift.config import AgentModel, get_settings
 from nightshift.db import AgentVerdict, Control, LLMCall, session_scope
+from nightshift.router import Route, RouteHint, routes
 
 log = structlog.get_logger()
 
@@ -84,6 +85,7 @@ class Block(BaseModel):
     name: str | None = None
     input: dict[str, Any] | None = None
     details: list[dict[str, Any]] | None = None  # reasoning: OpenRouter's reasoning_details, sent back as-is
+    model: str | None = None  # reasoning: the model that wrote it; another model is not sent it
 
 
 class Usage(BaseModel):
@@ -121,8 +123,11 @@ def _tool_message(block: dict[str, Any]) -> dict[str, Any]:
     return {"role": "tool", "tool_call_id": block["tool_use_id"], "content": content}
 
 
-def to_wire(system: str | list[TextBlockParam], messages: list[MessageParam]) -> list[dict[str, Any]]:
-    """NightShift's block-format conversation as OpenRouter chat messages."""
+def to_wire(
+    system: str | list[TextBlockParam], messages: list[MessageParam], model: str | None = None
+) -> list[dict[str, Any]]:
+    """NightShift's block-format conversation as OpenRouter chat messages, for `model`: reasoning that
+    another model wrote (before the router switched models) is left out."""
     sys_parts = [{"type": "text", "text": system}] if isinstance(system, str) else _text_parts(system)
     out: list[dict[str, Any]] = [{"role": "system", "content": sys_parts}] if sys_parts else []
     for m in messages:
@@ -139,7 +144,12 @@ def to_wire(system: str | list[TextBlockParam], messages: list[MessageParam]) ->
             msg: dict[str, Any] = {"role": "assistant", "content": text or (None if calls else "")}
             if calls:
                 msg["tool_calls"] = calls
-            details = [d for b in content if b.get("type") == "reasoning" for d in b.get("details") or []]
+            details = [
+                d
+                for b in content
+                if b.get("type") == "reasoning" and (model is None or b.get("model") in (None, model))
+                for d in b.get("details") or []
+            ]
             if details:
                 msg["reasoning_details"] = details
             out.append(msg)
@@ -170,7 +180,7 @@ def to_turn(message: dict[str, Any], finish_reason: str | None, usage: dict[str,
     """An OpenRouter assistant message as a Turn in the block format."""
     blocks: list[Block] = []
     if message.get("reasoning_details"):
-        blocks.append(Block(type="reasoning", details=message["reasoning_details"]))
+        blocks.append(Block(type="reasoning", details=message["reasoning_details"], model=model))
     if message.get("content"):
         blocks.append(Block(type="text", text=message["content"]))
     for call in message.get("tool_calls") or []:
@@ -396,9 +406,10 @@ class LLMGateway:
         schema: type[T],
         cache_key_parts: tuple[Any, ...],
         label: str = "",
+        route: RouteHint | None = None,
     ) -> T:
-        """One structured answer validated against `schema`. `label` says what the call is about
-        (e.g. "PR #12") for the Jobs page. Output that does not validate gets one repair attempt."""
+        """One structured answer validated against `schema`, from the first model on the route that
+        gives one. `label` says what the call is about (e.g. "PR #12") for the Jobs page."""
         self._last_cost = 0.0
         key = input_hash(agent, cfg.model, system, user, schema.model_json_schema(), *cache_key_parts)
         if (hit := await self._cached(agent, key, schema)) is not None:
@@ -406,8 +417,50 @@ class LLMGateway:
             await events.record(self.run_id, "llm_end", f"{agent}: {label} (cached)", agent=agent, cached=True)
             return hit
 
-        info = await catalog.require(cfg.model, structured=True)
-        await events.record(self.run_id, "llm_start", f"{agent}: {label}", agent=agent, model=info.id)
+        candidates = await routes(cfg, route, structured=True)
+        result, used = None, candidates[0].info
+        for n, r in enumerate(candidates):
+            await self._start(agent, label, r)
+            try:
+                result = await self._structured(agent, cfg, r.info, system, user, schema)
+                used = r.info
+                break
+            except (ModelAPIError, ModelRefused, AgentOutputError) as e:
+                await self._failed(agent, label, r, e, candidates[n + 1] if n + 1 < len(candidates) else None)
+        assert result is not None
+        await events.record(
+            self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=used.id, cost_usd=round(self._last_cost, 5)
+        )
+        async with session_scope() as s:
+            s.add(
+                AgentVerdict(
+                    repo_id=self.repo_id, agent=agent, input_hash=key, output=result.model_dump(mode="json"),
+                    model=used.id,
+                )
+            )  # fmt: skip
+        log.info("llm_call", agent=agent, model=used.id, cost_usd=round(self._last_cost, 5))
+        return result
+
+    async def _start(self, agent: str, label: str, r: Route) -> None:
+        await events.record(
+            self.run_id, "llm_start", f"{agent}: {label} on {r.info.id} ({r.why})", agent=agent, model=r.info.id
+        )
+
+    async def _failed(self, agent: str, label: str, r: Route, e: Exception, after: Route | None) -> None:
+        """Move on to the next model on the route, or re-raise when there is none or it would not help."""
+        account = isinstance(e, ModelAPIError) and e.status in (401, 402, 403)  # the key or credits, not the model
+        if after is None or account:
+            await events.record(self.run_id, "warning", f"{agent}: {label} failed on {r.info.id}: {e}", agent=agent)
+            raise e
+        await events.record(
+            self.run_id, "warning", f"{agent}: {r.info.id} failed ({e}); trying {after.info.id}", agent=agent
+        )
+        log.warning("model_fallback", agent=agent, failed=r.info.id, next=after.info.id, error=str(e)[:300])
+
+    async def _structured(
+        self, agent: str, cfg: AgentModel, info: ModelInfo, system: str, user: str, schema: type[T]
+    ) -> T:
+        """One model's structured answer. Output that does not validate gets one repair turn."""
         # Only the system prompt repeats across calls; caching the whole (unique) request only adds write cost.
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]},
@@ -416,47 +469,26 @@ class LLMGateway:
         shape = strict_schema(schema.model_json_schema())
         fmt = {"type": "json_schema", "json_schema": {"name": schema.__name__, "strict": True, "schema": shape}}
         estimate = estimate_cost(info, cfg, len(system) + len(user))
-        result: T | None = None
-        try:
-            for attempt in (1, 2):
-                body = {**_request(info, cfg, messages), "response_format": fmt}
-                data = await self._send(agent, info, body, estimate)
-                choice = data["choices"][0]
-                turn = to_turn(choice["message"], choice.get("finish_reason"), data.get("usage") or {}, info.id)
-                if turn.stop_reason == "refusal":
-                    raise ModelRefused(f"{agent} request was declined by {info.id}.")
-                if turn.stop_reason == "max_tokens":
-                    raise AgentOutputError(f"{agent} output was cut off at max_tokens ({cfg.max_tokens}).")
-                text = "".join(b.text or "" for b in turn.content if b.type == "text")
-                try:
-                    result = schema.model_validate_json(_strip_fence(text))
-                    break
-                except ValidationError as e:
-                    if attempt == 2:
-                        raise AgentOutputError(f"{agent} returned output that does not match its schema: {e}") from e
-                    messages += [
-                        {"role": "assistant", "content": text},
-                        {"role": "user", "content": f"That did not match the schema:\n{e}\nAnswer again, only JSON."},
-                    ]
-        except Exception as e:
-            await events.record(self.run_id, "warning", f"{agent}: {label} failed: {e}", agent=agent)
-            raise
-        assert result is not None
-        await events.record(
-            self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=info.id, cost_usd=round(self._last_cost, 5)
-        )
-        async with session_scope() as s:
-            s.add(
-                AgentVerdict(
-                    repo_id=self.repo_id,
-                    agent=agent,
-                    input_hash=key,
-                    output=result.model_dump(mode="json"),
-                    model=info.id,
-                )
-            )
-        log.info("llm_call", agent=agent, model=info.id, cost_usd=round(self._last_cost, 5))
-        return result
+        for attempt in (1, 2):
+            body = {**_request(info, cfg, messages), "response_format": fmt}
+            data = await self._send(agent, info, body, estimate)
+            choice = data["choices"][0]
+            turn = to_turn(choice["message"], choice.get("finish_reason"), data.get("usage") or {}, info.id)
+            if turn.stop_reason == "refusal":
+                raise ModelRefused(f"{agent} request was declined by {info.id}.")
+            if turn.stop_reason == "max_tokens":
+                raise AgentOutputError(f"{agent} output was cut off at max_tokens ({cfg.max_tokens}).")
+            text = "".join(b.text or "" for b in turn.content if b.type == "text")
+            try:
+                return schema.model_validate_json(_strip_fence(text))
+            except ValidationError as e:
+                if attempt == 2:
+                    raise AgentOutputError(f"{agent} returned output that does not match its schema: {e}") from e
+                messages += [
+                    {"role": "assistant", "content": text},
+                    {"role": "user", "content": f"That did not match the schema:\n{e}\nAnswer again, only JSON."},
+                ]
+        raise AssertionError("unreachable")
 
     async def create(
         self,
@@ -467,25 +499,34 @@ class LLMGateway:
         messages: list[MessageParam],
         tools: list[ToolParam],
         label: str = "",
+        route: RouteHint | None = None,
     ) -> Turn:
-        """One turn of a tool-using agent (not cached: each turn is unique)."""
+        """One turn of a tool-using agent (not cached: each turn is unique), from the first model on the
+        route that answers. A refusal moves on to the next model too; the last one's refusal is returned."""
         self._last_cost = 0.0
-        info = await catalog.require(cfg.model, tools=True)
-        body = {**_request(info, cfg, to_wire(system, messages)), "tools": to_wire_tools(tools)}
-        estimate = estimate_cost(info, cfg, len(json.dumps(body["messages"], default=str)))
-        await events.record(self.run_id, "llm_start", f"{agent}: {label}", agent=agent, model=info.id)
-        try:
-            data = await self._send(agent, info, body, estimate)
-        except ModelAPIError as e:
-            await events.record(self.run_id, "warning", f"{agent}: {label} failed: {e}", agent=agent)
-            raise
-        choice = data["choices"][0]
-        turn = to_turn(choice["message"], choice.get("finish_reason"), data.get("usage") or {}, info.id)
-        turn.provider = data.get("provider")
-        await events.record(
-            self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=info.id, cost_usd=round(self._last_cost, 5)
-        )
-        return turn
+        candidates = await routes(cfg, route, tools=True)
+        for n, r in enumerate(candidates):
+            after = candidates[n + 1] if n + 1 < len(candidates) else None
+            body = {**_request(r.info, cfg, to_wire(system, messages, r.info.id)), "tools": to_wire_tools(tools)}
+            estimate = estimate_cost(r.info, cfg, len(json.dumps(body["messages"], default=str)))
+            await self._start(agent, label, r)
+            try:
+                data = await self._send(agent, r.info, body, estimate)
+            except ModelAPIError as e:
+                await self._failed(agent, label, r, e, after)
+                continue
+            choice = data["choices"][0]
+            turn = to_turn(choice["message"], choice.get("finish_reason"), data.get("usage") or {}, r.info.id)
+            turn.provider = data.get("provider")
+            if turn.stop_reason == "refusal" and after:
+                await self._failed(agent, label, r, ModelRefused(f"declined by {r.info.id}"), after)
+                continue
+            await events.record(
+                self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=r.info.id,
+                cost_usd=round(self._last_cost, 5),
+            )  # fmt: skip
+            return turn
+        raise AssertionError("unreachable: the last route either returns or raises")
 
 
 def _strip_fence(text: str) -> str:
@@ -540,8 +581,8 @@ class ChatStream:
     async def __aiter__(self) -> AsyncIterator[str]:
         global _in_flight_usd
         gw, cfg = self.gateway, self.cfg
-        info = await catalog.require(cfg.model, tools=True)
-        body = {**_request(info, cfg, to_wire(self.system, self.messages)), "tools": to_wire_tools(self.tools)}
+        info = (await routes(cfg, tools=True))[0].info  # no fallback once text has streamed to the reader
+        body = {**_request(info, cfg, to_wire(self.system, self.messages, info.id)), "tools": to_wire_tools(self.tools)}
         estimate = estimate_cost(info, cfg, len(json.dumps(body["messages"], default=str)))
         await gw._check_controls(estimate)
         ledger = LLMCall(run_id=gw.run_id, agent=self.agent, model=info.id)

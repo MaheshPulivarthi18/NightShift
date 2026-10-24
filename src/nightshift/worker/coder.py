@@ -19,6 +19,7 @@ from nightshift.config import get_settings
 from nightshift.context.change import change_context
 from nightshift.context.change import to_markdown as change_markdown
 from nightshift.llm import INVALID_ARGS, LLMGateway, MessageParam, TextBlockParam, ToolParam
+from nightshift.router import RouteHint
 from nightshift.sandbox.docker import OUTPUT_LIMIT, REPO_DIR, Sandbox
 from nightshift.worker.verify import CommandResult, FixCheck, check_fix
 
@@ -156,6 +157,18 @@ class CoderRun:
     summary: str = ""
     check: FixCheck | None = None
     stopped: str | None = None  # why it stopped without a passing check
+    level: int = 0  # where on the Coder's model ladder it works (router.RouteHint)
+    model: str = ""  # the model that took the last step
+    max_steps: int = 0  # 0: settings.coder_max_steps; an escalation adds steps
+
+    def escalate(self) -> bool:
+        """Move one step up the Coder's model ladder, with half a run's steps more. False at the top."""
+        settings = get_settings()
+        if self.level + 1 >= len(settings.coder.models):
+            return False
+        self.level += 1
+        self.max_steps = self.steps + settings.coder_max_steps // 2
+        return True
 
     async def tool(self, name: str, args: dict[str, Any]) -> tuple[str, bool]:
         """Returns (result text, is_error)."""
@@ -253,8 +266,8 @@ class CoderRun:
         self.messages.append({"role": "user", "content": [{"type": "text", "text": instruction}]})
         self.check, self.stopped, idle = None, None, 0
         while True:
-            if self.steps >= settings.coder_max_steps:
-                self.stopped = f"step limit ({settings.coder_max_steps}) reached"
+            if self.steps >= (limit := self.max_steps or settings.coder_max_steps):
+                self.stopped = f"step limit ({limit}) reached"
                 return
             if time.monotonic() > deadline:
                 self.stopped = f"time limit ({settings.task_minutes} min) reached"
@@ -267,7 +280,9 @@ class CoderRun:
                 messages=self._request_messages(),
                 tools=TOOLS,
                 label=f"step {self.steps}",
+                route=RouteHint(level=self.level),
             )
+            self.model = msg.model
             content = [b.model_dump(mode="json", exclude_none=True) for b in msg.content]
             self.messages.append({"role": "assistant", "content": content})
             if msg.stop_reason == "refusal":

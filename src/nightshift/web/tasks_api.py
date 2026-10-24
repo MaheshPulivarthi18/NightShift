@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from nightshift.db import Repo, Task, session_scope
+from nightshift.db import LLMCall, Repo, Task, session_scope
 from nightshift.web.common import Guard, render_markdown
 from nightshift.worker import task as worker
 from nightshift.worker.publish import PublishError
@@ -69,6 +69,27 @@ async def list_tasks() -> list[dict[str, Any]]:
     return [_summary(t, r) for t, r in rows]
 
 
+async def _models_used(run_id: str) -> list[dict[str, Any]]:
+    """Which models each agent used in this task, in order, with what they cost (from the ledger)."""
+    async with session_scope() as s:
+        rows = (
+            await s.execute(
+                select(LLMCall.agent, LLMCall.model, LLMCall.cost_usd, LLMCall.error)
+                .where(LLMCall.run_id == run_id)
+                .order_by(LLMCall.id)
+            )
+        ).all()
+    agents: dict[str, dict[str, Any]] = {}
+    for agent, model, cost, error in rows:
+        a = agents.setdefault(agent, {"agent": agent, "models": [], "failed": [], "cost_usd": 0.0})
+        if model not in a["models"]:
+            a["models"].append(model)
+        if error and model not in a["failed"]:
+            a["failed"].append(model)
+        a["cost_usd"] = round(a["cost_usd"] + (cost or 0), 4)
+    return list(agents.values())
+
+
 @router.get("/tasks/{task_id}")
 async def get_task(task_id: int) -> dict[str, Any]:
     try:
@@ -78,6 +99,7 @@ async def get_task(task_id: int) -> dict[str, Any]:
     res = t.result or {}
     pr = res.get("pr")
     return {
+        "models": await _models_used(t.run_id),
         **_summary(t, r),
         "issue_url": t.issue.get("url"),
         "run_id": t.run_id,
