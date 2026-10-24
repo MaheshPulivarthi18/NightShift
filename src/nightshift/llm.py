@@ -1,35 +1,51 @@
-"""The model gateway: the only way any agent reaches Claude.
+"""The model gateway: the only way any agent reaches a model.
 
-Every call goes through `LLMGateway.parse`, which
+Every call goes through OpenRouter's chat completions API, whatever the model's vendor (Anthropic,
+OpenAI, Google, DeepSeek...). Inside NightShift a conversation keeps one block format: text,
+tool_use, tool_result and reasoning blocks, the shape saved chats already use. It is translated to
+OpenRouter's messages here and nowhere else.
+
+Every call
   1. refuses to run when the fleet is killed or a budget cap is reached,
-  2. returns a cached verdict when the exact same input was analysed before,
-  3. calls Claude with structured output validated against a Pydantic model,
-  4. records tokens and cost in the ledger.
+  2. (`parse`) returns a cached verdict when the exact same input was analysed before,
+  3. checks in the catalog that the model can do the job (tool calls, structured output),
+  4. records tokens, the cost OpenRouter billed, the provider it chose and the latency in the ledger.
 """
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import hashlib
 import json
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
 
-import anthropic
+import httpx
 import structlog
-from anthropic.types import MessageParam, TextBlockParam, ToolParam
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 
-from nightshift import events
-from nightshift.config import FALLBACK_MODELS, PRICES, AgentModel, get_settings, openrouter_model
+from nightshift import catalog, events
+from nightshift.catalog import ModelConfigError, ModelInfo
+from nightshift.config import AgentModel, get_settings
 from nightshift.db import AgentVerdict, Control, LLMCall, session_scope
 
 log = structlog.get_logger()
 
 T = TypeVar("T", bound=BaseModel)
 
-FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# A conversation message in NightShift's block format: {"role": "user"|"assistant", "content": str | [block]}.
+MessageParam = dict[str, Any]
+# A tool: {"name", "description", "input_schema"}.
+ToolParam = dict[str, Any]
+TextBlockParam = dict[str, Any]
+
+INVALID_ARGS = "__invalid_json__"  # a tool_use whose arguments were not a JSON object
+RETRY_STATUS = {408, 429, 500, 502, 503, 504}
+STOP_REASONS = {"tool_calls": "tool_use", "length": "max_tokens", "content_filter": "refusal"}
 
 
 class KillSwitchActive(RuntimeError):
@@ -45,7 +61,226 @@ class ModelRefused(RuntimeError):
 
 
 class AgentOutputError(RuntimeError):
-    """The model finished without output matching the schema (e.g. hit max_tokens)."""
+    """The model finished without output matching the schema (e.g. cut off)."""
+
+
+class ModelAPIError(RuntimeError):
+    """OpenRouter or the model provider returned an error. `status` 401: bad key, 402: out of credits."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(f"{status}: {message}")
+        self.status, self.message = status, message
+
+
+# ---------- the block format ----------
+
+
+class Block(BaseModel):
+    """One piece of a model turn: text, a tool call, or reasoning to send back with the next request."""
+
+    type: str  # text | tool_use | reasoning
+    text: str | None = None
+    id: str | None = None
+    name: str | None = None
+    input: dict[str, Any] | None = None
+    details: list[dict[str, Any]] | None = None  # reasoning: OpenRouter's reasoning_details, sent back as-is
+
+
+class Usage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+class Turn(BaseModel):
+    """A model's answer. stop_reason: end_turn, tool_use, max_tokens or refusal."""
+
+    content: list[Block]
+    stop_reason: str
+    usage: Usage = Usage()
+    model: str = ""
+    provider: str | None = None
+
+
+def _text_parts(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"type": "text", "text": b["text"], **({"cache_control": b["cache_control"]} if b.get("cache_control") else {})}
+        for b in blocks
+        if b.get("type") == "text" and b.get("text")
+    ]
+
+
+def _tool_message(block: dict[str, Any]) -> dict[str, Any]:
+    text = block.get("content", "")
+    if not isinstance(text, str):
+        text = "\n".join(str(p.get("text", p)) if isinstance(p, dict) else str(p) for p in text)
+    if block.get("is_error"):
+        text = f"Error: {text}"
+    content: Any = text
+    if block.get("cache_control"):
+        content = [{"type": "text", "text": text, "cache_control": block["cache_control"]}]
+    return {"role": "tool", "tool_call_id": block["tool_use_id"], "content": content}
+
+
+def to_wire(system: str | list[TextBlockParam], messages: list[MessageParam]) -> list[dict[str, Any]]:
+    """NightShift's block-format conversation as OpenRouter chat messages."""
+    sys_parts = [{"type": "text", "text": system}] if isinstance(system, str) else _text_parts(system)
+    out: list[dict[str, Any]] = [{"role": "system", "content": sys_parts}] if sys_parts else []
+    for m in messages:
+        content = m["content"]
+        if isinstance(content, str):
+            out.append({"role": m["role"], "content": content})
+        elif m["role"] == "assistant":
+            text = "".join(b.get("text") or "" for b in content if b.get("type") == "text")
+            calls = [
+                {"id": b["id"], "type": "function",
+                 "function": {"name": b["name"], "arguments": json.dumps(b.get("input") or {})}}
+                for b in content if b.get("type") == "tool_use"
+            ]  # fmt: skip
+            msg: dict[str, Any] = {"role": "assistant", "content": text or (None if calls else "")}
+            if calls:
+                msg["tool_calls"] = calls
+            details = [d for b in content if b.get("type") == "reasoning" for d in b.get("details") or []]
+            if details:
+                msg["reasoning_details"] = details
+            out.append(msg)
+        else:  # tool results must directly follow the assistant's tool calls, then any user text
+            out += [_tool_message(b) for b in content if b.get("type") == "tool_result"]
+            if parts := _text_parts(content):
+                out.append({"role": "user", "content": parts})
+    return out
+
+
+def to_wire_tools(tools: list[ToolParam]) -> list[dict[str, Any]]:
+    return [
+        {"type": "function", "function": {"name": t["name"], "description": t.get("description", ""),
+                                          "parameters": t["input_schema"]}}
+        for t in tools
+    ]  # fmt: skip
+
+
+def _arguments(raw: str | None) -> dict[str, Any]:
+    try:
+        value = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {INVALID_ARGS: raw or ""}
+    return value if isinstance(value, dict) else {INVALID_ARGS: raw or ""}
+
+
+def to_turn(message: dict[str, Any], finish_reason: str | None, usage: dict[str, Any], model: str) -> Turn:
+    """An OpenRouter assistant message as a Turn in the block format."""
+    blocks: list[Block] = []
+    if message.get("reasoning_details"):
+        blocks.append(Block(type="reasoning", details=message["reasoning_details"]))
+    if message.get("content"):
+        blocks.append(Block(type="text", text=message["content"]))
+    for call in message.get("tool_calls") or []:
+        fn = call.get("function") or {}
+        blocks.append(
+            Block(type="tool_use", id=call.get("id"), name=fn.get("name"), input=_arguments(fn.get("arguments")))
+        )
+    stop = STOP_REASONS.get(finish_reason or "", "end_turn")
+    if message.get("refusal"):
+        stop = "refusal"
+    elif stop == "end_turn" and any(b.type == "tool_use" for b in blocks):
+        stop = "tool_use"
+    return Turn(
+        content=blocks,
+        stop_reason=stop,
+        usage=Usage(input_tokens=usage.get("prompt_tokens") or 0, output_tokens=usage.get("completion_tokens") or 0),
+        model=model,
+    )
+
+
+def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """A Pydantic JSON schema in the strict form structured output needs: every property required,
+    no extra properties, no defaults."""
+    out = copy.deepcopy(schema)
+
+    def fix(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                fix(item)
+            return
+        if not isinstance(node, dict):
+            return
+        node.pop("default", None)
+        if isinstance(node.get("properties"), dict):
+            node["additionalProperties"] = False
+            node["required"] = list(node["properties"])
+            for prop in node["properties"].values():
+                fix(prop)
+        for key in ("items", "anyOf", "allOf", "oneOf", "prefixItems"):
+            fix(node.get(key))
+        for defs in ("$defs", "definitions"):
+            for sub in (node.get(defs) or {}).values():
+                fix(sub)
+
+    fix(out)
+    return out
+
+
+# ---------- OpenRouter ----------
+
+
+class OpenRouter:
+    """The HTTP client. Tests pass a fake with the same `complete` and `stream` methods."""
+
+    def __init__(self, http: httpx.AsyncClient | None = None) -> None:
+        settings = get_settings()
+        key = settings.openrouter_api_key.get_secret_value()
+        if not key and http is None:
+            raise ModelConfigError("OPENROUTER_API_KEY is not set.")
+        self.url = settings.openrouter_base_url.rstrip("/") + "/chat/completions"
+        self.http = http or httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {key}", "X-Title": "NightShift"}, timeout=httpx.Timeout(600, connect=30)
+        )
+
+    @staticmethod
+    def _error(status: int, body: Any) -> ModelAPIError:
+        err = body.get("error") if isinstance(body, dict) else None
+        message = (err or {}).get("message") if isinstance(err, dict) else str(body)[:500]
+        return ModelAPIError(int((err or {}).get("code") or status) if isinstance(err, dict) else status, message or "")
+
+    async def complete(self, body: dict[str, Any]) -> dict[str, Any]:
+        for attempt in range(5):
+            try:
+                res = await self.http.post(self.url, json=body)
+            except httpx.TransportError as e:
+                if attempt == 4:
+                    raise ModelAPIError(0, f"cannot reach OpenRouter: {e}") from e
+            else:
+                data = res.json() if res.content else {}
+                if res.status_code == 200 and "error" not in data:
+                    return dict(data)
+                status = res.status_code if res.status_code != 200 else 502
+                if status not in RETRY_STATUS or attempt == 4:
+                    raise self._error(status, data)
+            await asyncio.sleep(min(2**attempt, 20))
+        raise AssertionError("unreachable")
+
+    async def stream(self, body: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        async with self.http.stream("POST", self.url, json={**body, "stream": True}) as res:
+            if res.status_code != 200:
+                raw = await res.aread()
+                try:
+                    data: Any = json.loads(raw)
+                except ValueError:
+                    data = raw.decode(errors="replace")
+                raise self._error(res.status_code, data)
+            async for line in res.aiter_lines():
+                if not line.startswith("data: ") or line == "data: [DONE]":
+                    continue  # comments like ": OPENROUTER PROCESSING" keep the connection alive
+                chunk = json.loads(line[6:])
+                if "error" in chunk:
+                    raise self._error(502, chunk)
+                yield chunk
+
+
+def make_client() -> OpenRouter:
+    return OpenRouter()
+
+
+# ---------- gateway ----------
 
 
 def input_hash(*parts: Any) -> str:
@@ -54,43 +289,26 @@ def input_hash(*parts: Any) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def call_cost(model: str, usage: Any) -> float:
-    price = PRICES.get(model)
-    if price is None:
-        return 0.0
-    return (
-        (usage.input_tokens or 0) * price.input
-        + (usage.output_tokens or 0) * price.output
-        + (getattr(usage, "cache_read_input_tokens", 0) or 0) * price.cache_read
-        + (getattr(usage, "cache_creation_input_tokens", 0) or 0) * price.cache_write
-    ) / 1_000_000
-
-
-def make_client() -> anthropic.AsyncAnthropic:
-    settings = get_settings()
-    if settings.provider == "openrouter":
-        key = settings.openrouter_api_key.get_secret_value()
-        if not key:
-            raise RuntimeError("NIGHTSHIFT_PROVIDER=openrouter but OPENROUTER_API_KEY is not set.")
-        return anthropic.AsyncAnthropic(
-            base_url=settings.openrouter_base_url, auth_token=key, api_key=None, max_retries=4
-        )
-    return anthropic.AsyncAnthropic(max_retries=4)
-
-
 # Estimated cost of calls that have passed the budget check but not yet been recorded. Without it,
 # concurrent calls all see the same "spent so far" and together overshoot a cap.
 _in_flight_usd = 0.0
 TYPICAL_OUTPUT_TOKENS = 3000
 
 
-def estimate_cost(cfg: AgentModel, system: str, user: str) -> float:
-    price = PRICES.get(cfg.model)
-    if price is None:
-        return 0.0
-    input_tokens = (len(system) + len(user)) / 3  # conservative chars-per-token
-    output_tokens = min(cfg.max_tokens, TYPICAL_OUTPUT_TOKENS)
-    return (input_tokens * price.input + output_tokens * price.output) / 1_000_000
+def estimate_cost(info: ModelInfo, cfg: AgentModel, chars: int) -> float:
+    return info.cost(chars / 3, min(cfg.max_tokens, TYPICAL_OUTPUT_TOKENS))  # conservative chars-per-token
+
+
+def _request(info: ModelInfo, cfg: AgentModel, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "model": info.id,
+        "messages": messages,
+        "max_tokens": min(cfg.max_tokens, info.max_output or cfg.max_tokens),
+        "usage": {"include": True},
+    }
+    if effort := info.effort(cfg.effort):
+        body["reasoning"] = {"effort": effort}
+    return body
 
 
 class LLMGateway:
@@ -98,7 +316,7 @@ class LLMGateway:
         self,
         run_id: str,
         repo_id: int,
-        client: anthropic.AsyncAnthropic | None = None,
+        client: OpenRouter | None = None,
         run_budget_usd: float | None = None,
     ) -> None:
         """`run_budget_usd` caps this run's spend; it defaults to the per-report cap."""
@@ -111,7 +329,7 @@ class LLMGateway:
 
     @property
     def last_cost(self) -> float:
-        """Cost of the most recent `parse` call; 0 when it was answered from the cache."""
+        """Cost of the most recent call; 0 when it was answered from the cache."""
         return self._last_cost
 
     async def _check_controls(self, estimate: float) -> None:
@@ -147,6 +365,27 @@ class LLMGateway:
             ).scalar_one_or_none()
         return schema.model_validate(row.output) if row else None
 
+    async def _send(self, agent: str, info: ModelInfo, body: dict[str, Any], estimate: float) -> dict[str, Any]:
+        """One request, checked against the controls first and recorded in the ledger after."""
+        global _in_flight_usd
+        await self._check_controls(estimate)
+        ledger = LLMCall(run_id=self.run_id, agent=agent, model=info.id)
+        _in_flight_usd += estimate
+        started = time.monotonic()
+        try:
+            data = await self.client.complete(body)
+        except ModelAPIError as e:
+            ledger.error = str(e)[:2000]
+            async with session_scope() as s:
+                s.add(ledger)
+            raise
+        finally:
+            _in_flight_usd -= estimate
+        choice = (data.get("choices") or [{}])[0]
+        await _record(ledger, data, info, choice.get("finish_reason"), started)
+        self._last_cost += ledger.cost_usd
+        return data
+
     async def parse(
         self,
         *,
@@ -158,7 +397,8 @@ class LLMGateway:
         cache_key_parts: tuple[Any, ...],
         label: str = "",
     ) -> T:
-        """`label` says what the call is about (e.g. "PR #12") for the Jobs page."""
+        """One structured answer validated against `schema`. `label` says what the call is about
+        (e.g. "PR #12") for the Jobs page. Output that does not validate gets one repair attempt."""
         self._last_cost = 0.0
         key = input_hash(agent, cfg.model, system, user, schema.model_json_schema(), *cache_key_parts)
         if (hit := await self._cached(agent, key, schema)) is not None:
@@ -166,62 +406,45 @@ class LLMGateway:
             await events.record(self.run_id, "llm_end", f"{agent}: {label} (cached)", agent=agent, cached=True)
             return hit
 
-        global _in_flight_usd
-        estimate = estimate_cost(cfg, system, user)
-        await self._check_controls(estimate)
-        _in_flight_usd += estimate
-        await events.record(self.run_id, "llm_start", f"{agent}: {label}", agent=agent, model=cfg.model)
+        info = await catalog.require(cfg.model, structured=True)
+        await events.record(self.run_id, "llm_start", f"{agent}: {label}", agent=agent, model=info.id)
+        # Only the system prompt repeats across calls; caching the whole (unique) request only adds write cost.
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]},
+            {"role": "user", "content": user},
+        ]
+        shape = strict_schema(schema.model_json_schema())
+        fmt = {"type": "json_schema", "json_schema": {"name": schema.__name__, "strict": True, "schema": shape}}
+        estimate = estimate_cost(info, cfg, len(system) + len(user))
+        result: T | None = None
         try:
-            result = await self._call(agent=agent, cfg=cfg, system=system, user=user, schema=schema, key=key)
+            for attempt in (1, 2):
+                body = {**_request(info, cfg, messages), "response_format": fmt}
+                data = await self._send(agent, info, body, estimate)
+                choice = data["choices"][0]
+                turn = to_turn(choice["message"], choice.get("finish_reason"), data.get("usage") or {}, info.id)
+                if turn.stop_reason == "refusal":
+                    raise ModelRefused(f"{agent} request was declined by {info.id}.")
+                if turn.stop_reason == "max_tokens":
+                    raise AgentOutputError(f"{agent} output was cut off at max_tokens ({cfg.max_tokens}).")
+                text = "".join(b.text or "" for b in turn.content if b.type == "text")
+                try:
+                    result = schema.model_validate_json(_strip_fence(text))
+                    break
+                except ValidationError as e:
+                    if attempt == 2:
+                        raise AgentOutputError(f"{agent} returned output that does not match its schema: {e}") from e
+                    messages += [
+                        {"role": "assistant", "content": text},
+                        {"role": "user", "content": f"That did not match the schema:\n{e}\nAnswer again, only JSON."},
+                    ]
         except Exception as e:
             await events.record(self.run_id, "warning", f"{agent}: {label} failed: {e}", agent=agent)
             raise
-        finally:
-            _in_flight_usd -= estimate
+        assert result is not None
         await events.record(
-            self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=cfg.model, cost_usd=self._last_cost
+            self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=info.id, cost_usd=round(self._last_cost, 5)
         )
-        return result
-
-    async def _call(self, *, agent: str, cfg: AgentModel, system: str, user: str, schema: type[T], key: str) -> T:
-        kwargs: dict[str, Any] = {}
-        model = cfg.model
-        if self.settings.provider == "openrouter":
-            model = openrouter_model(cfg.model)
-        elif cfg.model in FALLBACK_MODELS:
-            kwargs = {"betas": [FALLBACK_BETA], "fallbacks": "default"}
-
-        ledger = LLMCall(run_id=self.run_id, agent=agent, model=cfg.model)
-        try:
-            response = await self.client.beta.messages.parse(
-                model=model,
-                max_tokens=cfg.max_tokens,
-                output_config={"effort": cfg.effort},
-                # Only the system prompt repeats across calls; caching the whole (unique) request only adds write cost.
-                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": user}],
-                output_format=schema,
-                **kwargs,
-            )
-        except anthropic.APIError as e:
-            ledger.error = f"{type(e).__name__}: {e}"
-            async with session_scope() as s:
-                s.add(ledger)
-            raise
-        except ValidationError as e:  # the SDK parses while reading: a cut-off answer is not valid JSON
-            ledger.error = f"output did not match {schema.__name__}: {str(e)[:300]}"
-            async with session_scope() as s:
-                s.add(ledger)
-            raise AgentOutputError(f"{agent} returned output that does not match its schema (likely cut off).") from e
-
-        await _record(ledger, response, cfg.model)
-        self._last_cost = round(ledger.cost_usd, 5)
-
-        result = response.parsed_output
-        if response.stop_reason == "refusal":
-            raise ModelRefused(f"{agent} request was declined ({response.stop_details}).")
-        if response.stop_reason == "max_tokens" or result is None:
-            raise AgentOutputError(f"{agent} returned no parsable output (stop_reason={response.stop_reason}).")
         async with session_scope() as s:
             s.add(
                 AgentVerdict(
@@ -229,12 +452,10 @@ class LLMGateway:
                     agent=agent,
                     input_hash=key,
                     output=result.model_dump(mode="json"),
-                    model=cfg.model,
+                    model=info.id,
                 )
             )
-        log.info(
-            "llm_call", agent=agent, model=cfg.model, cost_usd=round(ledger.cost_usd, 5), request_id=ledger.request_id
-        )
+        log.info("llm_call", agent=agent, model=info.id, cost_usd=round(self._last_cost, 5))
         return result
 
     async def create(
@@ -246,57 +467,60 @@ class LLMGateway:
         messages: list[MessageParam],
         tools: list[ToolParam],
         label: str = "",
-    ) -> Any:
-        """One turn of a tool-using agent (not cached: each turn is unique). Returns the Message."""
-        global _in_flight_usd
-        size = sum(len(json.dumps(b, default=str)) for b in system) + len(json.dumps(messages, default=str))
-        estimate = estimate_cost(cfg, "", "x" * size)
-        await self._check_controls(estimate)
-        model = openrouter_model(cfg.model) if self.settings.provider == "openrouter" else cfg.model
-        ledger = LLMCall(run_id=self.run_id, agent=agent, model=cfg.model)
-        _in_flight_usd += estimate
-        await events.record(self.run_id, "llm_start", f"{agent}: {label}", agent=agent, model=cfg.model)
+    ) -> Turn:
+        """One turn of a tool-using agent (not cached: each turn is unique)."""
+        self._last_cost = 0.0
+        info = await catalog.require(cfg.model, tools=True)
+        body = {**_request(info, cfg, to_wire(system, messages)), "tools": to_wire_tools(tools)}
+        estimate = estimate_cost(info, cfg, len(json.dumps(body["messages"], default=str)))
+        await events.record(self.run_id, "llm_start", f"{agent}: {label}", agent=agent, model=info.id)
         try:
-            response = await self.client.messages.create(
-                model=model,
-                max_tokens=cfg.max_tokens,
-                output_config={"effort": cfg.effort},
-                system=system,
-                messages=messages,
-                tools=tools,
-            )
-        except anthropic.APIError as e:
-            ledger.error = f"{type(e).__name__}: {e}"
-            async with session_scope() as s:
-                s.add(ledger)
+            data = await self._send(agent, info, body, estimate)
+        except ModelAPIError as e:
             await events.record(self.run_id, "warning", f"{agent}: {label} failed: {e}", agent=agent)
             raise
-        finally:
-            _in_flight_usd -= estimate
-        await _record(ledger, response, cfg.model)
-        self._last_cost = round(ledger.cost_usd, 5)
+        choice = data["choices"][0]
+        turn = to_turn(choice["message"], choice.get("finish_reason"), data.get("usage") or {}, info.id)
+        turn.provider = data.get("provider")
         await events.record(
-            self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=cfg.model, cost_usd=self._last_cost
+            self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=info.id, cost_usd=round(self._last_cost, 5)
         )
-        return response
+        return turn
 
 
-async def _record(ledger: LLMCall, response: Any, model: str) -> None:
+def _strip_fence(text: str) -> str:
+    """Some models wrap JSON in a Markdown code fence even in structured-output mode."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        text = text.rsplit("```", 1)[0]
+    return text.strip()
+
+
+async def _record(
+    ledger: LLMCall, data: dict[str, Any], info: ModelInfo, finish_reason: str | None, started: float
+) -> None:
     """Fill the ledger row from a response's usage and save it."""
-    usage = response.usage
-    ledger.request_id = getattr(response, "_request_id", None)
-    ledger.stop_reason = response.stop_reason
-    ledger.input_tokens = usage.input_tokens or 0
-    ledger.output_tokens = usage.output_tokens or 0
-    ledger.cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
-    ledger.cache_write_tokens = getattr(usage, "cache_creation_input_tokens", 0) or 0
-    ledger.cost_usd = call_cost(model, usage)
+    usage = data.get("usage") or {}
+    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
+    ledger.request_id = (data.get("id") or "")[:80] or None
+    ledger.provider = (data.get("provider") or "")[:60] or None
+    ledger.stop_reason = STOP_REASONS.get(finish_reason or "", "end_turn")
+    ledger.input_tokens = usage.get("prompt_tokens") or 0
+    ledger.output_tokens = usage.get("completion_tokens") or 0
+    ledger.cache_read_tokens = cached
+    ledger.cache_write_tokens = (usage.get("prompt_tokens_details") or {}).get("cache_write_tokens") or 0
+    # What OpenRouter billed; the catalog price is only a fallback when it is missing.
+    billed = usage.get("cost")
+    estimated = info.cost(ledger.input_tokens, ledger.output_tokens, cached)
+    ledger.cost_usd = float(billed) if billed is not None else estimated
+    ledger.latency_ms = int((time.monotonic() - started) * 1000)
     async with session_scope() as s:
         s.add(ledger)
 
 
 class ChatStream:
-    """One streamed chat call. Iterate for text deltas; `message` holds the final message afterwards."""
+    """One streamed chat call. Iterate for text deltas; `message` holds the final Turn afterwards."""
 
     def __init__(
         self,
@@ -310,42 +534,70 @@ class ChatStream:
     ) -> None:
         self.gateway, self.agent, self.cfg = gateway, agent, cfg
         self.system, self.messages, self.tools = system, messages, tools
-        self.message: Any = None
+        self.message: Turn | None = None
         self.cost = 0.0
 
     async def __aiter__(self) -> AsyncIterator[str]:
         global _in_flight_usd
         gw, cfg = self.gateway, self.cfg
-        text_len = sum(len(json.dumps(b, default=str)) for b in self.system) + len(
-            json.dumps(self.messages, default=str)
-        )
-        estimate = estimate_cost(cfg, "", "x" * text_len)
+        info = await catalog.require(cfg.model, tools=True)
+        body = {**_request(info, cfg, to_wire(self.system, self.messages)), "tools": to_wire_tools(self.tools)}
+        estimate = estimate_cost(info, cfg, len(json.dumps(body["messages"], default=str)))
         await gw._check_controls(estimate)
-        model = openrouter_model(cfg.model) if gw.settings.provider == "openrouter" else cfg.model
-        ledger = LLMCall(run_id=gw.run_id, agent=self.agent, model=cfg.model)
+        ledger = LLMCall(run_id=gw.run_id, agent=self.agent, model=info.id)
+        text, calls, reasoning = "", {}, []  # type: ignore[var-annotated]
+        finish, usage, meta = None, {}, {}  # type: ignore[var-annotated]
         _in_flight_usd += estimate
+        started = time.monotonic()
         try:
-            async with gw.client.messages.stream(
-                model=model,
-                max_tokens=cfg.max_tokens,
-                output_config={"effort": cfg.effort},
-                system=self.system,
-                messages=self.messages,
-                tools=self.tools,
-            ) as stream:
-                async for event in stream:
-                    if event.type == "text":
-                        yield event.text
-                self.message = await stream.get_final_message()
-        except anthropic.APIError as e:
-            ledger.error = f"{type(e).__name__}: {e}"
+            async for chunk in gw.client.stream(body):
+                meta = {"id": chunk.get("id", meta.get("id")), "provider": chunk.get("provider", meta.get("provider"))}
+                usage = chunk.get("usage") or usage
+                for choice in chunk.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    finish = choice.get("finish_reason") or finish
+                    if delta.get("content"):
+                        text += delta["content"]
+                        yield delta["content"]
+                    reasoning += delta.get("reasoning_details") or []
+                    for tc in delta.get("tool_calls") or []:
+                        call = calls.setdefault(tc.get("index", 0), {"id": "", "name": "", "arguments": ""})
+                        fn = tc.get("function") or {}
+                        call["id"] = tc.get("id") or call["id"]
+                        call["name"] = fn.get("name") or call["name"]
+                        call["arguments"] += fn.get("arguments") or ""
+        except ModelAPIError as e:
+            ledger.error = str(e)[:2000]
             async with session_scope() as s:
                 s.add(ledger)
             raise
         finally:
             _in_flight_usd -= estimate
-        await _record(ledger, self.message, cfg.model)
+        message = {
+            "content": text,
+            "tool_calls": [
+                {"id": c["id"], "function": {"name": c["name"], "arguments": c["arguments"]}}
+                for _, c in sorted(calls.items())
+            ],
+            "reasoning_details": _merge_reasoning(reasoning),
+        }
+        self.message = to_turn(message, finish, usage, info.id)
+        self.message.provider = meta.get("provider")
+        await _record(ledger, {**meta, "usage": usage}, info, finish, started)
         self.cost = ledger.cost_usd
+
+
+def _merge_reasoning(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Streamed reasoning arrives in pieces, each with the index of the item it belongs to."""
+    merged: dict[int, dict[str, Any]] = {}
+    for p in parts:
+        item = merged.setdefault(p.get("index", 0), {})
+        for k, v in p.items():
+            if k in ("text", "summary", "data") and isinstance(v, str):
+                item[k] = item.get(k, "") + v
+            elif v is not None:
+                item[k] = v  # type, format, signature: whichever piece carries them
+    return [merged[i] for i in sorted(merged)]
 
 
 async def spend_summary() -> dict[str, float]:

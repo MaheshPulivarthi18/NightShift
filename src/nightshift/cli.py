@@ -13,17 +13,17 @@ from collections.abc import Coroutine
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-import anthropic
 import structlog
 import typer
 from dotenv import load_dotenv
 from sqlalchemy import select
 
 from nightshift import events
+from nightshift.catalog import ModelConfigError
 from nightshift.config import get_settings
 from nightshift.db import Control, Feedback, Repo, Report, session_scope
 from nightshift.github import GitHubError
-from nightshift.llm import BudgetExceeded, KillSwitchActive, spend_summary
+from nightshift.llm import BudgetExceeded, KillSwitchActive, ModelAPIError, spend_summary
 from nightshift.memory import get_or_create_repo
 
 app = typer.Typer(help="NightShift: autonomous repo maintainer agents.", no_args_is_help=True)
@@ -185,11 +185,14 @@ def report_run(
             except GitHubError as e:
                 typer.echo(f"GitHub error for {name}: {e}", err=True)
                 continue
-            except anthropic.AuthenticationError:
-                typer.echo("Claude API key missing or invalid. Check ANTHROPIC_API_KEY / OPENROUTER_API_KEY.", err=True)
+            except ModelConfigError as e:
+                typer.echo(f"Model setup problem: {e}", err=True)
                 return
-            except anthropic.APIStatusError as e:
-                if e.status_code != 402:
+            except ModelAPIError as e:
+                if e.status == 401:
+                    typer.echo("OpenRouter key missing or invalid. Check OPENROUTER_API_KEY.", err=True)
+                    return
+                if e.status != 402:
                     raise
                 typer.echo(
                     f"Model provider is out of credits (402): {e.message}\n"

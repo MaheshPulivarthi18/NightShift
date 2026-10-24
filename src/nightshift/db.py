@@ -118,8 +118,20 @@ class LLMCall(Base):
     cache_write_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     stop_reason: Mapped[str | None] = mapped_column(String(30))
+    provider: Mapped[str | None] = mapped_column(String(60))  # who OpenRouter sent the call to
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class ModelCatalog(Base):
+    """OpenRouter's model list: price, context, capabilities and benchmark scores, refreshed daily."""
+
+    __tablename__ = "model_catalog"
+
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    data: Mapped[dict[str, Any]] = mapped_column(JsonType)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class Report(Base):

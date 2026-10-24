@@ -5,10 +5,10 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fake_openrouter import FakeOpenRouter
 from sqlalchemy import delete
 
 from nightshift import chat as chat_mod
@@ -49,51 +49,20 @@ def test_dangling_tool_call_gets_an_error_result() -> None:
     assert out[2]["content"][1]["text"] == "q2"
 
 
-class _Block(SimpleNamespace):
-    def model_dump(self, **_: Any) -> dict[str, Any]:
-        return {k: v for k, v in vars(self).items() if v is not None}
+def _chunk(delta: dict[str, Any], finish: str | None = None, usage: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"id": "gen-1", "provider": "TestCloud", "choices": [{"delta": delta, "finish_reason": finish}],
+            **({"usage": usage} if usage else {})}  # fmt: skip
 
 
-class _FakeStream:
-    def __init__(self, final: Any, texts: list[str]) -> None:
-        self.final, self.texts = final, texts
-
-    async def __aenter__(self) -> _FakeStream:
-        return self
-
-    async def __aexit__(self, *_: Any) -> None:
-        return None
-
-    def __aiter__(self) -> AsyncIterator[Any]:
-        async def gen() -> AsyncIterator[Any]:
-            for t in self.texts:
-                yield SimpleNamespace(type="text", text=t)
-
-        return gen()
-
-    async def get_final_message(self) -> Any:
-        return self.final
-
-
-class _FakeMessages:
-    """First call asks for a file; second call answers."""
-
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    def stream(self, **kwargs: Any) -> _FakeStream:
-        self.calls.append(kwargs)
-        usage = SimpleNamespace(
-            input_tokens=100, output_tokens=20, cache_read_input_tokens=0, cache_creation_input_tokens=0
-        )
-        if len(self.calls) == 1:
-            block = _Block(type="tool_use", id="tu1", name="read_file", input={"path": "src/a.py"})
-            final = SimpleNamespace(content=[block], stop_reason="tool_use", usage=usage)
-            return _FakeStream(final, [])
-        final = SimpleNamespace(
-            content=[_Block(type="text", text="It is in src/a.py:1.")], stop_reason="end_turn", usage=usage
-        )
-        return _FakeStream(final, ["It is in ", "src/a.py:1."])
+USAGE = {"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.002}
+# First call asks for a file (its arguments arrive in two pieces); the second answers.
+CHUNKS = [
+    [
+        _chunk({"tool_calls": [{"index": 0, "id": "tu1", "function": {"name": "read_file", "arguments": '{"pa'}}]}),
+        _chunk({"tool_calls": [{"index": 0, "function": {"arguments": 'th": "src/a.py"}'}}]}, "tool_calls", USAGE),
+    ],
+    [_chunk({"content": "It is in "}), _chunk({"content": "src/a.py:1."}, "stop", USAGE)],
+]
 
 
 @pytest.fixture
@@ -129,7 +98,7 @@ async def repo_and_item() -> AsyncIterator[tuple[Repo, Item]]:
 
 
 async def test_chat_turn_runs_a_tool_and_saves_history(
-    repo_and_item: tuple[Repo, Item], monkeypatch: pytest.MonkeyPatch
+    repo_and_item: tuple[Repo, Item], monkeypatch: pytest.MonkeyPatch, models: Any
 ) -> None:
     repo, item = repo_and_item
     ran: list[tuple[str, dict[str, Any]]] = []
@@ -139,17 +108,16 @@ async def test_chat_turn_runs_a_tool_and_saves_history(
         return "1: def a(): pass", False
 
     monkeypatch.setattr(chat_mod.RepoTools, "run", fake_run)
-    fake = _FakeMessages()
-    client = SimpleNamespace(messages=fake)
-    events = [ev async for ev in chat_mod.chat_turn(repo, item, "Where is it?", client=client)]  # type: ignore[arg-type]
+    fake = FakeOpenRouter(chunks=[list(c) for c in CHUNKS])
+    events = [ev async for ev in chat_mod.chat_turn(repo, item, "Where is it?", client=fake)]  # type: ignore[arg-type]
 
     assert ran == [("read_file", {"path": "src/a.py"})]
     assert [e["type"] for e in events] == ["tool", "text", "text", "done"]
     assert events[-1]["cost_usd"] > 0
     # The second call carries the tool result, and the cached context names the item.
-    second = fake.calls[1]["messages"]
-    assert second[-1]["content"][0]["type"] == "tool_result"
-    assert "It breaks" in fake.calls[0]["system"][1]["text"]
+    second = fake.bodies[1]["messages"]
+    assert second[-1] == {"role": "tool", "tool_call_id": "tu1", "content": "1: def a(): pass"}
+    assert "It breaks" in fake.bodies[0]["messages"][0]["content"][1]["text"]
 
     chat = await chat_mod.get_or_create_chat(repo, 7)
     saved = await chat_mod.load_messages(chat.id)

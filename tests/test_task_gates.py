@@ -5,8 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from anthropic.types import Message, TextBlock, Usage
-
+from nightshift.llm import Block, Turn
 from nightshift.worker.coder import CoderRun
 from nightshift.worker.task import run_blocker
 
@@ -31,12 +30,10 @@ def test_a_plan_without_a_test_command_cannot_run() -> None:
 class _Talker:
     """An LLM that only ever answers in text, never with a tool call."""
 
-    async def create(self, **_: Any) -> Message:
-        return Message(
-            id="msg", type="message", role="assistant", model="test", stop_reason="end_turn",
-            content=[TextBlock(type="text", text="The plan says to ask the maintainers first.")],
-            usage=Usage(input_tokens=1, output_tokens=1),
-        )  # fmt: skip
+    async def create(self, **_: Any) -> Turn:
+        return Turn(
+            content=[Block(type="text", text="The plan says to ask the maintainers first.")], stop_reason="end_turn"
+        )
 
 
 async def test_a_coder_that_stops_says_why() -> None:

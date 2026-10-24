@@ -1,12 +1,12 @@
 """Chat about one issue or PR, with read-only access to the repo's code.
 
-Claude gets the item, its linked and similar items, what NightShift's agents concluded
+The model gets the item, its linked and similar items, what NightShift's agents concluded
 about it, and the repo brief, then can read files and search code through the GitHub API.
 It drafts comments and plans but never posts: NightShift has no write access.
 
 `chat_turn` is an async generator of UI events, so the web app can stream it:
-  {"type": "text", "text": ...}            a piece of Claude's answer
-  {"type": "tool", "name": ..., "input": ...}  Claude is reading code
+  {"type": "text", "text": ...}            a piece of the answer
+  {"type": "tool", "name": ..., "input": ...}  the model is reading code
   {"type": "done", "cost_usd": ...}        the turn is finished
   {"type": "error", "message": ...}        the turn stopped
 """
@@ -15,18 +15,27 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import Any
 
-import anthropic
 import structlog
-from anthropic.types import MessageParam, TextBlockParam, ToolParam
 from sqlalchemy import select
 
+from nightshift.catalog import ModelConfigError
 from nightshift.config import get_settings
 from nightshift.db import Chat, ChatMessage, Item, Repo, Report, session_scope
 from nightshift.github import GitHubClient, GitHubError
 from nightshift.health.agents import UNTRUSTED_RULE, item_view
-from nightshift.llm import BudgetExceeded, ChatStream, KillSwitchActive, LLMGateway
+from nightshift.llm import (
+    INVALID_ARGS,
+    BudgetExceeded,
+    ChatStream,
+    KillSwitchActive,
+    LLMGateway,
+    ModelAPIError,
+    OpenRouter,
+    TextBlockParam,
+    ToolParam,
+)
 from nightshift.memory import nearest
 
 log = structlog.get_logger()
@@ -34,7 +43,7 @@ log = structlog.get_logger()
 MAX_TOOL_ROUNDS = 8
 FILE_WINDOW_LINES = 300
 HISTORY_MESSAGES = 30
-OLD_TOOL_RESULT_CHARS = 1500  # tool output from earlier turns is trimmed in the history sent to Claude
+OLD_TOOL_RESULT_CHARS = 1500  # tool output from earlier turns is trimmed in the history sent to the model
 
 CHAT_SYSTEM = f"""You are NightShift's issue assistant. You help one developer understand and act on a single GitHub issue or pull request.
 
@@ -236,7 +245,7 @@ def _is_user_text(m: ChatMessage) -> bool:
 
 def history_for_api(messages: list[ChatMessage]) -> list[dict[str, Any]]:
     """The recent conversation, starting at a user text turn so tool_use/tool_result pairs stay intact.
-    Tool output from before the latest user turn is trimmed; Claude can re-read a file if it needs it."""
+    Tool output from before the latest user turn is trimmed; the model can re-read a file if it needs it."""
     recent = messages[-HISTORY_MESSAGES:]
     while recent and not _is_user_text(recent[0]):
         recent = recent[1:]
@@ -289,7 +298,7 @@ async def _save(chat_id: int, role: str, content: list[dict[str, Any]]) -> None:
 
 
 async def chat_turn(
-    repo: Repo, item: Item, user_text: str, client: anthropic.AsyncAnthropic | None = None
+    repo: Repo, item: Item, user_text: str, client: OpenRouter | None = None
 ) -> AsyncIterator[dict[str, Any]]:
     chat = await get_or_create_chat(repo, item.number)
     await _save(chat.id, "user", [{"type": "text", "text": user_text}])
@@ -309,19 +318,20 @@ async def chat_turn(
                 agent="chat",
                 cfg=get_settings().chat,
                 system=system,
-                messages=cast(list[MessageParam], messages),
+                messages=messages,
                 tools=TOOLS,
             )
             async for text in stream:
                 yield {"type": "text", "text": text}
             final = stream.message
+            assert final is not None
             total += stream.cost
             content = [b.model_dump(mode="json", exclude_none=True) for b in final.content]
             await _save(chat.id, "assistant", content)
 
             tool_uses = [b for b in final.content if b.type == "tool_use"]
             if final.stop_reason == "refusal":
-                yield {"type": "error", "message": "Claude declined to answer this."}
+                yield {"type": "error", "message": "The model declined to answer this."}
                 break
             if not tool_uses:
                 break
@@ -332,14 +342,17 @@ async def chat_turn(
             for block in tool_uses:
                 args = block.input if isinstance(block.input, dict) else {}
                 yield {"type": "tool", "name": block.name, "input": args}
-                text, is_error = await tools.run(block.name, args)
+                if INVALID_ARGS in args:
+                    text, is_error = f"The arguments were not a valid JSON object: {args[INVALID_ARGS][:300]}", True
+                else:
+                    text, is_error = await tools.run(str(block.name), args)
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": text, "is_error": is_error})
             await _save(chat.id, "user", results)
         else:
             yield {"type": "error", "message": f"Stopped after {MAX_TOOL_ROUNDS} rounds of code reading."}
     except (BudgetExceeded, KillSwitchActive) as e:
         yield {"type": "error", "message": str(e)}
-    except anthropic.APIError as e:
+    except (ModelAPIError, ModelConfigError) as e:
         log.warning("chat_api_error", error=str(e))
         yield {"type": "error", "message": f"Model error: {e}"}
     yield {"type": "done", "cost_usd": round(total, 4)}

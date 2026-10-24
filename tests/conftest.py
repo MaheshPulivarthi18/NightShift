@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from fake_openrouter import models  # noqa: F401  (the fixed model catalog fixture)
 
 from nightshift.db import Item
 

@@ -6,43 +6,30 @@ import re
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
 
+def model_id(name: str) -> str:
+    """An OpenRouter model id. Old Claude names are accepted: claude-opus-5-5 -> anthropic/claude-opus-5.5"""
+    if "/" in name:
+        return name
+    return "anthropic/" + re.sub(r"-(\d+)-(\d+)$", r"-\1.\2", name)
+
+
 class AgentModel(BaseModel):
-    """Which Claude model an agent uses, and how hard it thinks."""
+    """Which model an agent uses (any OpenRouter model id), and how hard it thinks."""
 
     model: str
     effort: Effort = "medium"
     max_tokens: int = 16000
 
-
-class ModelPrice(BaseModel):
-    """USD per million tokens."""
-
-    input: float
-    output: float
-    cache_read: float
-    cache_write: float
-
-
-# First-party API rates, used for the spend ledger and budget checks.
-PRICES: dict[str, ModelPrice] = {
-    "claude-opus-5-5": ModelPrice(input=4.0, output=20.0, cache_read=0.20, cache_write=5.0),
-    "claude-sonnet-5-5": ModelPrice(input=2.0, output=10.0, cache_read=0.20, cache_write=2.5),
-    "claude-haiku-5-5": ModelPrice(input=0.10, output=0.50, cache_read=0.01, cache_write=0.125),
-}
-
-# Models that accept the server-side `fallbacks: "default"` refusal fallback.
-FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
-
-
-def openrouter_model(model: str) -> str:
-    """claude-opus-5-5 -> anthropic/claude-opus-5.5"""
-    return "anthropic/" + re.sub(r"-(\d+)-(\d+)$", r"-\1.\2", model)
+    @field_validator("model")
+    @classmethod
+    def _openrouter_id(cls, v: str) -> str:
+        return model_id(v)
 
 
 class Settings(BaseSettings):
@@ -52,10 +39,9 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://nightshift:nightshift@localhost:5432/nightshift"
 
-    # Where Claude calls go. "openrouter" uses OpenRouter's Anthropic-compatible endpoint.
-    provider: Literal["anthropic", "openrouter"] = "anthropic"
+    # Every model call goes through OpenRouter, whatever the model's vendor.
     openrouter_api_key: SecretStr = Field(default=SecretStr(""), validation_alias="OPENROUTER_API_KEY")
-    openrouter_base_url: str = "https://openrouter.ai/api"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     # Read-only token for public data. Never a token that can write.
     github_token: SecretStr = Field(default=SecretStr(""), validation_alias="GITHUB_TOKEN")
@@ -63,20 +49,21 @@ class Settings(BaseSettings):
     # The operator's GitHub login: their own assignments and PRs do not count as someone else's claim.
     github_login: str = ""
 
-    # Per-agent model choice. Override with e.g. NIGHTSHIFT_RELEVANCE__MODEL=claude-haiku-5-5
-    relevance: AgentModel = AgentModel(model="claude-opus-5-5", effort="low")
-    pr_assessor: AgentModel = AgentModel(model="claude-opus-5-5", effort="medium")
-    verifier: AgentModel = AgentModel(model="claude-opus-5-5", effort="medium")
-    scout: AgentModel = AgentModel(model="claude-opus-5-5", effort="low")
-    briefer: AgentModel = AgentModel(model="claude-opus-5-5", effort="low")
-    chat: AgentModel = AgentModel(model="claude-opus-5-5", effort="medium", max_tokens=8000)
-    cartographer: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="medium", max_tokens=8000)
-    # Contribution Worker. Sonnet by default; set NIGHTSHIFT_CODER__MODEL=claude-opus-5-5 for a hard task.
-    setup: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="medium", max_tokens=8000)
-    planner: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="medium", max_tokens=12000)
-    coder: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="medium", max_tokens=16000)
-    reviewer: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="high", max_tokens=20000)
-    pr_writer: AgentModel = AgentModel(model="claude-sonnet-5-5", effort="low", max_tokens=4000)
+    # Per-agent model choice: any OpenRouter model id. Override with e.g.
+    # NIGHTSHIFT_RELEVANCE__MODEL=deepseek/deepseek-v4.1-flash
+    relevance: AgentModel = AgentModel(model="anthropic/claude-opus-5.5", effort="low")
+    pr_assessor: AgentModel = AgentModel(model="anthropic/claude-opus-5.5", effort="medium")
+    verifier: AgentModel = AgentModel(model="anthropic/claude-opus-5.5", effort="medium")
+    scout: AgentModel = AgentModel(model="anthropic/claude-opus-5.5", effort="low")
+    briefer: AgentModel = AgentModel(model="anthropic/claude-opus-5.5", effort="low")
+    chat: AgentModel = AgentModel(model="anthropic/claude-opus-5.5", effort="medium", max_tokens=8000)
+    cartographer: AgentModel = AgentModel(model="anthropic/claude-sonnet-5.5", effort="medium", max_tokens=8000)
+    # Contribution Worker. Sonnet by default; set NIGHTSHIFT_CODER__MODEL=anthropic/claude-opus-5.5 for a hard task.
+    setup: AgentModel = AgentModel(model="anthropic/claude-sonnet-5.5", effort="medium", max_tokens=8000)
+    planner: AgentModel = AgentModel(model="anthropic/claude-sonnet-5.5", effort="medium", max_tokens=12000)
+    coder: AgentModel = AgentModel(model="anthropic/claude-sonnet-5.5", effort="medium", max_tokens=16000)
+    reviewer: AgentModel = AgentModel(model="anthropic/claude-sonnet-5.5", effort="high", max_tokens=20000)
+    pr_writer: AgentModel = AgentModel(model="anthropic/claude-sonnet-5.5", effort="low", max_tokens=4000)
     # Last line of every commit the worker publishes. Empty to leave it out.
     commit_attribution: str = "Generated by NightShift"
     branch_prefix: str = "nightshift"  # branches pushed to the operator's fork: <prefix>/<issue>-<slug>

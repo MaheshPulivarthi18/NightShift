@@ -13,14 +13,12 @@ import posixpath
 import shlex
 import time
 from dataclasses import dataclass, field
-from typing import Any, cast
-
-from anthropic.types import MessageParam, TextBlockParam, ToolParam
+from typing import Any
 
 from nightshift.config import get_settings
 from nightshift.context.change import change_context
 from nightshift.context.change import to_markdown as change_markdown
-from nightshift.llm import LLMGateway
+from nightshift.llm import INVALID_ARGS, LLMGateway, MessageParam, TextBlockParam, ToolParam
 from nightshift.sandbox.docker import OUTPUT_LIMIT, REPO_DIR, Sandbox
 from nightshift.worker.verify import CommandResult, FixCheck, check_fix
 
@@ -161,6 +159,8 @@ class CoderRun:
 
     async def tool(self, name: str, args: dict[str, Any]) -> tuple[str, bool]:
         """Returns (result text, is_error)."""
+        if INVALID_ARGS in args:
+            return f"The arguments for {name} were not a valid JSON object: {args[INVALID_ARGS][:300]}", True
         try:
             return await self._tool(name, args), False
         except ToolError as e:
@@ -241,7 +241,7 @@ class CoderRun:
         last = out[-1]["content"]
         if isinstance(last, list) and last:
             last[-1]["cache_control"] = {"type": "ephemeral"}
-        return cast(list[MessageParam], out)
+        return out
 
     async def work(self, instruction: str, deadline: float) -> None:
         """Run the loop from `instruction` until a passing submit, a limit, or the model stops."""
@@ -277,7 +277,7 @@ class CoderRun:
             if not uses:
                 idle += 1
                 if idle >= 2:
-                    said = " ".join(b.text for b in msg.content if b.type == "text").strip()
+                    said = " ".join(b.text or "" for b in msg.content if b.type == "text").strip()
                     self.stopped = "the Coder stopped without submitting" + (
                         f". It said: {said[:1500]}" if said else ""
                     )
@@ -289,7 +289,7 @@ class CoderRun:
             results = []
             for block in uses:
                 args = block.input if isinstance(block.input, dict) else {}
-                text, is_error = await self.tool(block.name, args)
+                text, is_error = await self.tool(str(block.name), args)
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": text, "is_error": is_error})
             self.messages.append({"role": "user", "content": results})
             if self.check is not None and self.check.passed:
