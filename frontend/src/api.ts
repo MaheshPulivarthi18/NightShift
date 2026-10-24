@@ -174,6 +174,7 @@ export const api = {
   decide: (id: number, approve: boolean, note: string, setup: string[], test: string[]) =>
     call<TaskDetail>(`/tasks/${id}/decision`, { approve, note: note || null, setup_commands: setup, test_commands: test }),
   run: (id: number) => call<{ status: string }>(`/tasks/${id}/run`, {}),
+  revise: (id: number, note: string, latest: boolean) => call<TaskDetail>(`/tasks/${id}/revise`, { note, latest }),
   claim: (id: number, confirm: boolean) => call<{ result: string }>(`/tasks/${id}/claim`, { confirm }),
   publish: (id: number, confirm: boolean) => call<GateInfo>(`/tasks/${id}/publish`, { confirm }),
 };

@@ -218,7 +218,22 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
             <p key={b} className="blocked">Blocked: {b}</p>
           ))}
           {info.drift.length > 0 && (
-            <p className="blocked">Upstream changed {info.drift.join(", ")} since the fix was verified. Re-run the task.</p>
+            <div className="blocked">
+              <p>Upstream changed {info.drift.join(", ")} since the fix was verified, so its tests no longer cover that code.</p>
+              <button
+                className="primary small"
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true);
+                  api
+                    .revise(task.id, `Upstream changed ${info.drift.join(", ")} after the fix was verified. Redo the fix on the latest commit.`, true)
+                    .then(onChange, (e: Error) => setMsg(e.message))
+                    .finally(() => setBusy(false));
+                }}
+              >
+                Redo on latest commit
+              </button>
+            </div>
           )}
           {info.published && info.url && (
             <p className="ok">

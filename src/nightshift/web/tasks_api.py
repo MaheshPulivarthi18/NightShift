@@ -149,6 +149,26 @@ async def run(task_id: int) -> dict[str, str]:
     return {"status": "working"}
 
 
+class Revision(BaseModel):
+    note: str
+    latest: bool = False
+    setup_commands: list[str] = []
+    test_commands: list[str] = []
+    run: bool = True
+
+
+@router.post("/tasks/{task_id}/revise", dependencies=[Guard])
+async def revise(task_id: int, body: Revision) -> dict[str, Any]:
+    """Send a ready or stopped task back with a correction (optionally on the latest commit), and run it."""
+    try:
+        await worker.revise(task_id, body.note, body.setup_commands or None, body.test_commands or None, body.latest)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+    if body.run:
+        _background(f"task-{task_id}", worker.run_task(task_id))
+    return await get_task(task_id)
+
+
 class Confirm(BaseModel):
     confirm: bool = False
 

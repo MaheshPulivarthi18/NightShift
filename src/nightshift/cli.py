@@ -514,12 +514,13 @@ def task_revise(
     note: Annotated[str, typer.Option(help="What to change; added to the approved plan.")],
     setup: SetupOpt = None,
     test: Annotated[list[str] | None, typer.Option("--test", help="Replace the plan's test commands.")] = None,
+    latest: Annotated[bool, typer.Option(help="Redo it on the default branch's latest commit.")] = False,
 ) -> None:
     """Send a ready or stopped task back to the Coder with a correction, then run it again."""
     from nightshift.worker.task import TaskError, revise
 
     try:
-        asyncio.run(revise(task_id, note, setup, test))
+        asyncio.run(revise(task_id, note, setup, test, latest))
     except TaskError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1) from e

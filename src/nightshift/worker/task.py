@@ -259,8 +259,22 @@ async def decide(task_id: int, approve: bool, note: str | None = None, **overrid
     return task
 
 
+async def latest_commit(full_name: str) -> str:
+    """The head commit of the repo's default branch, as GitHub reports it now."""
+    gh = GitHubClient()
+    try:
+        branch = (await gh.rest_get(f"/repos/{full_name}"))["default_branch"]
+        return str((await gh.rest_get(f"/repos/{full_name}/commits/{branch}"))["sha"])
+    finally:
+        await gh.aclose()
+
+
 async def revise(
-    task_id: int, note: str, setup_commands: list[str] | None = None, test_commands: list[str] | None = None
+    task_id: int,
+    note: str,
+    setup_commands: list[str] | None = None,
+    test_commands: list[str] | None = None,
+    latest: bool = False,
 ) -> Task:
     """Send a finished or stopped task back for another run, with the operator's correction added to
     the approved plan (and, if given, new setup or test commands). The run starts again from the same
@@ -271,6 +285,11 @@ async def revise(
     combined = f"{task.note}\n\nRevision: {note}" if task.note else f"Revision: {note}"
     keep = {k: v for k, v in task.result.items() if k in ("brief", "map_commit")}
     plan = dict(task.plan)
+    if latest:  # upstream moved on (Gate 2 drift): redo the fix on the current default branch
+        _, repo = await load_task(task_id)
+        base = await latest_commit(repo.full_name)
+        combined += f"\n\nRebased from {task.base_commit[:7]} to {base[:7]} (latest default branch)."
+        await _save(task, base_commit=base)
     if setup_commands:
         plan["setup_commands"] = setup_commands
     if test_commands:
