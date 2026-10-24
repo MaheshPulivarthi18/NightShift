@@ -41,6 +41,9 @@ under "Found by you".
 - [ ] **Reviewer missed the event-loop bug** in the first multilspy fix (the issue's own `SyncLanguageServer`
       case). When feasible, run the issue's reproduction as part of review.
 - [ ] **Decide the Reviewer policy on error and fallback paths** that skip a new field (laya `ws_router.py`).
+- [ ] **Setups that pull GPU builds time out** (headroom: `uv sync --extra dev` downloads CUDA PyTorch, over
+      2.5 GB). The Planner should default to CPU-only wheels (`uv pip install --torch-backend cpu`) and call
+      `.venv/bin/...` instead of `uv run`, which re-syncs. Task 3 was revised this way by hand.
 - [ ] **A run that dies leaves its task "working" forever** (process killed, session closed), and
       `task revise` refuses "working" tasks; its sandbox container can also be left running. Add a heartbeat
       so stale runs become "needs you", remove orphaned `ns-task-*` containers at startup, and allow revise.
