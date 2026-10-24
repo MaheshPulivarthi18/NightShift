@@ -280,10 +280,11 @@ async def revise(
     the approved plan (and, if given, new setup or test commands). The run starts again from the same
     base commit; the old result is replaced."""
     task, _ = await load_task(task_id)
-    if task.status not in ("ready", "needs_operator", "failed"):
-        raise TaskError(f"Task {task_id} is {task.status}; only a ready, stopped or failed task can be revised.")
+    if task.status not in ("ready", "needs_operator", "failed", "published"):
+        raise TaskError(f"Task {task_id} is {task.status}; it cannot be revised now.")
     combined = f"{task.note}\n\nRevision: {note}" if task.note else f"Revision: {note}"
-    keep = {k: v for k, v in task.result.items() if k in ("brief", "map_commit")}
+    # A published task keeps its PR and claim, so review feedback becomes a follow-up commit on that PR.
+    keep = {k: v for k, v in task.result.items() if k in ("brief", "map_commit", "pr_url", "claim_url")}
     plan = dict(task.plan)
     if latest:  # upstream moved on (Gate 2 drift): redo the fix on the current default branch
         _, repo = await load_task(task_id)
