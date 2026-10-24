@@ -25,16 +25,17 @@ from nightshift.context import archmap
 from nightshift.context.change import change_context
 from nightshift.context.change import to_markdown as change_markdown
 from nightshift.db import LLMCall, Repo, RepoContext, Task, session_scope
+from nightshift.github import GitHubClient
 from nightshift.health.agents import RepoBrief
 from nightshift.health.graph import repo_brief
 from nightshift.llm import BudgetExceeded, KillSwitchActive, LLMGateway
 from nightshift.memory import get_or_create_repo
 from nightshift.sandbox.docker import Sandbox, SandboxError, prepare_repo
-from nightshift.worker import planner, reviewer
+from nightshift.worker import planner, prwriter, publish, reviewer
 from nightshift.worker.coder import CoderRun
 from nightshift.worker.issue import IssueView, fetch_issue
 from nightshift.worker.relevant import relevant_files
-from nightshift.worker.verify import CommandResult, diff, run_commands
+from nightshift.worker.verify import CommandResult, FixCheck, diff, run_commands
 
 log = structlog.get_logger()
 
@@ -286,6 +287,9 @@ async def run_task(task_id: int) -> Task:
             task, status=status, diff=final_diff, result=result,
             error=None if status == "ready" else why, cost_usd=await task_cost(task),
         )  # fmt: skip
+        if status == "ready":
+            await events.record(task.run_id, "node_start", "pr draft", node="pr_writer")
+            await draft_pr(task, repo, llm)
         await events.finish_run(task.run_id, "done" if status == "ready" else "stopped", error=task.error)
         return task
     except (BudgetExceeded, KillSwitchActive, SandboxError) as e:
@@ -303,3 +307,75 @@ async def run_task(task_id: int) -> Task:
     finally:
         if box:
             await box.remove()
+
+
+# ---------- PR draft, claim and Gate 2 ----------
+
+
+async def _repo_conventions(full_name: str) -> tuple[str, list[str]]:
+    """The repo's PR template and the titles of its recently merged PRs."""
+    gh = GitHubClient()
+    try:
+        docs = (await gh.fetch_repo_docs(full_name))["docs"]
+        pulls = await gh.rest_get(f"/repos/{full_name}/pulls?state=closed&per_page=30")
+    finally:
+        await gh.aclose()
+    template = next((t for p, t in docs.items() if "pull_request_template" in p.lower()), "")
+    return template, [p["title"] for p in pulls if p.get("merged_at")][:15]
+
+
+async def draft_pr(task: Task, repo: Repo, llm: LLMGateway | None = None) -> dict[str, Any]:
+    """Write the PR (title, body with code-built evidence, commit message) for a ready task."""
+    if task.status not in ("ready", "published") or not task.result.get("check"):
+        raise TaskError(f"Task {task.id} has no verified fix to write a PR for.")
+    llm = llm or LLMGateway(task.run_id, repo.id, run_budget_usd=get_settings().task_budget_usd)
+    check = FixCheck.model_validate(task.result["check"])
+    template, titles = await _repo_conventions(repo.full_name)
+    reviews = task.result.get("reviews", [])
+    draft = await prwriter.draft_pr(
+        llm,
+        repo=repo.full_name,
+        issue=issue_text(IssueView.model_validate(task.issue)),
+        diff=task.diff or "",
+        review=reviews[-1]["markdown"] if reviews else "",
+        rules=task.result.get("brief", ""),
+        template=template,
+        recent_titles=titles,
+    )
+    pr = {
+        "title": draft.title,
+        "body": prwriter.pr_body(draft, check, task.issue_number),
+        "commit_message": prwriter.commit_message(draft),
+    }
+    (task_dir(repo.full_name, task.id) / "pr.md").write_text(f"# {pr['title']}\n\n{pr['body']}")
+    await _save(task, result={**task.result, "pr": pr}, cost_usd=await task_cost(task))
+    return pr
+
+
+async def claim(task_id: int, *, confirm: bool) -> str:
+    """Post the plan's claim comment. Without `confirm`, only says what would be posted."""
+    task, repo = await load_task(task_id)
+    if task.status in ("planned", "rejected", "failed"):
+        raise TaskError(f"Task {task_id} is {task.status}; claim after approving the plan.")
+    text = task.plan.get("claim_comment", "")
+    if not confirm:
+        return f"Would post on {repo.full_name}#{task.issue_number}:\n\n{text}"
+    url = await publish.post_claim(repo, task, text)
+    await _save(task, result={**task.result, "claim_url": url})
+    return url
+
+
+async def gate2(task_id: int, *, confirm: bool) -> dict[str, Any]:
+    """Prepare the PR on the current upstream branch; with `confirm`, push and open it."""
+    task, repo = await load_task(task_id)
+    if task.status != "ready":
+        raise TaskError(f"Task {task_id} is {task.status}; only a ready task can be published.")
+    pr = task.result.get("pr") or await draft_pr(task, repo)
+    blockers = await publish.freshness(repo.full_name, task)
+    prepared = await publish.prepare(repo, task, task_dir(repo.full_name, task.id) / "publish")
+    info = publish.summary(prepared, pr["title"], pr["body"]) | {"blockers": blockers}
+    if not confirm or blockers or prepared.drift:
+        return info | {"published": False}
+    url = await publish.publish(repo, task, prepared, title=pr["title"], body=pr["body"], message=pr["commit_message"])
+    await _save(task, status="published", result={**task.result, "pr_url": url})
+    return info | {"published": True, "url": url}

@@ -329,10 +329,12 @@ def sandbox_try(
 def _run_sandboxed(coro: Coroutine[Any, Any, None]) -> None:
     """Run a sandbox command, turning sandbox and budget failures into a message and exit code 1."""
     from nightshift.sandbox.docker import SandboxError
+    from nightshift.worker.publish import PublishError
+    from nightshift.worker.task import TaskError
 
     try:
         asyncio.run(coro)
-    except (SandboxError, KillSwitchActive, BudgetExceeded) as e:
+    except (SandboxError, KillSwitchActive, BudgetExceeded, PublishError, TaskError) as e:
         typer.echo(f"{type(e).__name__}: {e}", err=True)
         raise typer.Exit(1) from e
 
@@ -524,6 +526,55 @@ def task_run(task_id: int) -> None:
         for r in task.result.get("reviews", []):
             typer.echo("\n" + r["markdown"])
         typer.echo(f"\nDiff, verification and review: {task_dir(repo.full_name, task.id)}")
+
+    _run_sandboxed(run())
+
+
+@task_app.command("draft")
+def task_draft(task_id: int) -> None:
+    """(Re)write the PR for a ready task. Its testing section comes from the real verification."""
+    from nightshift.worker.task import draft_pr, load_task
+
+    async def run() -> None:
+        task, repo = await load_task(task_id)
+        pr = await draft_pr(task, repo)
+        typer.echo(f"# {pr['title']}\n\n{pr['body']}\n---\nCommit:\n{pr['commit_message']}")
+
+    _run_sandboxed(run())
+
+
+@task_app.command("claim")
+def task_claim(
+    task_id: int, yes: Annotated[bool, typer.Option("--yes", help="Post it. Without this, only show it.")] = False
+) -> None:
+    """Post the approved plan's claim comment on the issue (checks the issue is still free first)."""
+    from nightshift.worker.task import claim
+
+    typer.echo(asyncio.run(claim(task_id, confirm=yes)))
+    if not yes:
+        typer.echo(f"\nTo post it: nightshift task claim {task_id} --yes")
+
+
+@task_app.command("publish")
+def task_publish(
+    task_id: int,
+    yes: Annotated[bool, typer.Option("--yes", help="Gate 2: push and open the PR. Without this, a dry run.")] = False,
+) -> None:
+    """Gate 2. Checks freshness, applies the fix to the current upstream branch, then (with --yes) opens the PR."""
+    from nightshift.worker.task import gate2
+
+    async def run() -> None:
+        info = await gate2(task_id, confirm=yes)
+        typer.echo(f"Branch {info['branch']} on {info['base']} @ {info['head'][:7]}; files: {', '.join(info['files'])}")
+        for b in info["blockers"]:
+            typer.echo(f"BLOCKED: {b}")
+        if info["drift"]:
+            typer.echo("BLOCKED: upstream changed " + ", ".join(info["drift"]) + " since the fix was verified")
+        typer.echo(f"\n# {info['title']}\n\n{info['body']}")
+        if info["published"]:
+            typer.echo(f"\nOpened {info['url']}")
+        elif not (info["blockers"] or info["drift"]):
+            typer.echo(f"\nDry run. To open this PR: nightshift task publish {task_id} --yes")
 
     _run_sandboxed(run())
 

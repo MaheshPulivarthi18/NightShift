@@ -235,7 +235,7 @@ class Task(Base):
     """One contribution: an issue taken from plan, through the operator's approval, to a reviewed fix.
 
     status: planned (waiting at Gate 1) | approved | rejected | working | ready (fix verified and
-    reviewed) | needs_operator (stopped with work saved) | failed
+    reviewed, PR drafted: waiting at Gate 2) | published | needs_operator (stopped with work saved) | failed
     """
 
     __tablename__ = "tasks"
