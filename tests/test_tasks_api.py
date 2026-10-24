@@ -57,3 +57,17 @@ async def test_same_origin_json_reaches_the_handler(client: httpx.AsyncClient) -
         f"/api/tasks/{MISSING}/publish", json={"confirm": False}, headers={"Origin": "http://test"}
     )
     assert resp.status_code == 409  # the guard let it through; the task does not exist
+
+
+async def test_an_issue_that_is_not_free_is_refused_with_the_reason(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nightshift.worker import task as worker
+
+    async def taken(repo: str, number: int, rehearsal: bool = False) -> None:
+        raise worker.TaskError(f"#{number} is not free: open PR #713 by someone references it")
+
+    monkeypatch.setattr(worker, "precheck", taken)
+    resp = await client.post("/api/tasks", json={"repo": "o/r", "issue": 705}, headers={"Origin": "http://test"})
+    assert resp.status_code == 409
+    assert "not free" in resp.json()["detail"]

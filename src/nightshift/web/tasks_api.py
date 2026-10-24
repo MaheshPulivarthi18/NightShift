@@ -112,9 +112,15 @@ class NewTask(BaseModel):
 
 @router.post("/tasks", status_code=202, dependencies=[Guard])
 async def new_task(body: NewTask) -> dict[str, str]:
+    """Checks the issue at once (exists, still free), then plans in the background."""
+    try:
+        current, _, _, moved = await worker.precheck(body.repo, body.issue, body.rehearsal)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+    body.repo = current
     _background(f"plan-{body.repo}-{body.issue}", worker.plan_task(body.repo, body.issue, base=body.base or None,
                                                                     rehearsal=body.rehearsal))  # fmt: skip
-    return {"status": "planning"}
+    return {"status": "planning", "repo": current, "note": moved or ""}
 
 
 class Decision(BaseModel):

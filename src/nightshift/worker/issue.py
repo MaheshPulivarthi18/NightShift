@@ -97,7 +97,8 @@ async def _linked_prs(gh: GitHubClient, full_name: str, number: int) -> list[Lin
             title=pr["title"],
         )
 
-    for ev in await gh.rest_get(f"/repos/{full_name}/issues/{number}/timeline?per_page=100"):
+    timeline = await gh.rest_get(f"/repos/{full_name}/issues/{number}/timeline?per_page=100")
+    for ev in timeline if isinstance(timeline, list) else []:
         src = (ev.get("source") or {}).get("issue") or {}
         if ev.get("event") == "cross-referenced" and src.get("pull_request"):
             state = "merged" if src["pull_request"].get("merged_at") else src.get("state", "open")

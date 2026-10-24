@@ -143,6 +143,7 @@ class GitHubClient:
             headers={"Authorization": f"Bearer {token}", "User-Agent": "nightshift"},
             timeout=60.0,
             transport=transport,
+            follow_redirects=True,  # renamed or transferred repos answer with 301
         )
 
     async def aclose(self) -> None:
@@ -191,6 +192,10 @@ class GitHubClient:
                 raise GitHubError(f"GitHub returned HTTP {resp.status_code}: {resp.text[:200]}")
             return resp.json()
         raise GitHubError("GitHub kept rate limiting; giving up for now.")
+
+    async def canonical_name(self, full_name: str) -> str:
+        """The repo's current owner/name: GitHub redirects a renamed or transferred repo's old name."""
+        return str((await self.rest_get(f"/repos/{full_name}"))["full_name"])
 
     async def fetch_repo_docs(self, full_name: str) -> dict[str, Any]:
         """The repo's file tree at HEAD and its contribution documents. One GraphQL query plus one REST call."""

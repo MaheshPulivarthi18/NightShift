@@ -25,7 +25,7 @@ from nightshift.context import archmap
 from nightshift.context.change import change_context
 from nightshift.context.change import to_markdown as change_markdown
 from nightshift.db import LLMCall, Repo, RepoContext, Task, session_scope
-from nightshift.github import GitHubClient
+from nightshift.github import GitHubClient, GitHubError
 from nightshift.health.agents import RepoBrief
 from nightshift.health.graph import repo_brief
 from nightshift.llm import BudgetExceeded, KillSwitchActive, LLMGateway
@@ -126,13 +126,35 @@ async def _save(task: Task, **values: Any) -> None:
 # ---------- plan and Gate 1 ----------
 
 
+async def precheck(
+    full_name: str, number: int, rehearsal: bool = False
+) -> tuple[str, IssueView, list[str], str | None]:
+    """The fast checks before planning: the repo's current name, the issue, and whether it is still free.
+
+    Returns (current repo name, issue, blockers, note if the repo moved). Raises TaskError when the issue
+    cannot be planned, so the caller can say why at once."""
+    gh = GitHubClient()
+    try:
+        current = await gh.canonical_name(full_name)
+    except GitHubError as e:
+        raise TaskError(f"Cannot read {full_name}: {e}") from e
+    finally:
+        await gh.aclose()
+    moved = f"{full_name} has moved to {current}; this task uses {current}" if current != full_name else None
+    try:
+        issue = await fetch_issue(current, number)
+    except GitHubError as e:
+        raise TaskError(f"Cannot read {current}#{number}: {e}") from e
+    blockers = issue.blockers(get_settings().github_login or None)
+    if blockers and not rehearsal:
+        raise TaskError(f"#{number} is not free: " + "; ".join(blockers))
+    return current, issue, blockers, moved
+
+
 async def plan_task(full_name: str, number: int, *, base: str | None = None, rehearsal: bool = False) -> Task:
     """Plan a fix for an issue and stop at Gate 1. A rehearsal may plan an issue someone already fixed."""
     settings = get_settings()
-    issue = await fetch_issue(full_name, number)
-    blockers = issue.blockers(settings.github_login or None)
-    if blockers and not rehearsal:
-        raise TaskError(f"#{number} is not free: " + "; ".join(blockers))
+    full_name, issue, blockers, moved = await precheck(full_name, number, rehearsal)
 
     async with session_scope() as s:
         repo = await get_or_create_repo(s, full_name)
@@ -167,6 +189,7 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, reh
         plan = await planner.make_plan(llm, repo=full_name, context=context)
         warnings = [f"`{p}` does not exist in the repo" for p in planner.unknown_paths(plan, tracked)]
         warnings += [f"rehearsal: {b}" for b in blockers]
+        warnings += [moved] if moved else []
         markdown = planner.to_markdown(plan, title=f"{full_name}#{number} {issue.title}", warnings=warnings)
         (task_dir(full_name, task.id) / "plan.md").write_text(markdown)
         await _save(
