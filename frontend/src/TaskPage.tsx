@@ -113,6 +113,43 @@ function ActionPanel({ task, onChange }: { task: TaskDetail; onChange: () => voi
 const lines = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boolean);
 
 function Gate1({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
+  if (!task.actionable) return <AskFirst task={task} onChange={onChange} />;
+  return <ApproveForm task={task} onChange={onChange} />;
+}
+
+// The Planner found nothing to fix yet: the way forward is the question on the issue, not a run.
+function AskFirst({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
+  const [armed, setArmed] = useState(false);
+  const [msg, setMsg] = useState<string | null>(task.claim_url);
+  return (
+    <section className="gate">
+      <header>
+        <span className="gate-mark">Gate 1</span>
+        <h2>Not actionable yet</h2>
+        <p className="muted">The Planner needs answers before there is anything to fix, so this plan cannot run. Ask on the issue, then plan it again once it is answered.</p>
+      </header>
+      <p className="quote">{task.claim_comment}</p>
+      <div className="actions">
+        {!msg && !armed && <button className="primary" onClick={() => setArmed(true)}>Ask on the issue…</button>}
+        {!msg && armed && (
+          <>
+            <span>Post this publicly on {task.repo}#{task.issue}?</span>
+            <button className="primary" onClick={() => api.claim(task.id, true).then((r) => setMsg(r.result), (e: Error) => setMsg(e.message))}>
+              Yes, post it
+            </button>
+            <button className="ghost" onClick={() => setArmed(false)}>Cancel</button>
+          </>
+        )}
+        {msg && <span className="mono dim">{msg}</span>}
+        <button className="ghost" onClick={() => api.decide(task.id, false, "", [], []).then(onChange, (e: Error) => setMsg(e.message))}>
+          Reject
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ApproveForm({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   const [setup, setSetup] = useState(task.setup_commands.join("\n"));
   const [tests, setTests] = useState(task.test_commands.join("\n"));
   const [note, setNote] = useState("");
@@ -143,7 +180,8 @@ function Gate1({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
         <input value={note} onChange={(e) => setNote(e.target.value)} />
       </label>
       <div className="actions">
-        <button className="primary" onClick={() => decide(true)}>Approve plan</button>
+        <button className="primary" disabled={!lines(tests).length} onClick={() => decide(true)}>Approve plan</button>
+        {!lines(tests).length && <span className="muted">Add a test command: without one, a fix cannot be verified.</span>}
         <button className="ghost" onClick={() => decide(false)}>Reject</button>
         {msg && <span className="error">{msg}</span>}
       </div>

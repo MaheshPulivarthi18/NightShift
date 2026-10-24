@@ -49,6 +49,18 @@ class TaskError(RuntimeError):
     pass
 
 
+def run_blocker(plan: dict[str, Any]) -> str | None:
+    """Why this plan cannot be run, or None. A run without a test has nothing to verify the fix with."""
+    if plan.get("actionable") is False:
+        return (
+            "The Planner marked this issue not actionable yet. Ask its questions on the issue, "
+            "and plan it again once they are answered."
+        )
+    if not plan.get("test_commands"):
+        return "The plan has no test command, so a fix could not be verified. Add one before approving."
+    return None
+
+
 def task_dir(full_name: str, task_id: int) -> Path:
     path = Path(get_settings().reports_dir) / full_name.replace("/", "__") / "tasks" / str(task_id)
     path.mkdir(parents=True, exist_ok=True)
@@ -267,6 +279,8 @@ async def decide(task_id: int, approve: bool, note: str | None = None, **overrid
         raise TaskError(f"Task {task_id} is {task.status}, not waiting for approval.")
     plan = dict(task.plan)
     plan.update({k: v for k, v in overrides.items() if v})
+    if approve and (why := run_blocker(plan)):
+        raise TaskError(why)
     if approve:
         await _save(task, status="approved", plan=plan, note=note, approved_at=datetime.now(UTC))
     else:
@@ -301,15 +315,17 @@ async def revise(
     # A published task keeps its PR and claim, so review feedback becomes a follow-up commit on that PR.
     keep = {k: v for k, v in task.result.items() if k in ("brief", "map_commit", "pr_url", "claim_url")}
     plan = dict(task.plan)
+    if setup_commands:
+        plan["setup_commands"] = setup_commands
+    if test_commands:
+        plan["test_commands"] = test_commands
+    if why := run_blocker(plan):
+        raise TaskError(why)
     if latest:  # upstream moved on (Gate 2 drift): redo the fix on the current default branch
         _, repo = await load_task(task_id)
         base = await latest_commit(repo.full_name)
         combined += f"\n\nRebased from {task.base_commit[:7]} to {base[:7]} (latest default branch)."
         await _save(task, base_commit=base)
-    if setup_commands:
-        plan["setup_commands"] = setup_commands
-    if test_commands:
-        plan["test_commands"] = test_commands
     await _save(task, status="approved", note=combined, plan=plan, result=keep, diff=None, error=None)
     return task
 
@@ -323,6 +339,8 @@ async def run_task(task_id: int) -> Task:
     task, repo = await load_task(task_id)
     if task.status != "approved":
         raise TaskError(f"Task {task_id} is {task.status}; only an approved plan can run.")
+    if why := run_blocker(task.plan):
+        raise TaskError(why)
     plan = dict(task.plan)
     if task.note:  # the operator's word at Gate 1 is part of what was approved, for the Coder and the Reviewer
         plan["markdown"] += (
@@ -477,9 +495,11 @@ async def draft_pr(task: Task, repo: Repo, llm: LLMGateway | None = None) -> dic
 
 
 async def claim(task_id: int, *, confirm: bool) -> str:
-    """Post the plan's claim comment. Without `confirm`, only says what would be posted."""
+    """Post the plan's claim comment. Without `confirm`, only says what would be posted. For a plan
+    that is not actionable, the comment asks the Planner's questions, so it can be posted at Gate 1."""
     task, repo = await load_task(task_id)
-    if task.status in ("planned", "rejected", "failed"):
+    asking = task.status == "planned" and task.plan.get("actionable") is False
+    if task.status in ("planned", "rejected", "failed") and not asking:
         raise TaskError(f"Task {task_id} is {task.status}; claim after approving the plan.")
     text = task.plan.get("claim_comment", "")
     if not confirm:

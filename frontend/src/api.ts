@@ -126,6 +126,7 @@ export interface TaskDetail extends TaskSummary {
   setup_commands: string[];
   test_commands: string[];
   claim_comment: string;
+  actionable: boolean;
   claim_url: string | null;
   baseline: CommandResult[];
   check: FixCheck | null;

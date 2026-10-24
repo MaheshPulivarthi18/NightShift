@@ -87,6 +87,7 @@ async def get_task(task_id: int) -> dict[str, Any]:
         "setup_commands": t.plan.get("setup_commands", []),
         "test_commands": t.plan.get("test_commands", []),
         "claim_comment": t.plan.get("claim_comment", ""),
+        "actionable": t.plan.get("actionable") is not False,
         "claim_url": res.get("claim_url"),
         "baseline": res.get("baseline", []),
         "check": res.get("check"),

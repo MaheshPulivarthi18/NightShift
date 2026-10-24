@@ -48,7 +48,8 @@ class Plan(BaseModel):
     risks: list[str] = Field(description="What could break or be missed, e.g. other code paths that must change too")
     size: Literal["small", "medium", "large"]
     claim_comment: str = Field(
-        description="Short, friendly comment to post on the issue saying the operator will work on it and how, in plain words"
+        description="Short, friendly comment to post on the issue saying the operator will work on it and how, "
+        "in plain words. If not actionable, it asks the questions instead"
     )
 
 

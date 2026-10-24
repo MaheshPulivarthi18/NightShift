@@ -277,7 +277,10 @@ class CoderRun:
             if not uses:
                 idle += 1
                 if idle >= 2:
-                    self.stopped = "the Coder stopped without submitting"
+                    said = " ".join(b.text for b in msg.content if b.type == "text").strip()
+                    self.stopped = "the Coder stopped without submitting" + (
+                        f". It said: {said[:1500]}" if said else ""
+                    )
                     return
                 nudge = "Keep going until the fix is done, then call submit. If you are blocked, say why."
                 self.messages.append({"role": "user", "content": [{"type": "text", "text": nudge}]})
