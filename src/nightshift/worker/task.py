@@ -660,6 +660,7 @@ async def draft_pr(task: Task, repo: Repo, llm: LLMGateway | None = None) -> dic
         "title": draft.title,
         "body": prwriter.pr_body(draft, check, task.issue_number),
         "commit_message": prwriter.commit_message(draft),
+        "template_headings": publish.template_headings(template),
     }
     (task_dir(repo.full_name, task.id) / "pr.md").write_text(f"# {pr['title']}\n\n{pr['body']}")
     await _save(task, result={**task.result, "pr": pr}, cost_usd=await task_cost(task))
@@ -681,17 +682,55 @@ async def claim(task_id: int, *, confirm: bool) -> str:
     return url
 
 
-async def gate2(task_id: int, *, confirm: bool) -> dict[str, Any]:
-    """Prepare the PR on the current upstream branch; with `confirm`, push and open it."""
+# What Gate 2 lets the operator change before publishing.
+GATE2_EDITS = ("title", "body", "commit_message", "attribution", "branch")
+
+
+async def gate2(
+    task_id: int, *, confirm: bool, edits: dict[str, str] | None = None, remember: bool = False
+) -> dict[str, Any]:
+    """Prepare the PR on the current upstream branch and show exactly what would go out: title, body,
+    commit message with its attribution line, branch. `edits` change any of those (kept for next time);
+    `remember` stores the attribution and branch prefix for this repo. With `confirm`, push and open it."""
     task, repo = await load_task(task_id)
     if task.status != "ready":
         raise TaskError(f"Task {task_id} is {task.status}; only a ready task can be published.")
-    pr = task.result.get("pr") or await draft_pr(task, repo)
+    edits = {k: v for k, v in (edits or {}).items() if k in GATE2_EDITS and v is not None}
+    pr = dict(task.result.get("pr") or await draft_pr(task, repo))
+    pr["commit_message"] = publish.strip_attribution(pr["commit_message"])  # drafts before Gate 2 showed it
+    pr.update({k: edits[k] for k in ("title", "body", "commit_message") if k in edits})
+    attribution = edits.get("attribution", publish.attribution_for(repo)).strip()
+    branch = edits.get("branch", "").strip() or publish.branch_name(task, repo)
+    if edits:
+        await _save(task, result={**task.result, "pr": pr})
+    if remember:
+        async with session_scope() as s:
+            row = await s.get(Repo, repo.id)
+            assert row is not None
+            row.publish = {**(row.publish or {}), "attribution": attribution,
+                           "branch_prefix": branch.rsplit("/", 1)[0] if "/" in branch else ""}  # fmt: skip
+
     blockers = await publish.freshness(repo.full_name, task)
-    prepared = await publish.prepare(repo, task, task_dir(repo.full_name, task.id) / "publish")
-    info = publish.summary(prepared, pr["title"], pr["body"]) | {"blockers": blockers}
+    if missing := publish.missing_sections(pr["body"], pr.get("template_headings") or []):
+        blockers.append("the PR body is missing these sections of the repo's PR template: " + ", ".join(missing))
+    warnings = []
+    check = FixCheck.model_validate(task.result["check"]) if task.result.get("check") else None
+    if check and (failing := [r.command for r in check.suite if not r.ok]):
+        warnings.append(
+            "The Testing section shows failing suites (they failed before the change too): " + ", ".join(failing)
+        )
+    if attribution:
+        warnings.append(f'The commit ends with the line "{attribution}". Clear it below to leave it out.')
+
+    prepared = await publish.prepare(repo, task, task_dir(repo.full_name, task.id) / "publish", branch=branch)
+    info = publish.summary(prepared, pr["title"], pr["body"]) | {
+        "blockers": blockers, "warnings": warnings, "commit_message": pr["commit_message"],
+        "attribution": attribution, "template_headings": pr.get("template_headings") or [],
+    }  # fmt: skip
     if not confirm or blockers or prepared.drift:
         return info | {"published": False}
-    url = await publish.publish(repo, task, prepared, title=pr["title"], body=pr["body"], message=pr["commit_message"])
-    await _save(task, status="published", result={**task.result, "pr_url": url})
+    message = publish.with_attribution(pr["commit_message"], attribution)
+    url = await publish.publish(repo, task, prepared, title=pr["title"], body=pr["body"], message=message)
+    result = {**task.result, "pr": pr, "pr_url": url, "published_diff": task.diff, "branch": prepared.branch}
+    await _save(task, status="published", result=result)
     return info | {"published": True, "url": url}

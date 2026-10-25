@@ -21,6 +21,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
@@ -46,6 +47,9 @@ class Repo(Base):
     paused: Mapped[bool] = mapped_column(Boolean, default=False)
     # False: removed from the watchlist in the UI. Its tasks and history stay; adding it again restores it.
     watched: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    # How Gate 2 publishes here, remembered from it: {"attribution": str, "branch_prefix": str}. A missing key
+    # means the global setting (commit_attribution, branch_prefix).
+    publish: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict, server_default=text("'{}'"))
     last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # "maintainer": backlog triage report. "contributor": where an outsider can usefully help.
     role: Mapped[str] = mapped_column(String(20), default="contributor", server_default="contributor")

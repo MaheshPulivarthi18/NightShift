@@ -24,7 +24,7 @@ class PRDraft(BaseModel):
         description="PR title in the style of the repo's recent merged PRs (e.g. a conventional-commit prefix if they use one)"
     )
     summary: str = Field(
-        description="Markdown body above the testing section: what was wrong, what changed and why, and anything a reviewer should check. If the repo has a PR template, fill its sections (except testing/evidence, which is added separately)."
+        description="Markdown body: what was wrong, what changed and why, and anything a reviewer should check. With a PR template: every one of its headings, in its order, each filled in. Where the template's testing or test-output section goes, write only the line <!-- testing --> and code puts the real test runs there."
     )
     commit_message: str = Field(
         description="Commit subject line, then a blank line and a short body, in the repo's commit style"
@@ -33,7 +33,13 @@ class PRDraft(BaseModel):
 
 PR_WRITER_SYSTEM = f"""You are the PR Writer for NightShift. You write the pull request a developer will submit to an open-source project for a fix that is already written, tested and reviewed.
 
-Write like a considerate contributor: short, specific and plain. Explain the problem, the change and the reasons, and point the reviewer to anything worth a close look (e.g. a design choice the issue left open). Follow the repo's PR template and rules and the style of its recent PR titles. Do not claim anything the diff and the verification do not show. Do not add a testing or evidence section: code appends one from the real test runs. Do not mention NightShift or AI tools in the title or summary.
+Write like a considerate contributor: short, specific and plain. Explain the problem, the change and the reasons, and point the reviewer to anything worth a close look (e.g. a design choice the issue left open). Follow the repo's rules and the style of its recent PR titles. Do not claim anything the diff and the verification do not show. Do not mention NightShift or AI tools in the title or summary.
+
+If the repo has a PR template, the summary keeps every heading of it, in order, and fills each section:
+- Checkboxes: tick [x] only what the diff or the verification shows (e.g. "Bug fix", "Tests added", "Unit tests pass" when the suites passed). Leave the rest [ ] and say why in that section when it matters (e.g. type checking was not run).
+- A section you cannot fill from what you have (e.g. a real-run proof, screenshots, a rollout plan) gets a short honest line saying what is missing; never invent it.
+- The testing or test-output section: put the line <!-- testing --> where the test runs go. Code fills it from the runs that actually happened.
+Without a template, do not write a testing section: code appends one.
 
 {UNTRUSTED_RULE}"""
 
@@ -106,15 +112,22 @@ def evidence_section(check: FixCheck) -> str:
     return "\n".join(out)
 
 
+TESTING_MARK = "<!-- testing -->"
+
+
 def pr_body(draft: PRDraft, check: FixCheck, issue_number: int) -> str:
+    """The summary with the code-built evidence: where the template's testing section put the marker,
+    else appended as its own section."""
     body = draft.summary.strip()
     closes = f"Closes #{issue_number}"
     if closes.lower() not in body.lower() and f"fixes #{issue_number}" not in body.lower():
         body = f"{closes}\n\n{body}"
-    return f"{body}\n\n{evidence_section(check)}\n"
+    evidence = evidence_section(check)
+    if TESTING_MARK in body:
+        return body.replace(TESTING_MARK, evidence.removeprefix("## Testing").strip(), 1).rstrip() + "\n"
+    return f"{body}\n\n{evidence}\n"
 
 
 def commit_message(draft: PRDraft) -> str:
-    attribution = get_settings().commit_attribution
-    message = draft.commit_message.strip()
-    return f"{message}\n\n{attribution}\n" if attribution else message + "\n"
+    """The commit message as written. The attribution line is added at Gate 2, where it is shown."""
+    return draft.commit_message.strip() + "\n"

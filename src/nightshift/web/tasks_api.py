@@ -242,12 +242,22 @@ async def claim(task_id: int, body: Confirm) -> dict[str, str]:
         raise HTTPException(409, str(e)) from e
 
 
+class Publish(BaseModel):
+    confirm: bool = False
+    title: str | None = Field(default=None, max_length=300)
+    body: str | None = Field(default=None, max_length=60_000)
+    commit_message: str | None = Field(default=None, max_length=10_000)
+    attribution: str | None = Field(default=None, max_length=200)  # "" leaves it out
+    branch: str | None = Field(default=None, max_length=120)
+    remember: bool = False  # keep the attribution and branch prefix for this repo
+
+
 @router.post("/tasks/{task_id}/publish", dependencies=[Guard])
-async def publish(task_id: int, body: Confirm) -> dict[str, Any]:
-    """Gate 2. Without confirm: freshness and a dry run on the current upstream branch."""
+async def publish(task_id: int, body: Publish) -> dict[str, Any]:
+    """Gate 2. Without confirm: freshness, a dry run on the current upstream branch, and exactly what
+    would be published. Edits to the title, body, commit message, attribution or branch are kept."""
+    edits = body.model_dump(include=set(worker.GATE2_EDITS), exclude_none=True)
     try:
-        info = await worker.gate2(task_id, confirm=body.confirm)
+        return await worker.gate2(task_id, confirm=body.confirm, edits=edits, remember=body.remember)
     except (worker.TaskError, PublishError) as e:
         raise HTTPException(409, str(e)) from e
-    info.pop("body", None)
-    return info

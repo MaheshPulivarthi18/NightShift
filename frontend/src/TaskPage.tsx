@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, CommandResult, GateInfo, ModelUse, ModelView, TaskDetail } from "./api";
+import { CommandResult, GateInfo, ModelUse, ModelView, PublishEdits, TaskDetail, api } from "./api";
 import { Diff, Html, Log, StatusBadge, Title, money } from "./ui";
 
 const TABS = ["Plan", "Log", "Verification", "Review", "Diff", "PR"] as const;
@@ -332,22 +332,30 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   const [msg, setMsg] = useState<string | null>(null);
   const [claimMsg, setClaimMsg] = useState<string | null>(task.claim_url);
   const [armed, setArmed] = useState(false);
+  const [edits, setEdits] = useState<PublishEdits | null>(null); // what will go out, as last checked or edited
+  const [remember, setRemember] = useState(false);
 
+  const show = (r: GateInfo) => {
+    setInfo(r);
+    setEdits({ title: r.title, body: r.body, commit_message: r.commit_message, attribution: r.attribution, branch: r.branch });
+  };
   const dryRun = () => {
     setBusy(true);
     setMsg(null);
-    api.publish(task.id, false).then(setInfo, (e: Error) => setMsg(e.message)).finally(() => setBusy(false));
+    api.publish(task.id, false, { ...(edits ?? {}), remember }).then(show, (e: Error) => setMsg(e.message)).finally(() => setBusy(false));
   };
   const publish = () => {
     setBusy(true);
-    api.publish(task.id, true).then(
+    api.publish(task.id, true, { ...(edits ?? {}), remember }).then(
       (r) => {
-        setInfo(r);
+        show(r);
         onChange();
       },
       (e: Error) => setMsg(e.message),
     ).finally(() => setBusy(false));
   };
+  const edit = (field: keyof PublishEdits) => (e: { target: { value: string } }) =>
+    setEdits((cur) => ({ ...(cur ?? {}), [field]: e.target.value }));
   const blocked = info ? info.blockers.length > 0 || info.drift.length > 0 : true;
 
   return (
@@ -373,6 +381,48 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
           {info.blockers.map((b) => (
             <p key={b} className="blocked">Blocked: {b}</p>
           ))}
+          {info.warnings.map((w) => (
+            <p key={w} className="warn">{w}</p>
+          ))}
+          {edits && !info.published && (
+            <div className="publish-form">
+              <h3>What will be published</h3>
+              <label className="full">
+                <span>Title</span>
+                <input value={edits.title ?? ""} onChange={edit("title")} />
+              </label>
+              <div className="gate-grid">
+                <label>
+                  <span>Branch on your fork</span>
+                  <input className="mono" value={edits.branch ?? ""} onChange={edit("branch")} />
+                </label>
+                <label>
+                  <span>Attribution line (last line of the commit; empty leaves it out)</span>
+                  <input className="mono" value={edits.attribution ?? ""} onChange={edit("attribution")} />
+                </label>
+              </div>
+              <label className="full">
+                <span>Commit message</span>
+                <textarea className="mono" rows={4} value={edits.commit_message ?? ""} onChange={edit("commit_message")} />
+              </label>
+              <label className="full">
+                <span>
+                  Body
+                  {info.template_headings.length > 0 && ` (must keep the template's sections: ${info.template_headings.join(", ")})`}
+                </span>
+                <textarea className="mono" rows={14} value={edits.body ?? ""} onChange={edit("body")} />
+              </label>
+              <div className="actions">
+                <label className="check">
+                  <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+                  <span>Use this attribution and branch prefix for {task.repo} from now on</span>
+                </label>
+                <button className="ghost small" disabled={busy} onClick={dryRun}>
+                  {busy ? "Checking…" : "Save edits and check again"}
+                </button>
+              </div>
+            </div>
+          )}
           {info.drift.length > 0 && (
             <div className="blocked">
               <p>Upstream changed {info.drift.join(", ")} since the fix was verified, so its tests no longer cover that code.</p>

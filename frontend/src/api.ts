@@ -194,9 +194,24 @@ export interface GateInfo {
   drift: string[];
   files: string[];
   title: string;
+  body: string;
+  commit_message: string;
+  attribution: string;
+  template_headings: string[];
   blockers: string[];
+  warnings: string[];
   published: boolean;
   url?: string;
+}
+
+// What Gate 2 may change before publishing; omitted fields keep the draft.
+export interface PublishEdits {
+  title?: string;
+  body?: string;
+  commit_message?: string;
+  attribution?: string;
+  branch?: string;
+  remember?: boolean;
 }
 
 export async function post(path: string, body: unknown): Promise<Response> {
@@ -254,5 +269,6 @@ export const api = {
   run: (id: number) => call<{ status: string }>(`/tasks/${id}/run`, {}),
   revise: (id: number, note: string, latest: boolean) => call<TaskDetail>(`/tasks/${id}/revise`, { note, latest }),
   claim: (id: number, confirm: boolean) => call<{ result: string }>(`/tasks/${id}/claim`, { confirm }),
-  publish: (id: number, confirm: boolean) => call<GateInfo>(`/tasks/${id}/publish`, { confirm }),
+  publish: (id: number, confirm: boolean, edits: PublishEdits = {}) =>
+    call<GateInfo>(`/tasks/${id}/publish`, { confirm, ...edits }),
 };

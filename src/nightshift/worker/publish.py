@@ -57,9 +57,44 @@ async def _run(*args: str, cwd: Path | None = None, stdin: str | None = None, ch
     return out.decode(errors="replace")
 
 
-def branch_name(task: Task) -> str:
+def attribution_for(repo: Repo) -> str:
+    """The commit's last line for this repo: what Gate 2 remembered for it, else the global setting."""
+    return str((repo.publish or {}).get("attribution", get_settings().commit_attribution))
+
+
+def branch_name(task: Task, repo: Repo | None = None) -> str:
+    prefix = (repo.publish or {}).get("branch_prefix", get_settings().branch_prefix) if repo else None
+    prefix = get_settings().branch_prefix if prefix is None else prefix
     slug = re.sub(r"[^a-z0-9]+", "-", str(task.issue.get("title", "")).lower()).strip("-")[:40].strip("-")
-    return f"{get_settings().branch_prefix}/{task.issue_number}-{slug or 'fix'}"
+    name = f"{task.issue_number}-{slug or 'fix'}"
+    return f"{prefix}/{name}" if prefix else name
+
+
+BRANCH_RE = re.compile(r"^(?!/)(?!.*\.\.)(?!.*//)[A-Za-z0-9._/-]{1,120}(?<![/.])$")
+
+
+def with_attribution(message: str, attribution: str) -> str:
+    message = message.strip()
+    return f"{message}\n\n{attribution.strip()}\n" if attribution.strip() else message + "\n"
+
+
+def strip_attribution(message: str) -> str:
+    """A commit message without the attribution line older drafts ended with."""
+    line = get_settings().commit_attribution.strip()
+    text = message.rstrip()
+    if line and text.endswith(line):
+        text = text[: -len(line)].rstrip()
+    return text
+
+
+def template_headings(template: str) -> list[str]:
+    """The section headings of a PR template, e.g. ["Description", "Testing"]."""
+    return [m.strip().strip("#").strip() for m in re.findall(r"^#{1,6}\s+(.+?)\s*$", template, re.M)]
+
+
+def missing_sections(body: str, headings: list[str]) -> list[str]:
+    present = {h.strip().lower() for h in re.findall(r"^#{1,6}\s+(.+?)\s*#*\s*$", body, re.M)}
+    return [h for h in headings if h.lower() not in present]
 
 
 async def freshness(full_name: str, task: Task) -> list[str]:
@@ -70,7 +105,7 @@ async def freshness(full_name: str, task: Task) -> list[str]:
     return issue.blockers(get_settings().github_login or None)
 
 
-async def prepare(repo: Repo, task: Task, workdir: Path, url: str | None = None) -> Prepared:
+async def prepare(repo: Repo, task: Task, workdir: Path, url: str | None = None, branch: str | None = None) -> Prepared:
     """Fresh clone of upstream (or `url`), the verified diff applied on its current default branch."""
     if not task.diff:
         raise PublishError("The task has no diff.")
@@ -89,7 +124,9 @@ async def prepare(repo: Repo, task: Task, workdir: Path, url: str | None = None)
     if head != task.base_commit:
         changed = await _run("git", "diff", "--name-only", task.base_commit, head, "--", *files, cwd=workdir)
         drift = [p for p in changed.splitlines() if p]
-    branch = branch_name(task)
+    branch = branch or branch_name(task, repo)
+    if not BRANCH_RE.match(branch):
+        raise PublishError(f"Not a usable branch name: {branch!r}")
     await _run("git", "checkout", "--quiet", "-b", branch, cwd=workdir)
     await _run("git", "apply", "--index", "--whitespace=nowarn", "-", cwd=workdir, stdin=task.diff)
     return Prepared(workdir=str(workdir), branch=branch, default_branch=default, head=head, drift=drift, files=files)
