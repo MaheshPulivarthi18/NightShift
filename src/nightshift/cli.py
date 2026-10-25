@@ -396,8 +396,16 @@ def _run_sandboxed(coro: Coroutine[Any, Any, None]) -> None:
 
     try:
         asyncio.run(coro)
-    except (SandboxError, KillSwitchActive, BudgetExceeded, PublishError, TaskError) as e:
+    except (SandboxError, KillSwitchActive, BudgetExceeded, PublishError, TaskError, ModelConfigError) as e:
         typer.echo(f"{type(e).__name__}: {e}", err=True)
+        raise typer.Exit(1) from e
+    except ModelAPIError as e:
+        hint = (
+            " Check OPENROUTER_API_KEY and the key's credit limit on openrouter.ai."
+            if e.status in (401, 402, 403)
+            else ""
+        )
+        typer.echo(f"Model provider error {e}.{hint}", err=True)
         raise typer.Exit(1) from e
 
 

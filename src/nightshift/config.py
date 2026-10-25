@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     # Setup agent: tries an environment for a repo this many times, within this budget, once per repo.
     setup_attempts: int = 5
     setup_budget_usd: float = 1.0
+    setup_test_seconds: int = 300  # per test command while finding an environment: big suites must be scoped
 
     # Task sandboxes (Docker). Build the base image with `nightshift sandbox build`.
     sandbox_image: str = "nightshift-sandbox:3"

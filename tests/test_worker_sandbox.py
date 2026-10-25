@@ -130,3 +130,34 @@ async def test_the_repos_own_tools_come_first_on_path(repo: tuple[Sandbox, str])
     await box.write_file(f"{REPO_DIR}/node_modules/.bin/jest", "#!/bin/sh\necho repo-jest\n")
     await box.exec("chmod +x .venv/bin/pytest node_modules/.bin/jest")
     assert (await box.exec("pytest && jest")).stdout.split() == ["repo-pytest", "repo-jest"]
+
+
+# The issue's own case: add() must work for floats too, which the targeted test does not check.
+REPRO = {
+    "script_name": "repro_7.py",
+    "script": "import sys; sys.path.insert(0, '.')\nfrom calc import add\nassert add(0.5, 0.25) == 0.75\n",
+    "command": "python /tmp/nightshift-repro/repro_7.py",
+}
+
+
+async def test_the_issues_reproduction_must_pass_with_the_fix(repo: tuple[Sandbox, str]) -> None:
+    box, base = repo
+    baseline = await run_commands(box, SUITE)
+    await _add_test(box)
+    await box.write_file(f"{REPO_DIR}/calc.py", CALC.replace("a - b", "a + b"))
+    check = await check_fix(box, base, TARGETED, SUITE, baseline, reproduction=REPRO)
+    assert check.passed, check.report()
+    assert check.reproduction is not None and check.reproduction.ok
+    assert "Issue reproduction with the fix" in check.report()
+    assert (await box.exec("git status --porcelain")).stdout.strip().count("repro") == 0  # never part of the diff
+
+
+async def test_a_fix_that_passes_its_test_but_not_the_issue_is_caught(repo: tuple[Sandbox, str]) -> None:
+    box, base = repo
+    baseline = await run_commands(box, SUITE)
+    await _add_test(box)
+    # Makes the integer test pass (2 + 3 == 5) but the issue's float case still fails.
+    await box.write_file(f"{REPO_DIR}/calc.py", "def add(a, b):\n    return int(a) + int(b)\n")
+    check = await check_fix(box, base, TARGETED, SUITE, baseline, reproduction=REPRO)
+    assert not check.passed
+    assert any("reproduction still fails" in p for p in check.problems)

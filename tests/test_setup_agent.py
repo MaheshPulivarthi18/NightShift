@@ -124,3 +124,27 @@ def test_env_image_rules() -> None:
     assert env_image_name(["libpq-dev"], []) == env_image_name(["libpq-dev", "libpq-dev"], [])
     text = dockerfile("nightshift-sandbox:3", ["libpq-dev"], ["rust"])
     assert "curl libpq-dev" in text and "RUSTUP_HOME" in text and text.rstrip().endswith("USER worker")
+
+
+RECIPE = {"setup": ["uv sync"], "tests": ["pytest -q", "pytest slow -q"], "passing": ["pytest -q"]}
+
+
+async def test_a_recipe_that_still_works_needs_no_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    tried = _sandbox(monkeypatch, _attempt("tests", tests=[_result(True)]))
+    llm = _Script()  # no answers: any model call would fail
+    env = await find_environment(llm, "o/r", "abc", "hints", recipe=RECIPE)  # type: ignore[arg-type]
+    assert env.status == "ready" and env.cost_usd == 0 and llm.prompts == []
+    assert tried[0].test_commands == ["pytest -q"]  # only the commands that passed before
+    assert env.sources == ["an earlier NightShift task in this repo"]
+
+
+async def test_a_recipe_that_broke_is_the_agents_first_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    _sandbox(
+        monkeypatch,
+        _attempt("setup", error="uv: lockfile out of date"),
+        _attempt("tests", tests=[_result(True)]),
+    )
+    llm = _Script(_proposal(setup_commands=["uv sync --upgrade"]))
+    env = await find_environment(llm, "o/r", "abc", "hints", recipe=RECIPE)  # type: ignore[arg-type]
+    assert env.status == "ready" and env.setup_commands == ["uv sync --upgrade"]
+    assert "worked in an earlier task" in llm.prompts[0] and "lockfile out of date" in llm.prompts[0]

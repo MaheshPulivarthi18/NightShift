@@ -33,7 +33,7 @@ from nightshift.db import LLMCall, Repo, RepoContext, Task, session_scope
 from nightshift.github import GitHubClient, GitHubError
 from nightshift.health.agents import RepoBrief
 from nightshift.health.graph import repo_brief
-from nightshift.llm import BudgetExceeded, KillSwitchActive, LLMGateway
+from nightshift.llm import BudgetExceeded, KillSwitchActive, LLMGateway, ModelAPIError
 from nightshift.memory import follow_rename, get_or_create_repo
 from nightshift.router import check_choice, family
 from nightshift.sandbox.docker import Sandbox, SandboxError, prepare_repo
@@ -42,12 +42,10 @@ from nightshift.worker import planner, prwriter, publish, reviewer
 from nightshift.worker.coder import CoderRun
 from nightshift.worker.issue import IssueView, fetch_issue
 from nightshift.worker.relevant import relevant_files
-from nightshift.worker.setup_agent import ensure_environment
-from nightshift.worker.verify import CommandResult, FixCheck, diff, run_commands
+from nightshift.worker.setup_agent import RECIPE, ensure_environment, load_recipe
+from nightshift.worker.verify import CommandResult, FixCheck, diff, run_commands, run_reproduction
 
 log = structlog.get_logger()
-
-RECIPE = "recipe"
 
 
 class TaskError(RuntimeError):
@@ -87,19 +85,6 @@ def brief_text(brief: RepoBrief | None) -> str:
     lines = [brief.summary, "", "PR rules:", *[f"- {r}" for r in brief.pr_rules]]
     lines += ["", "Setup and test (from the docs):", *[f"- {c}" for c in brief.setup_and_test]]
     return "\n".join(lines)
-
-
-async def _recipe(repo_id: int) -> dict[str, Any] | None:
-    async with session_scope() as s:
-        row = (
-            await s.execute(
-                select(RepoContext)
-                .where(RepoContext.repo_id == repo_id, RepoContext.kind == RECIPE)
-                .order_by(RepoContext.created_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-    return row.data if row else None
 
 
 async def save_recipe(repo_id: int, commit: str, setup: list[str], tests: list[CommandResult]) -> None:
@@ -203,7 +188,7 @@ async def plan_task(
         _, l2 = await relevant_files(
             box, f"{issue.title}\n{issue.body}\n" + "\n".join(c["body"] for c in issue.comments)
         )
-        recipe = await _recipe(repo.id)
+        recipe = await load_recipe(repo.id)
         env = await ensure_environment(llm, repo, box, commit)
         image = await ensure_env_image(env.system_packages, env.tools) if env.status == "ready" else None
         tracked = set((await box.exec("git ls-files")).stdout.splitlines())
@@ -224,7 +209,7 @@ async def plan_task(
         # Run the setup now, before Gate 1, so a plan whose commands cannot work is caught before any paid run.
         # A failure goes back to the Planner once. Success also saves the repo image the run will start from.
         await events.record(task.run_id, "node_start", "setup check", node="setup_check")
-        setup_error = await check_setup(full_name, commit, plan.setup_commands, image)
+        setup_error, repro = await check_setup(full_name, commit, plan.setup_commands, image, plan.reproduction)
         if setup_error:
             await events.record(task.run_id, "warning", "setup failed; asking the Planner to fix the commands")
             failed = "\n".join(plan.setup_commands)
@@ -234,9 +219,12 @@ async def plan_task(
                 context=f"{context}\n\n<setup_failed>\nThese setup commands failed in the sandbox:\n{failed}\n\n"
                 f"Output:\n{setup_error}\n</setup_failed>",
             )
-            setup_error = await check_setup(full_name, commit, plan.setup_commands, image)
+            setup_error, repro = await check_setup(full_name, commit, plan.setup_commands, image, plan.reproduction)
         checks = ["setup commands ran successfully in the sandbox"] if not setup_error else []
         warnings = [f"setup failed in the sandbox: {setup_error[-600:]}"] if setup_error else []
+        repro_checks, repro_warnings = reproduction_note(repro)
+        checks += repro_checks
+        warnings += repro_warnings
         if env.status == "ready":
             passing, total = sum(t.ok for t in env.tests), len(env.tests)
             checks.append(f"sandbox environment ready: {passing} of {total} test commands pass on {env.commit[:7]}")
@@ -259,6 +247,8 @@ async def plan_task(
                 "warnings": warnings,
                 "markdown": markdown,
                 "setup_verified": not setup_error,
+                # The reproduction's run on the code before any change; when it failed, the fix must make it pass.
+                "reproduced": repro.model_dump() if repro else None,
                 "planning_note": note.strip(),
                 "environment": {"system_packages": env.system_packages, "tools": env.tools}
                 if env.status == "ready"
@@ -279,14 +269,34 @@ async def plan_task(
             await box.remove()
 
 
-async def check_setup(full_name: str, commit: str, setup: list[str], image: str | None = None) -> str | None:
-    """Run the setup commands in a fresh sandbox. Returns None if they work, else the end of their output."""
+async def check_setup(
+    full_name: str,
+    commit: str,
+    setup: list[str],
+    image: str | None = None,
+    reproduction: planner.Reproduction | None = None,
+) -> tuple[str | None, CommandResult | None]:
+    """Run the setup commands in a fresh sandbox, then the plan's reproduction there.
+    Returns (the end of the setup's output if it failed, else None; the reproduction's run, if any)."""
     try:
         box, _ = await prepare_repo(full_name, commit, setup, image=image)
     except SandboxError as e:
-        return str(e)[-3000:]
-    await box.remove()
-    return None
+        return str(e)[-3000:], None
+    async with box:
+        return None, await run_reproduction(box, reproduction.model_dump()) if reproduction else None
+
+
+def reproduction_note(run: CommandResult | None) -> tuple[list[str], list[str]]:
+    """(checks, warnings) for Gate 1 from the reproduction's run on the code before any change."""
+    if run is None:
+        return [], []
+    if run.ok:
+        return [], [
+            f"the reproduction PASSED on the current code (`{run.command}`), so it does not show the bug: "
+            "the plan may misread the issue"
+        ]
+    tail = run.tail.strip().splitlines()[-1:] or [""]
+    return [f"the reproduction fails on the current code, as the issue says ({run.line()}: {tail[0][:200]})"], []
 
 
 async def decide(
@@ -497,6 +507,7 @@ async def run_task(task_id: int) -> Task:
     await events.start_run(task.run_id, repo.id)
     beat = start_heartbeat(task.id)
     box: Sandbox | None = None
+    coder: CoderRun | None = None
     try:
         await events.record(task.run_id, "node_start", "setup", node="setup")
         env = plan.get("environment") or {}
@@ -521,6 +532,9 @@ async def run_task(task_id: int) -> Task:
         coder = CoderRun(box, llm, task.base_commit, plan["test_commands"], baseline, context)
         coder.prefer = chosen.get("coder")
         coder.kind = plan.get("kind", "code")
+        # The issue's reproduction, when it failed on the code before any change: the fix must make it pass.
+        reproduced = plan.get("reproduced") or {}
+        coder.reproduction = plan.get("reproduction") if reproduced and not reproduced.get("ok") else None
         # A large task starts one step up the ladder, unless the operator chose the model.
         coder.level = 1 if plan.get("size") == "large" and not coder.prefer else 0
         escalated = False
@@ -537,6 +551,11 @@ async def run_task(task_id: int) -> Task:
                 "Fix the issue following the approved plan. Start by reading the files it names. "
                 f"The plan's targeted test command is `{plan['test_plan']['targeted_command']}`."
             )
+            if coder.reproduction:
+                instruction += (
+                    " The plan's reproduction script fails on the current code; verification runs it again "
+                    f"(`{coder.reproduction['command']}`) and it must pass with your fix."
+                )
         reviews: list[dict[str, Any]] = []
         status, why = "needs_operator", ""
         for round_no in range(1, settings.review_rounds + 2):
@@ -602,11 +621,19 @@ async def run_task(task_id: int) -> Task:
             await draft_pr(task, repo, llm)
         await events.finish_run(task.run_id, "done" if status == "ready" else "stopped", error=task.error)
         return task
-    except (BudgetExceeded, KillSwitchActive, SandboxError) as e:
+    except (BudgetExceeded, KillSwitchActive, SandboxError, ModelAPIError, ModelConfigError) as e:
+        # Limits, the sandbox, or the model account (no credits, a bad key): the work so far is kept, and a
+        # revise runs it again once the cause is fixed.
         if box:
             result["partial_diff"] = await diff(box, task.base_commit)
-        await _save(task, status="needs_operator", result=result, error=f"{type(e).__name__}: {e}",
-                    cost_usd=await task_cost(task))  # fmt: skip
+        if coder and coder.check:
+            result["check"] = coder.check.model_dump()
+        why = f"{type(e).__name__}: {e}"
+        if isinstance(e, ModelAPIError) and e.status in (401, 402, 403):
+            why = (
+                f"OpenRouter refused the call ({e.status}: {e.message[:200]}). Fix the key or add credits, then revise."
+            )
+        await _save(task, status="needs_operator", result=result, error=why, cost_usd=await task_cost(task))
         await events.finish_run(task.run_id, "stopped", error=str(e))
         return task
     except BaseException as e:

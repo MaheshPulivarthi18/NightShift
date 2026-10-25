@@ -46,14 +46,14 @@ under "Found by you".
 - [x] **Planner proposed setup commands that cannot work** (laya: `pip install -e` on an engine with no
       pyproject). Fixed: planning runs the setup in the sandbox before Gate 1; a failure goes back to the
       Planner once, and the plan says "setup commands ran successfully" or why they failed.
-- [ ] **Planner proposed a test that cannot fail** (multilspy: a jedi test for a bug jedi does not have).
-      Reproduce the issue in the sandbox before planning the test.
+- [x] **Planner proposed a test that cannot fail** (multilspy: a jedi test for a bug jedi does not have).
+      Reproduce the issue in the sandbox before planning the test. Fixed: for a bug the Planner writes a reproduction script (the issue's own case); it runs in the sandbox before Gate 1, which says whether it failed as the issue says or passed (a misread bug). Live: ai-job-search #766's reproduction failed with the expected AssertionError.
 - [x] **Repo virtualenv and node tools are not on PATH** in the sandbox (`jedi-language-server` not found,
       so a suite showed red for no reason). Put `.venv/bin` and `node_modules/.bin` on PATH. Fixed: every sandbox command has the repo's `.venv/bin` and `node_modules/.bin` first on PATH.
 - [x] **Testing section is noisy:** it quotes log lines. Quote the test runner's summary and the failing
       assertion only. Fixed: it quotes the test runner's result line and the failing assertion (the last lines only when neither is recognised).
-- [ ] **Reviewer missed the event-loop bug** in the first multilspy fix (the issue's own `SyncLanguageServer`
-      case). When feasible, run the issue's reproduction as part of review.
+- [x] **Reviewer missed the event-loop bug** in the first multilspy fix (the issue's own `SyncLanguageServer`
+      case). When feasible, run the issue's reproduction as part of review. Fixed: verification re-runs the issue's reproduction with the fix and refuses a fix that passes its own test but not the issue's case; the Reviewer sees both runs, and the PR says the issue's case now passes.
 - [ ] **Decide the Reviewer policy on error and fallback paths** that skip a new field (laya `ws_router.py`).
 - [x] **Setups that pull GPU builds time out** (headroom: `uv sync --extra dev` downloads CUDA PyTorch, over
       2.5 GB). The Planner should default to CPU-only wheels (`uv pip install --torch-backend cpu`) and call

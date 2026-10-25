@@ -163,6 +163,7 @@ class CoderRun:
     level: int = 0  # where on the Coder's model ladder it works (router.RouteHint)
     prefer: str | None = None  # the model the operator chose at Gate 1
     kind: str = "code"  # "docs": submit checks a docs-only change (verify.check_docs)
+    reproduction: dict[str, str] | None = None  # the plan's, when it failed before any change: must pass after
     model: str = ""  # the model that took the last step
     max_steps: int = 0  # 0: settings.coder_max_steps; an escalation adds steps
 
@@ -249,8 +250,9 @@ class CoderRun:
                 self.check = await check_docs(box, self.base, self.suite, self.baseline)
             else:
                 self.check = await check_fix(
-                    box, self.base, str(args.get("targeted_test_command", "")), self.suite, self.baseline
-                )
+                    box, self.base, str(args.get("targeted_test_command", "")), self.suite, self.baseline,
+                    reproduction=self.reproduction,
+                )  # fmt: skip
             if not self.check.passed:
                 raise ToolError(self.check.report())
             return self.check.report()

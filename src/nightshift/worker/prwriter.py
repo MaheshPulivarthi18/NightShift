@@ -121,6 +121,8 @@ def evidence_section(check: FixCheck) -> str:
             "```",
             "",
         ]
+    if check.reproduction and check.reproduction.ok:
+        out += ["The issue's own case, as a script, fails on the code before this change and passes with it.", ""]
     if check.suite:
         out += ["Existing suites:", ""]
         out += [f"- `{r.command}`: {'passed' if r.ok else 'failed'}" for r in check.suite]

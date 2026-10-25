@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 import shlex
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 import structlog
 from pydantic import BaseModel, Field
@@ -36,6 +36,7 @@ from nightshift.worker.verify import CommandResult, run_commands
 log = structlog.get_logger()
 
 ENVIRONMENT = "environment"  # RepoContext kind
+RECIPE = "recipe"  # RepoContext kind: setup and test commands that worked in an earlier task run
 
 # Files that say how a repo is built and tested, most reliable first, with how much of each to read.
 HINTS: list[tuple[re.Pattern[str], int]] = [
@@ -154,7 +155,7 @@ For another Python version, use uv in the setup, e.g. `uv venv --python 3.11`.
 Where to look, most reliable first: CI workflows (they install and test on every push: copy their steps, translated for this container, dropping setup actions, services and sudo), dev container config, the contributing guide, the README, Dockerfiles (only to learn which system packages are needed; they are never built), toolchain files.
 
 - setup_commands install everything the tests need and must be safe to run again on top of an earlier install. Give one plain command per step, no `||` fallback chains: if a command fails you will see why and can change it. Prefer lock files (`uv sync --frozen`, `npm ci`, `pnpm install --frozen-lockfile`). Use CPU-only builds of GPU libraries, e.g. `uv pip install torch --torch-backend cpu`. A virtualenv is not active in the next command: call `.venv/bin/...` directly.
-- test_commands run the repo's main unit test suites, the ones CI runs, without services. Leave out tests that need services, secrets, a GPU or outside network APIs. Use quiet flags. Each command must finish within 15 minutes.
+- test_commands run the repo's main unit tests, the ones CI runs, without services. Leave out tests that need services, secrets, a GPU or outside network APIs. Use quiet flags. Each command must finish within 5 minutes here: for a large suite, pick the fast unit tests of the main package (one directory, or a -k selection), not everything. A command that times out is a failed attempt.
 - status try: the environment to run next. status done: accept the last attempt, when the setup succeeded and the tests ran, and the failures left are the repo's own failing tests, not a missing tool, package or module. status blocked: the tests cannot run in this sandbox at all (they need a service, secrets, a GPU, another OS, or downloads keep failing); say which in blocker and what exactly in blocker_detail.
 - After a failed attempt, read the error and change what caused it. Never repeat an attempt that failed the same way.
 
@@ -221,7 +222,7 @@ async def try_environment(full_name: str, commit: str, p: Proposal) -> Attempt:
         return attempt
     async with box:
         attempt.stage = "tests"
-        attempt.tests = await run_commands(box, p.test_commands)
+        attempt.tests = await run_commands(box, p.test_commands, timeout=get_settings().setup_test_seconds)
     return attempt
 
 
@@ -235,12 +236,35 @@ def _environment(status: Literal["ready", "failed"], commit: str, a: Attempt, p:
 
 
 async def find_environment(
-    llm: LLMGateway, full_name: str, commit: str, hints: str, previous: Environment | None = None
+    llm: LLMGateway,
+    full_name: str,
+    commit: str,
+    hints: str,
+    previous: Environment | None = None,
+    recipe: dict[str, Any] | None = None,
 ) -> Environment:
-    """Ask, try, read the result, and ask again, until an environment runs the tests or the limits are hit."""
+    """Ask, try, read the result, and ask again, until an environment runs the tests or the limits are hit.
+
+    A `recipe` (commands that worked in an earlier task here) is tried first, with no model call: when it
+    still works, that is the environment; when it does not, the agent starts from its failure."""
     settings = get_settings()
     attempts: list[Attempt] = []
     spent, asks, p, result = 0.0, 0, None, None
+    if recipe and recipe.get("passing"):
+        known = Proposal(
+            status="try", reasoning="commands that worked in an earlier task here", system_packages=[], tools=[],
+            setup_commands=recipe.get("setup", []), test_commands=recipe["passing"], blocker="none",
+            blocker_detail="", sources=["an earlier NightShift task in this repo"],
+        )  # fmt: skip
+        await events.record(
+            llm.run_id, "node_start", "environment: trying the commands that worked before", node="setup"
+        )
+        tried = await try_environment(full_name, commit, known)
+        if tried.passed:
+            result = _environment("ready", commit, tried, known)
+        else:
+            tried.note = "These commands worked in an earlier task in this repo; they do not work now."
+            attempts.append(tried)
     while result is None:
         if spent >= settings.setup_budget_usd or asks >= 2 * settings.setup_attempts:
             break
@@ -333,6 +357,20 @@ async def save_environment(repo_id: int, env: Environment) -> None:
                           cost_usd=env.cost_usd))  # fmt: skip
 
 
+async def load_recipe(repo_id: int) -> dict[str, Any] | None:
+    """The setup and test commands that last worked in a task run here: {"setup", "tests", "passing"}."""
+    async with session_scope() as s:
+        row = (
+            await s.execute(
+                select(RepoContext)
+                .where(RepoContext.repo_id == repo_id, RepoContext.kind == RECIPE)
+                .order_by(RepoContext.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    return row.data if row else None
+
+
 async def ensure_environment(
     llm: LLMGateway, repo: Repo, box: Sandbox, commit: str, *, force: bool = False
 ) -> Environment:
@@ -344,8 +382,9 @@ async def ensure_environment(
     await events.record(llm.run_id, "node_start", "environment", node="setup")
     hints, _ = await gather_hints(box)
     env = await find_environment(
-        llm, repo.full_name, commit, hints, previous if previous and previous.status == "ready" else None
-    )
+        llm, repo.full_name, commit, hints, previous if previous and previous.status == "ready" else None,
+        recipe=await load_recipe(repo.id),
+    )  # fmt: skip
     await save_environment(repo.id, env)
     return env
 

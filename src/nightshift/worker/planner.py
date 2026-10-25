@@ -32,6 +32,19 @@ class TestPlan(BaseModel):
     )
 
 
+class Reproduction(BaseModel):
+    script_name: str = Field(description="File name for the script, e.g. repro_123.py")
+    script: str = Field(
+        description="The smallest script that shows the bug through the repo's own code, as the issue describes it. "
+        "It exits non-zero (a failing assert, or an uncaught error) while the bug is there, and 0 once it is fixed. "
+        "No network, no services, done in under a minute"
+    )
+    command: str = Field(
+        description="Runs the script from the repo root; the script is saved as /tmp/nightshift-repro/<script_name>, "
+        "e.g. `.venv/bin/python /tmp/nightshift-repro/repro_123.py`"
+    )
+
+
 class Plan(BaseModel):
     understanding: str = Field(description="What is wrong or wanted, in your own words, two to four sentences")
     actionable: bool = Field(
@@ -46,6 +59,12 @@ class Plan(BaseModel):
     approach: list[str] = Field(description="Ordered steps of the fix")
     files_to_change: list[FileChange]
     test_plan: TestPlan
+    reproduction: Reproduction | None = Field(
+        default=None,
+        description="For a bug: a script that fails now and passes once fixed. It runs in the sandbox before the "
+        "developer sees the plan, and again after the fix. None for docs, features, or a bug that needs services or "
+        "network to show",
+    )
     setup_commands: list[str] = Field(
         description="Commands run from the repo root in a fresh Linux container (Python 3.12, Node 22, Bun, uv, git, a C/C++ compiler; no sudo) to install what the tests need"
     )
@@ -70,6 +89,7 @@ You get the issue with its comments, the repository's contribution rules and com
 - The container has Python 3.12, Node 22, Bun, uv, git and a C/C++ compiler, plus the system packages and tools in <sandbox_environment>, and no sudo. If <setup_failed> is present, your earlier setup commands were run there and failed with that output: propose commands that work in that container.
 - If the issue is unclear or needs a maintainer's decision first, set actionable to false and ask in questions.
 - <developer_note>, when present, is the developer's own instruction, written in NightShift (not on GitHub): follow it. It sets the scope, e.g. "treat this as a docs task" makes a question issue actionable as that docs change. Set actionable to false only if the note's task itself cannot be done from the repo.
+- For a bug, write a reproduction: the issue's own case as a tiny script that fails on the current code and passes once fixed (e.g. the issue's code sample with an assert on the expected result). It is run in the sandbox before the developer sees your plan, so a plan built on a misread bug shows up at once, and again after the fix. Use the repo's test or library code the way the issue does, not internals the issue never touches.
 - kind docs is for a change to documentation files only. It has no reproducing test: leave the test_plan's file and targeted_command empty, keep test_commands as a sanity run of the suites, and plan to check every statement and example against the code that implements it.
 - Use only paths that appear in the input or follow the repo's layout for a new test file.
 
@@ -114,6 +134,13 @@ def to_markdown(plan: Plan, *, title: str, warnings: list[str], checks: list[str
     out += ["## Approach", *[f"{i}. {s}" for i, s in enumerate(plan.approach, 1)], ""]
     out += ["## Files", *[f"- `{f.path}`: {f.why}" for f in plan.files_to_change], ""]
     t = plan.test_plan
+    if plan.reproduction:
+        out += [
+            "## Reproduction",
+            f"- Script: `{plan.reproduction.script_name}`",
+            f"- Run: `{plan.reproduction.command}`",
+        ]
+        out += ["", "```", plan.reproduction.script.strip(), "```", ""]
     if plan.kind == "docs" and not t.targeted_command:
         out += ["## Test", "- None: a docs change has no failing-first test (see above).", ""]
     else:

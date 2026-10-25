@@ -6,6 +6,9 @@
    put back and it must PASS. A test that passes without the fix proves nothing.
 3. No regressions: every test command that passed at baseline must still pass.
 
+4. The issue's reproduction (when the plan has one, and it failed before any change) must pass with the
+   fix: the targeted test can pass while the issue's own case still fails.
+
 A docs change (the plan's kind is "docs") has no failing-first test: `check_docs` instead proves that
 only documentation files changed and that the suites still pass. Whether what the docs say is true is
 the Reviewer's job, against the code.
@@ -26,6 +29,7 @@ _TEST_RE = re.compile(
 # Documentation: prose files and anything under a docs folder. A docstring is code, so it is not here.
 _DOC_RE = re.compile(r"(^|/)docs?/|\.(md|mdx|rst|txt|adoc)$|(^|/)(README|CHANGELOG|CONTRIBUTING|AUTHORS)[^/]*$")
 PATCH = "/tmp/ns-source.patch"
+REPRO_DIR = "/tmp/nightshift-repro"  # outside the repo, so the script is never part of the change
 # Build and test output that is never part of a change, even in a repo whose .gitignore misses it.
 EXCLUDES = [
     "__pycache__/", "*.pyc", ".pytest_cache/", ".mypy_cache/", ".ruff_cache/", "*.egg-info/", ".coverage",
@@ -41,8 +45,8 @@ FRESH = (
 )
 
 
-async def run_fresh(box: Sandbox, command: str) -> CommandResult:
-    return CommandResult.of(command, await box.exec(FRESH + command))
+async def run_fresh(box: Sandbox, command: str, timeout: float | None = None) -> CommandResult:
+    return CommandResult.of(command, await box.exec(FRESH + command, timeout=timeout))
 
 
 def is_test_path(path: str) -> bool:
@@ -77,8 +81,8 @@ class CommandResult(BaseModel):
         return f"`{self.command}` {status} in {self.seconds:.0f}s"
 
 
-async def run_commands(box: Sandbox, commands: list[str]) -> list[CommandResult]:
-    return [await run_fresh(box, c) for c in commands]
+async def run_commands(box: Sandbox, commands: list[str], timeout: float | None = None) -> list[CommandResult]:
+    return [await run_fresh(box, c, timeout) for c in commands]
 
 
 async def mark_new_files(box: Sandbox) -> None:
@@ -109,6 +113,7 @@ class FixCheck(BaseModel):
     fails_without_fix: CommandResult | None = None
     passes_with_fix: CommandResult | None = None
     suite: list[CommandResult] = []
+    reproduction: CommandResult | None = None  # the issue's reproduction, run with the fix
     regressions: list[str] = []
     already_failing: list[str] = []
     problems: list[str] = []
@@ -127,6 +132,9 @@ class FixCheck(BaseModel):
             out.append(f"Without the fix: {self.fails_without_fix.line()}\n{self.fails_without_fix.tail[-1500:]}")
         if self.passes_with_fix:
             out.append(f"With the fix: {self.passes_with_fix.line()}\n{self.passes_with_fix.tail[-1500:]}")
+        if self.reproduction:
+            r = self.reproduction
+            out.append(f"Issue reproduction with the fix: {r.line()}" + ("" if r.ok else f"\n{r.tail[-1500:]}"))
         for r in self.suite:
             out.append(f"Suite: {r.line()}" + ("" if r.ok else f"\n{r.tail[-2000:]}"))
         if self.already_failing:
@@ -134,9 +142,23 @@ class FixCheck(BaseModel):
         return "\n".join(out)
 
 
+async def run_reproduction(box: Sandbox, reproduction: dict[str, str]) -> CommandResult:
+    """Save the plan's reproduction script outside the repo and run its command from the repo root."""
+    name = re.sub(r"[^\w.-]", "_", reproduction.get("script_name") or "")[:60] or "repro.py"
+    await box.exec(f"mkdir -p {REPRO_DIR}")
+    await box.write_file(f"{REPRO_DIR}/{name}", reproduction.get("script", ""))
+    return await run_fresh(box, reproduction.get("command", ""))
+
+
 async def check_fix(
-    box: Sandbox, base: str, targeted: str, suite: list[str], baseline: list[CommandResult]
+    box: Sandbox,
+    base: str,
+    targeted: str,
+    suite: list[str],
+    baseline: list[CommandResult],
+    reproduction: dict[str, str] | None = None,
 ) -> FixCheck:
+    """`reproduction`: the plan's, when it failed on the code before any change; it must pass now."""
     files = await changed_files(box, base)
     tests = [p for p in files if is_test_path(p)]
     sources = [p for p in files if not is_test_path(p)]
@@ -179,6 +201,10 @@ async def check_fix(
     check.passes_with_fix = await run_fresh(box, targeted)
     if not check.passes_with_fix.ok:
         check.problems.append("the targeted test FAILS with the fix")
+    if reproduction:
+        check.reproduction = await run_reproduction(box, reproduction)
+        if not check.reproduction.ok:
+            check.problems.append("the issue's reproduction still fails with the fix, so the issue is not fixed")
 
     await _suites(check, box, suite, baseline)
     check.passed = not check.problems

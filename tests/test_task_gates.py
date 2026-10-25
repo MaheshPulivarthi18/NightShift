@@ -59,3 +59,18 @@ def test_the_developers_note_heads_the_plan() -> None:
     assert "Developer's note" not in to_markdown(plan, title="o/r#1 Docs", warnings=[])
     assert "Docs change" not in text  # kind defaults to code
     assert "**Docs change.**" in to_markdown(plan.model_copy(update={"kind": "docs"}), title="t", warnings=[])
+
+
+def test_gate_1_says_whether_the_reproduction_showed_the_bug() -> None:
+    from nightshift.worker.task import reproduction_note
+    from nightshift.worker.verify import CommandResult
+
+    def run(ok: bool) -> CommandResult:
+        return CommandResult(command="python r.py", ok=ok, exit_code=0 if ok else 1, timed_out=False, seconds=1,
+                             tail="AssertionError: 0.5 != 0.75")  # fmt: skip
+
+    checks, warnings = reproduction_note(run(False))
+    assert checks and "fails on the current code" in checks[0] and not warnings
+    checks, warnings = reproduction_note(run(True))
+    assert warnings and "does not show the bug" in warnings[0] and not checks
+    assert reproduction_note(None) == ([], [])
