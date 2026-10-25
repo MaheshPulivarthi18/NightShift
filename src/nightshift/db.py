@@ -44,6 +44,8 @@ class Repo(Base):
     full_name: Mapped[str] = mapped_column(String(200), unique=True)
     connected: Mapped[bool] = mapped_column(Boolean, default=False)
     paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    # False: removed from the watchlist in the UI. Its tasks and history stay; adding it again restores it.
+    watched: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # "maintainer": backlog triage report. "contributor": where an outsider can usefully help.
     role: Mapped[str] = mapped_column(String(20), default="contributor", server_default="contributor")
@@ -284,6 +286,9 @@ class Task(Base):
     error: Mapped[str | None] = mapped_column(Text)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # off the board, kept
+    # Written every half minute while planning or running; a task whose run died stops getting it.
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

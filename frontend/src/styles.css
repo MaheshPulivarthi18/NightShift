@@ -365,3 +365,8 @@ details.env .fail { color: var(--bad); }
 
 /* Inline code in titles written on GitHub (`start_server` and the like) */
 .card-title code, h1 code, h2 code { font: 0.88em var(--mono); background: var(--bg-sunk); padding: 1px 4px; border-radius: 3px; }
+
+/* Revise and run again (task page) */
+details.revise > summary { cursor: pointer; font-weight: 600; }
+details.revise[open] > summary { margin-bottom: 8px; }
+details.revise label.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-3); }

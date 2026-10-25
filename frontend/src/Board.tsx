@@ -13,10 +13,11 @@ export function Board({ prefillRepo, prefillIssue }: { prefillRepo: string; pref
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cursor, setCursor] = useState(0);
+  const [archived, setArchived] = useState(false);
 
   const load = useCallback(() => {
-    api.tasks().then(setTasks, (e: Error) => setError(e.message));
-  }, []);
+    api.tasks(archived).then(setTasks, (e: Error) => setError(e.message));
+  }, [archived]);
 
   useEffect(() => {
     load();
@@ -48,9 +49,12 @@ export function Board({ prefillRepo, prefillIssue }: { prefillRepo: string; pref
     <div className="board">
       <section className="board-head">
         <div>
-          <h1>Tasks</h1>
+          <h1>{archived ? "Archived tasks" : "Tasks"}</h1>
           <p className="muted">
-            {tasks === null ? "Loading…" : `${tasks.length} tasks · ${waiting} waiting on you · ${money(spent)} spent`}
+            {tasks === null ? "Loading…" : `${tasks.length} tasks · ${waiting} waiting on you · ${money(spent)} spent`}{" "}
+            <button className="ghost small" onClick={() => (setTasks(null), setArchived(!archived))}>
+              {archived ? "Back to the board" : "Show archived"}
+            </button>
           </p>
         </div>
         <NewTask key={prefillRepo + prefillIssue} repo0={prefillRepo} issue0={prefillIssue} onCreated={load} />

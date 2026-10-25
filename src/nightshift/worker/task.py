@@ -12,15 +12,16 @@ task_minutes and coder_max_steps.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import shlex
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from nightshift import events, outcomes
 from nightshift.catalog import ModelConfigError
@@ -190,6 +191,7 @@ async def plan_task(
         )  # fmt: skip
         s.add(task)
     await events.start_run(task.run_id, repo.id)
+    beat = start_heartbeat(task.id)
     llm = LLMGateway(task.run_id, repo.id, run_budget_usd=settings.task_budget_usd)
     box: Sandbox | None = None
     try:
@@ -272,6 +274,7 @@ async def plan_task(
         await events.finish_run(task.run_id, "failed", error=str(e))
         raise
     finally:
+        beat.cancel()
         if box:
             await box.remove()
 
@@ -337,6 +340,7 @@ async def revise(
     """Send a finished or stopped task back for another run, with the operator's correction added to
     the approved plan (and, if given, new setup or test commands). The run starts again from the same
     base commit; the old result is replaced."""
+    await mark_stale_runs()
     task, _ = await load_task(task_id)
     if task.status not in ("ready", "needs_operator", "failed", "published"):
         raise TaskError(f"Task {task_id} is {task.status}; it cannot be revised now.")
@@ -408,6 +412,65 @@ async def _planner_outcome(task: Task, approved: bool) -> None:
     await outcomes.record("planner", model or "", ok=approved, kind="task", run_id=task.run_id, detail=detail)
 
 
+# ---------- runs that died ----------
+
+HEARTBEAT_SECONDS = 30
+STALE_AFTER = timedelta(minutes=3)
+STALE_ERROR = "the run stopped without finishing (its process ended). Revise to run it again."
+
+
+def start_heartbeat(task_id: int) -> asyncio.Task[None]:
+    """Record every half minute that this task's run is alive. The caller cancels it when the run ends."""
+
+    async def beat() -> None:
+        while True:
+            try:
+                async with session_scope() as s:
+                    await s.execute(
+                        update(Task)
+                        .where(Task.id == task_id)
+                        .values(heartbeat_at=func.now(), updated_at=Task.updated_at)  # a beat is not an update
+                    )
+            except Exception as e:  # pragma: no cover - database trouble; the run itself goes on
+                log.warning("heartbeat_failed", task=task_id, error=str(e))
+            await asyncio.sleep(HEARTBEAT_SECONDS)
+
+    return asyncio.create_task(beat())
+
+
+async def mark_stale_runs() -> list[int]:
+    """Tasks still "planning" or "working" whose run stopped beating (the process was killed or closed):
+    a stale plan becomes "failed", a stale run "needs_operator", so they can be revised or planned again."""
+    cutoff = datetime.now(UTC) - STALE_AFTER
+    async with session_scope() as s:
+        stale = list(
+            (
+                await s.execute(
+                    select(Task).where(
+                        Task.status.in_(("planning", "working")),
+                        func.coalesce(Task.heartbeat_at, Task.updated_at) < cutoff,
+                    )
+                )
+            ).scalars()
+        )
+        for t in stale:
+            t.status = "failed" if t.status == "planning" else "needs_operator"
+            t.error = STALE_ERROR
+    for t in stale:
+        await events.finish_run(t.run_id, "failed", error=STALE_ERROR)
+        log.warning("stale_run", task=t.id, status=t.status)
+    return [t.id for t in stale]
+
+
+async def archive(task_id: int, archived: bool) -> Task:
+    """Take a task off the board (kept, with its history), or put it back."""
+    task, _ = await load_task(task_id)
+    if archived and task.status in ("planning", "working"):
+        raise TaskError(f"Task {task_id} is {task.status}; archive it once it stops.")
+    await _save(task, archived_at=datetime.now(UTC) if archived else None)
+    return task
+
+
 async def run_task(task_id: int) -> Task:
     """Set up, record a baseline, then Coder and Reviewer rounds until the fix is verified and approved."""
     settings = get_settings()
@@ -428,6 +491,7 @@ async def run_task(task_id: int) -> Task:
     result: dict[str, Any] = dict(task.result)
     await _save(task, status="working", error=None)
     await events.start_run(task.run_id, repo.id)
+    beat = start_heartbeat(task.id)
     box: Sandbox | None = None
     try:
         await events.record(task.run_id, "node_start", "setup", node="setup")
@@ -553,6 +617,7 @@ async def run_task(task_id: int) -> Task:
         await events.finish_run(task.run_id, "failed", error=str(e))
         raise
     finally:
+        beat.cancel()
         if box:
             await box.remove()
 

@@ -140,7 +140,7 @@ async def set_kill(body: KillIn) -> dict[str, Any]:
 @router.get("/repos")
 async def list_repos() -> list[dict[str, Any]]:
     async with session_scope() as s:
-        repos = list((await s.execute(select(Repo).order_by(Repo.full_name))).scalars())
+        repos = list((await s.execute(select(Repo).where(Repo.watched).order_by(Repo.full_name))).scalars())
         all_runs = list((await s.execute(select(Run).order_by(Run.started_at))).scalars())
         runs = {r.repo_id: r for r in all_runs if _job_kind(r.run_id) == "report"}
         setups = {r.repo_id: r for r in all_runs if _job_kind(r.run_id) == "setup"}
@@ -188,7 +188,19 @@ async def add_repo(body: RepoIn) -> list[dict[str, Any]]:
     if not REPO_RE.match(name):
         raise HTTPException(400, "Give owner/name or a GitHub URL.")
     async with session_scope() as s:
-        await get_or_create_repo(s, name, role=body.role)
+        repo = await get_or_create_repo(s, name, role=body.role)
+        repo.watched = True  # adding a removed repo again brings it and its history back
+    return await list_repos()
+
+
+@router.post("/repos/{owner}/{name}/remove", dependencies=[Guard])
+async def remove_repo(owner: str, name: str) -> list[dict[str, Any]]:
+    """Take a repo off the watchlist. Its reports, tasks and history stay; adding it again restores them."""
+    repo = await _repo(f"{owner}/{name}")
+    async with session_scope() as s:
+        stored = await s.get(Repo, repo.id)
+        assert stored is not None
+        stored.watched = False
     return await list_repos()
 
 

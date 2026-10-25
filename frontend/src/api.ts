@@ -93,6 +93,7 @@ export interface TaskSummary {
   cost_usd: number;
   error: string | null;
   busy: boolean;
+  archived: boolean;
   updated_at: string | null;
 }
 
@@ -228,6 +229,7 @@ export const api = {
   addRepo: (full_name: string, role: string) => call<RepoRow[]>("/repos", { full_name, role }),
   setRole: (repo: string, role: string) => call<RepoRow[]>(`/repos/${repo}/role`, { role }),
   runReport: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/run`, {}),
+  removeRepo: (repo: string) => call<RepoRow[]>(`/repos/${repo}/remove`, {}),
   setupRepo: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/setup`, {}),
   report: (repo: string, runId?: string) => call<ReportView>(`/repos/${repo}/report${runId ? `?run_id=${runId}` : ""}`),
   jobs: () => call<JobRow[]>("/jobs"),
@@ -235,7 +237,8 @@ export const api = {
   stopJob: (id: string) => call<JobDetail>(`/jobs/${id}/stop`, {}),
   resumeJob: (id: string) => call<JobDetail>(`/jobs/${id}/resume`, {}),
   chat: (repo: string, n: number) => call<ChatView>(`/chat/${repo}/${n}`),
-  tasks: () => call<TaskSummary[]>("/tasks"),
+  tasks: (archived = false) => call<TaskSummary[]>(`/tasks${archived ? "?archived=true" : ""}`),
+  archive: (id: number, archived: boolean) => call<TaskDetail>(`/tasks/${id}/archive`, { archived }),
   task: (id: number) => call<TaskDetail>(`/tasks/${id}`),
   create: (repo: string, issue: number, base: string, rehearsal: boolean, note = "") =>
     call<{ status: string; repo: string; note: string }>("/tasks", { repo, issue, base: base || null, rehearsal, note }),

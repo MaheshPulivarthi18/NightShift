@@ -68,11 +68,13 @@ export function TaskPage({ id }: { id: number }) {
               pull request ↗
             </a>
           )}
+          <ArchiveButton task={task} onChange={load} />
         </div>
         {task.error && <p className="stop-reason">Stopped: {task.error}</p>}
       </header>
 
       <ActionPanel task={task} onChange={load} />
+      {REVISABLE.has(task.status) && <RevisePanel task={task} onChange={load} />}
 
       <nav className="tabs" role="tablist">
         {TABS.map((t) => (
@@ -116,6 +118,58 @@ function ModelsUsed({ uses }: { uses: ModelUse[] }) {
         </span>
       ))}
     </span>
+  );
+}
+
+// Off the board, kept with its history. Not while it plans or runs.
+function ArchiveButton({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
+  if (task.status === "planning" || task.status === "working") return null;
+  return (
+    <button className="ghost small" onClick={() => api.archive(task.id, !task.archived).then(onChange)}>
+      {task.archived ? "Unarchive" : "Archive"}
+    </button>
+  );
+}
+
+const REVISABLE = new Set(["ready", "needs_operator", "failed", "published"]);
+
+// Send a finished or stopped task back with a correction: the note joins the approved plan, and the run
+// starts again (from the same commit, or the latest one). A published task's PR and claim are kept.
+function RevisePanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
+  const [note, setNote] = useState("");
+  const [latest, setLatest] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const send = () => {
+    setBusy(true);
+    api
+      .revise(task.id, note.trim(), latest)
+      .then(onChange, (e: Error) => setMsg(e.message))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <details className="gate calm revise" open={task.status !== "ready" && task.status !== "published"}>
+      <summary>Revise and run again</summary>
+      <p className="muted">
+        Your note is added to the approved plan for the Coder and the Reviewer.
+        {task.status === "published" && " The pull request stays; the new work becomes a follow-up commit."}
+      </p>
+      <label className="full">
+        <span>What should change</span>
+        <textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. Split the README paragraph into a short list; keep the example." />
+      </label>
+      <div className="actions">
+        <label className="check">
+          <input type="checkbox" checked={latest} onChange={(e) => setLatest(e.target.checked)} />
+          <span>Start from the latest commit on the default branch</span>
+        </label>
+        <button className="primary" disabled={busy || !note.trim()} onClick={send}>
+          {busy ? "Starting…" : "Revise and run"}
+        </button>
+        {msg && <span className="error">{msg}</span>}
+      </div>
+    </details>
   );
 }
 

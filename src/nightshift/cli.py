@@ -84,12 +84,17 @@ def watch_add(
 
     async def run() -> None:
         async with session_scope() as s:
-            count = len((await s.execute(select(Repo).where(Repo.connected.is_(False)))).scalars().all())
+            count = len((await s.execute(select(Repo).where(Repo.connected.is_(False), Repo.watched))).scalars().all())
             for raw in repos:
                 name = _repo_name(raw)
                 exists = (await s.execute(select(Repo).where(Repo.full_name == name))).scalar_one_or_none()
-                if exists:
+                if exists and exists.watched:
                     typer.echo(f"Already watching {name}")
+                    continue
+                if exists:  # removed earlier: back on the watchlist, with its history
+                    exists.watched = True
+                    count += 1
+                    typer.echo(f"Watching {name} again")
                     continue
                 if count >= WATCHLIST_CAP:
                     typer.echo(f"Watchlist is full ({WATCHLIST_CAP}). Skipping {name}.")
@@ -111,9 +116,8 @@ def watch_list() -> None:
         for r in repos:
             kind = "connected" if r.connected else "watched"
             fetched = f"{r.last_fetched_at:%Y-%m-%d %H:%M}" if r.last_fetched_at else "never"
-            typer.echo(
-                f"{r.full_name:45} {kind:10} {r.role:12} last fetched: {fetched}{'  (paused)' if r.paused else ''}"
-            )
+            flags = ("  (paused)" if r.paused else "") + ("" if r.watched else "  (removed)")
+            typer.echo(f"{r.full_name:45} {kind:10} {r.role:12} last fetched: {fetched}{flags}")
 
     asyncio.run(run())
 
@@ -136,8 +140,13 @@ def watch_role(repo: str, role: Role) -> None:
 
 
 @watch_app.command("remove")
-def watch_remove(repo: str) -> None:
-    """Remove a repo and everything stored about it."""
+def watch_remove(
+    repo: str,
+    purge: Annotated[
+        bool, typer.Option("--purge", help="Delete everything stored about it: reports, tasks, history.")
+    ] = False,
+) -> None:
+    """Take a repo off the watchlist, keeping its history (adding it again restores it); --purge deletes it all."""
 
     async def run() -> None:
         name = _repo_name(repo)
@@ -146,8 +155,11 @@ def watch_remove(repo: str) -> None:
             if r is None:
                 typer.echo(f"Not watching {name}")
                 return
-            await s.delete(r)
-        typer.echo(f"Removed {name}")
+            if purge:
+                await s.delete(r)
+            else:
+                r.watched = False
+        typer.echo(f"{'Deleted' if purge else 'Removed from the watchlist (history kept)'}: {name}")
 
     asyncio.run(run())
 
@@ -171,7 +183,9 @@ def report_run(
                 raise typer.BadParameter("Give a repo or --all.")
             return [_repo_name(repo)]
         async with session_scope() as s:
-            rows = (await s.execute(select(Repo).where(Repo.paused.is_(False)).order_by(Repo.full_name))).scalars()
+            rows = (
+                await s.execute(select(Repo).where(Repo.paused.is_(False), Repo.watched).order_by(Repo.full_name))
+            ).scalars()
             return [r.full_name for r in rows]
 
     async def run() -> None:
@@ -518,16 +532,33 @@ def task_show(task_id: int) -> None:
 
 @task_app.command("list")
 def task_list() -> None:
-    """All tasks, newest first."""
+    """All tasks, newest first. Archived ones are marked."""
     from nightshift.db import Task
+    from nightshift.worker.task import mark_stale_runs
 
     async def run() -> None:
+        await mark_stale_runs()
         async with session_scope() as s:
             rows = (await s.execute(select(Task, Repo).join(Repo).order_by(Task.id.desc()))).all()
         for t, r in rows:
-            typer.echo(f"{r.full_name:35} {_task_line(t)}")
+            typer.echo(f"{r.full_name:35} {_task_line(t)}{'  (archived)' if t.archived_at else ''}")
 
     asyncio.run(run())
+
+
+@task_app.command("archive")
+def task_archive(
+    task_id: int, undo: Annotated[bool, typer.Option("--undo", help="Put it back on the board.")] = False
+) -> None:
+    """Take a task off the board; it and its history are kept."""
+    from nightshift.worker.task import TaskError, archive
+
+    try:
+        asyncio.run(archive(task_id, not undo))
+    except TaskError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    typer.echo(f"Task {task_id} {'is back on the board' if undo else 'archived'}.")
 
 
 @task_app.command("approve")

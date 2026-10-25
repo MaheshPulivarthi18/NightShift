@@ -60,15 +60,32 @@ def _summary(t: Task, r: Repo) -> dict[str, Any]:
         "cost_usd": round(t.cost_usd, 4),
         "error": t.error,
         "busy": f"task-{t.id}" in _jobs and not _jobs[f"task-{t.id}"].done(),
+        "archived": t.archived_at is not None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
 
 
 @router.get("/tasks")
-async def list_tasks() -> list[dict[str, Any]]:
+async def list_tasks(archived: bool = False) -> list[dict[str, Any]]:
+    """The board's tasks; `archived=true` lists the archived ones instead."""
+    await worker.mark_stale_runs()
+    cond = Task.archived_at.is_not(None) if archived else Task.archived_at.is_(None)
     async with session_scope() as s:
-        rows = (await s.execute(select(Task, Repo).join(Repo).order_by(Task.id.desc()).limit(200))).all()
+        rows = (await s.execute(select(Task, Repo).join(Repo).where(cond).order_by(Task.id.desc()).limit(200))).all()
     return [_summary(t, r) for t, r in rows]
+
+
+class Archive(BaseModel):
+    archived: bool = True
+
+
+@router.post("/tasks/{task_id}/archive", dependencies=[Guard])
+async def archive(task_id: int, body: Archive) -> dict[str, Any]:
+    try:
+        await worker.archive(task_id, body.archived)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+    return await get_task(task_id)
 
 
 async def _model_choices() -> dict[str, Any]:
@@ -108,6 +125,7 @@ async def _models_used(run_id: str) -> list[dict[str, Any]]:
 
 @router.get("/tasks/{task_id}")
 async def get_task(task_id: int) -> dict[str, Any]:
+    await worker.mark_stale_runs()
     try:
         t, r = await worker.load_task(task_id)
     except worker.TaskError as e:

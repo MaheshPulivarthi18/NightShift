@@ -19,6 +19,7 @@ import shlex
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -183,6 +184,29 @@ class Sandbox:
     async def remove(self) -> None:
         await _docker("rm", "--force", self.name, timeout=60)
         log.info("sandbox_removed", name=self.name)
+
+
+async def remove_orphans(older_than: float) -> list[str]:
+    """Remove task sandboxes left running by runs that died: containers labelled nightshift=task that
+    are older than `older_than` seconds, longer than any run may take. Returns their names."""
+    res = await _docker(
+        "ps", "--all", "--filter", "label=nightshift=task", "--format", "{{.Names}}\t{{.CreatedAt}}", timeout=30
+    )
+    if not res.ok:
+        return []
+    old = []
+    for line in res.stdout.splitlines():
+        name, _, created = line.partition("\t")
+        try:  # "2026-10-25 09:39:44 +0530 IST"
+            started = datetime.strptime(" ".join(created.split()[:3]), "%Y-%m-%d %H:%M:%S %z")
+        except ValueError:
+            continue
+        if (datetime.now(UTC) - started).total_seconds() > older_than:
+            old.append(name)
+    for name in old:
+        await _docker("rm", "--force", name, timeout=60)
+        log.warning("sandbox_orphan_removed", name=name)
+    return old
 
 
 async def image_exists(tag: str) -> bool:

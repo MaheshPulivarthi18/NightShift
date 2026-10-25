@@ -9,6 +9,7 @@ export function Repos() {
   const runReport = (repo: string) =>
     api.runReport(repo).then((r) => (window.location.hash = `#/jobs/${r.run_id}`), (e: Error) => setMsg(e.message));
   const setRole = (repo: string, role: string) => api.setRole(repo, role).then(reload, (e: Error) => setMsg(e.message));
+  const remove = (repo: string) => api.removeRepo(repo).then(reload, (e: Error) => setMsg(e.message));
   const setup = (repo: string) =>
     api.setupRepo(repo).then((r) => (window.location.hash = `#/jobs/${r.run_id}`), (e: Error) => setMsg(e.message));
 
@@ -40,7 +41,7 @@ export function Repos() {
                 <td colSpan={6} className="muted">No repos yet. Add one above.</td>
               </tr>
             )}
-            {rows?.map((r) => <RepoLine key={r.full_name} r={r} onRun={runReport} onRole={setRole} onSetup={setup} />)}
+            {rows?.map((r) => <RepoLine key={r.full_name} r={r} onRun={runReport} onRole={setRole} onSetup={setup} onRemove={remove} />)}
           </tbody>
         </table>
       </div>
@@ -53,12 +54,15 @@ function RepoLine({
   onRun,
   onRole,
   onSetup,
+  onRemove,
 }: {
   r: RepoRow;
   onRun: (repo: string) => void;
   onRole: (repo: string, role: string) => void;
   onSetup: (repo: string) => void;
+  onRemove: (repo: string) => void;
 }) {
+  const [confirming, setConfirming] = useState(false);
   const running = r.run?.status === "running";
   const settingUp = r.setup_run?.status === "running";
   return (
@@ -116,7 +120,17 @@ function RepoLine({
         </button>{" "}
         <button className="ghost small" disabled={running} onClick={() => onRun(r.full_name)}>
           {running ? "Running…" : "Run report"}
-        </button>
+        </button>{" "}
+        {confirming ? (
+          <>
+            <button className="danger small" onClick={() => onRemove(r.full_name)} title="Reports, tasks and history are kept">
+              Remove from watchlist
+            </button>{" "}
+            <button className="ghost small" onClick={() => setConfirming(false)}>Cancel</button>
+          </>
+        ) : (
+          <button className="ghost small" onClick={() => setConfirming(true)}>Remove</button>
+        )}
       </td>
     </tr>
   );
