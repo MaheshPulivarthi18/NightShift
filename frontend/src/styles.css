@@ -382,3 +382,9 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 /* Report: issues taken since it was written */
 .report .taken { font: 500 10px var(--mono); text-transform: uppercase; color: var(--bad); border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; margin-left: 4px; cursor: help; }
 .live-check { margin: 4px 0 12px; font-size: 13px; }
+
+/* PR checks */
+.check-verdict { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 3px; white-space: nowrap; }
+.check-bad { color: var(--bad); background: var(--bad-soft); }
+.check-warn { color: var(--lamp); background: var(--lamp-soft); }
+.check-ok { color: var(--ok); background: var(--ok-soft); }

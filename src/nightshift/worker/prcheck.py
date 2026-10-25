@@ -30,7 +30,7 @@ from nightshift.catalog import ModelConfigError
 from nightshift.config import get_settings
 from nightshift.context.change import change_context
 from nightshift.context.change import to_markdown as change_markdown
-from nightshift.db import Repo, session_scope
+from nightshift.db import PRCheck, Repo, session_scope
 from nightshift.github import GitHubClient, GitHubError
 from nightshift.health.agents import UNTRUSTED_RULE
 from nightshift.health.graph import repo_brief
@@ -60,6 +60,14 @@ log = structlog.get_logger()
 
 PR_URL = re.compile(r"^https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)/?$")
 CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)\b", re.I)
+REFERENCES = re.compile(r"\b(?:refs?|references|related to|part of|see|addresses)\s*:?\s+#(\d+)\b", re.I)
+OPTIONAL_SECTION = re.compile(r"\b(if applicable|optional)\b", re.I)
+# Failures that mean the sandbox could not run a command at all (a missing tool or package), not a test result.
+CANNOT_RUN = re.compile(
+    r"command not found|No module named|ModuleNotFoundError|Cannot find module|Cannot find package|ERR_MODULE_NOT_FOUND"
+    r"|failed to load config|not installed|error while loading shared libraries",
+    re.I,
+)
 CONVENTIONAL = re.compile(r"^\w+(\([^)]*\))?!?: \S")
 TEST_RUN = re.compile(r"\b\d+ passed\b|\bPASS(ED)?\b|\bRan \d+ tests?\b|\bOK\b|tests? (pass|passed)", re.I)
 DIFF_CHARS = 30_000
@@ -158,6 +166,12 @@ def linked_issue_number(pr: PullRequest) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def referenced_issue_number(pr: PullRequest) -> int | None:
+    """An issue the PR points at without closing it ("Refs #12")."""
+    m = REFERENCES.search(pr.body) or REFERENCES.search(pr.title)
+    return int(m.group(1)) if m else None
+
+
 class Report(BaseModel):
     """What the checker found. `must`: problems a maintainer would block on; `should`: worth fixing."""
 
@@ -201,11 +215,15 @@ async def check_guidelines(pr: PullRequest, report: Report) -> IssueView | None:
     template, titles = await repo_conventions(pr.repo)
     headings = publish.template_headings(template)
     if headings:
-        if missing := publish.missing_sections(pr.body, headings):
+        missing = publish.missing_sections(pr.body, headings)
+        required = [h for h in missing if not OPTIONAL_SECTION.search(h)]
+        if required:
             report.must.append(
-                "The description is missing these sections of the repo's PR template: " + ", ".join(missing)
+                "The description is missing these sections of the repo's PR template: " + ", ".join(required)
             )
-        else:
+        if optional := [h for h in missing if OPTIONAL_SECTION.search(h)]:
+            report.should.append("Optional template sections left out: " + ", ".join(optional))
+        if not missing:
             report.passed.append("Every section of the repo's PR template is present.")
         unticked = len(re.findall(r"^\s*[-*] \[ \]", pr.body, re.M))
         if unticked and not re.findall(r"^\s*[-*] \[[xX]\]", pr.body, re.M):
@@ -219,6 +237,10 @@ async def check_guidelines(pr: PullRequest, report: Report) -> IssueView | None:
     if pr.draft:
         report.should.append("The PR is still a draft.")
     number = linked_issue_number(pr)
+    if number is None and (number := referenced_issue_number(pr)) is not None:
+        report.should.append(
+            f'The PR references #{number} but does not close it (no "Fixes #{number}"): say whether it fully fixes it.'
+        )
     if number is None:
         report.should.append('No linked issue: the description has no "Fixes #N" or "Closes #N".')
         return None
@@ -330,10 +352,16 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
         except MODEL_ERRORS as e:  # what was verified by running still stands
             report.should.append(f"The code review did not run: {_short(e)}")
             return patch
-        report.review = reviewer.to_markdown(rv, 1)
-        for issue_found in reviewer.blocking(rv):
-            where = f"{issue_found.path}:{issue_found.line}" if issue_found.line else issue_found.path
-            report.must.append(f"Review ({issue_found.severity}): `{where}`: {issue_found.problem}")
+        # Related code the Reviewer judged fine is noise in a report for a maintainer: keep what needs a change.
+        report.review = reviewer.to_markdown(
+            rv.model_copy(update={"related": [c for c in rv.related if c.needs_change]}), 1
+        )
+        # Blockers and majors must be fixed; minors are still listed, so a finding the model rates differently
+        # from run to run moves between the two lists instead of disappearing.
+        for found in rv.issues:
+            where = f"{found.path}:{found.line}" if found.line else found.path
+            findings = report.must if found.severity in ("blocker", "major") else report.should
+            findings.append(f"Review ({found.severity}): `{where}`: {found.problem}")
         return patch
 
 
@@ -361,7 +389,36 @@ async def _verify(
     return check
 
 
+ONLY_SKIPPED = re.compile(r"\b\d+ skipped\b")
+RAN_SOMETHING = re.compile(
+    r"\b\d+ (passed|failed|errors?)\b|\bRan [1-9]\d* tests?\b|\bTests?:\s+\d+ (passed|failed)", re.I
+)
+
+
+def _all_skipped(r: CommandResult | None) -> bool:
+    return bool(r and ONLY_SKIPPED.search(r.tail) and not RAN_SOMETHING.search(r.tail))
+
+
+def _could_not_run(check: FixCheck) -> str | None:
+    """Why the PR's own tests could not run here at all (a missing tool or package, or every test skipped), or
+    None when they ran. Failing the same way with and without the PR is a result, not this: the fix did not work."""
+    before, after = check.fails_without_fix, check.passes_with_fix
+    if _all_skipped(before) and _all_skipped(after):
+        return "every test was skipped, e.g. a tool they need is missing"
+    if after and not after.ok and (m := CANNOT_RUN.search(after.tail)):
+        line = next((x for x in after.tail.splitlines() if m.group(0) in x), m.group(0))
+        return line.strip()
+    return None
+
+
 def _findings(check: FixCheck, report: Report, repro: dict[str, str] | None) -> None:
+    if reason := _could_not_run(check):
+        report.should.append(
+            f"The PR's own tests could not run in this sandbox ({reason[:160]}): the environment does not cover "
+            "that part of the repo. Check them in the PR's CI."
+        )
+        check.problems = [p for p in check.problems if "targeted test" not in p]
+        check.fails_without_fix = check.passes_with_fix = None  # so nothing claims they were verified
     for problem in check.problems:
         if problem.startswith(("no test file", "no targeted test")):
             continue  # already said under evidence
@@ -383,12 +440,22 @@ def _findings(check: FixCheck, report: Report, repro: dict[str, str] | None) -> 
                              f"({len(check.already_failing)} already failing on the base).")  # fmt: skip
 
 
-async def check_pr(url: str) -> Report:
-    """Check one pull request and save the report next to the repo's other reports."""
+def prcheck_run_id(repo_id: int, number: int) -> str:
+    return f"prcheck-{repo_id}-{number}-{uuid.uuid4().hex[:6]}"
+
+
+async def check_pr(url: str, run_id: str | None = None) -> Report:
+    """Check one pull request. The result is saved as a PRCheck row (the dashboard's PR checks page) and as
+    Markdown next to the repo's other reports."""
     pr = await fetch_pull(url)
     async with session_scope() as s:
         repo = await get_or_create_repo(s, pr.repo)
-    run_id = f"prcheck-{repo.id}-{pr.number}-{uuid.uuid4().hex[:6]}"
+        run_id = run_id or prcheck_run_id(repo.id, pr.number)
+        row = PRCheck(repo_id=repo.id, number=pr.number, url=pr.url, title=pr.title, author=pr.author,
+                      head_sha=pr.head_sha, run_id=run_id)  # fmt: skip
+        s.add(row)
+        await s.flush()
+        row_id = row.id
     await events.start_run(run_id, repo.id)
     llm = LLMGateway(run_id, repo.id, run_budget_usd=get_settings().pr_check_budget_usd)
     report = Report(pr=pr)
@@ -401,14 +468,26 @@ async def check_pr(url: str) -> Report:
         await events.record(run_id, "node_start", "run", node="run")
         await run_checks(pr, report, llm, repo, issue)
     except BaseException as e:
+        await _save_row(row_id, status="failed", error=f"{type(e).__name__}: {e}", cost_usd=await _cost(run_id))
         await events.finish_run(run_id, "failed", error=f"{type(e).__name__}: {e}")
         raise
     report.cost_usd = await _cost(run_id)
+    markdown = report.markdown()
     folder = Path(get_settings().reports_dir) / pr.repo.replace("/", "__") / "pr-checks"
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"{pr.number}.md").write_text(report.markdown())
+    (folder / f"{pr.number}.md").write_text(markdown)
+    await _save_row(row_id, status="done", verdict=report.verdict, must=len(report.must), should=len(report.should),
+                    markdown=markdown, cost_usd=report.cost_usd)  # fmt: skip
     await events.finish_run(run_id, "done")
     return report
+
+
+async def _save_row(row_id: int, **values: object) -> None:
+    async with session_scope() as s:
+        row = await s.get(PRCheck, row_id)
+        assert row is not None
+        for k, v in values.items():
+            setattr(row, k, v)
 
 
 async def _cost(run_id: str) -> float:

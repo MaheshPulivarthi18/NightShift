@@ -134,3 +134,12 @@ async def test_a_revised_published_task_follows_up_on_its_pr(
     assert shown["commit_message"] == "Address review feedback\n\nsplit the paragraph"
     assert any("merged" in b for b in shown["blockers"])
     assert ready["sent"] == {}  # no new PR was opened
+
+
+def test_comments_in_a_templates_code_samples_are_not_sections() -> None:
+    sample = "```text\n# Paste relevant command output here\n```\n"
+    template = "## Testing\n\n### Test Output\n\n" + sample + "<!-- ## Not a heading -->\n"
+    assert publish.template_headings(template) == ["Testing", "Test Output"]
+    body = "## Testing\nran\n\n### Test Output\n\n```\n# a shell comment\n12 passed\n```"
+    assert publish.missing_sections(body, publish.template_headings(template)) == []
+    assert publish.missing_sections("```\n## Testing\n```", ["Testing"]) == ["Testing"]  # quoted, not written

@@ -181,6 +181,28 @@ export interface AgentModels {
   error?: string;
 }
 
+// A pull request checked by the PR checker; `html` (the report) only on a single check.
+export interface PRCheckRow {
+  id: number;
+  repo: string;
+  number: number;
+  url: string;
+  title: string;
+  author: string;
+  status: string; // running, done, failed
+  verdict: string | null;
+  must: number;
+  should: number;
+  cost_usd: number;
+  run_id: string;
+  created_at: string;
+  error: string | null;
+}
+
+export interface PRCheckView extends PRCheckRow {
+  html: string;
+}
+
 export interface ModelsPage {
   learning: boolean;
   agents: AgentModels[];
@@ -276,6 +298,9 @@ export const api = {
       models,
     }),
   models: () => call<ModelsPage>("/models"),
+  prChecks: () => call<PRCheckRow[]>("/pr-checks"),
+  prCheck: (id: number) => call<PRCheckView>(`/pr-checks/${id}`),
+  checkPr: (url: string) => call<{ run_id: string }>("/pr-checks", { url }),
   run: (id: number) => call<{ status: string }>(`/tasks/${id}/run`, {}),
   revise: (id: number, note: string, latest: boolean) => call<TaskDetail>(`/tasks/${id}/revise`, { note, latest }),
   claim: (id: number, confirm: boolean) => call<{ result: string }>(`/tasks/${id}/claim`, { confirm }),

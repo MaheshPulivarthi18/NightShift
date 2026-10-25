@@ -18,7 +18,7 @@ from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nightshift.config import get_settings
-from nightshift.db import AgentVerdict, Chat, Feedback, Item, Repo, RepoContext, Report, Run, Task
+from nightshift.db import AgentVerdict, Chat, Feedback, Item, PRCheck, Repo, RepoContext, Report, Run, Task
 
 log = structlog.get_logger()
 
@@ -59,7 +59,7 @@ async def get_or_create_repo(
 # Everything that belongs to a repo row, and for tables unique per repo, the columns that make a row unique.
 REPO_RECORDS: list[tuple[Any, tuple[str, ...]]] = [
     (Item, ("number",)), (Chat, ("number",)), (RepoContext, ("kind", "commit")),
-    (AgentVerdict, ()), (Report, ()), (Feedback, ()), (Run, ()), (Task, ()),
+    (AgentVerdict, ()), (Report, ()), (Feedback, ()), (Run, ()), (Task, ()), (PRCheck, ()),
 ]  # fmt: skip
 
 

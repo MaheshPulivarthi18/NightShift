@@ -95,3 +95,35 @@ def test_the_verification_summary_quotes_results_not_logs() -> None:
     text = prcheck.verification_summary(check)
     assert "Suite: `pytest -q` failed (exit 1)" in text and "1 failed, 8 passed" in text
     assert "log line" not in text and "Already failing on the base: pytest -q" in text
+
+
+def test_tests_that_could_not_run_are_not_blamed_on_the_pr() -> None:
+    def run(ok: bool, tail: str) -> CommandResult:
+        return CommandResult(command="t", ok=ok, exit_code=0 if ok else 1, timed_out=False, seconds=1, tail=tail)
+
+    skips = run(True, "3 skipped in 0.1s")
+    skipped = FixCheck(passed=False, test_files=["t.py"], source_files=["a.py"], fails_without_fix=skips,
+                       passes_with_fix=skips, problems=["the targeted test PASSES without the fix"])  # fmt: skip
+    report = Report(pr=_pr())
+    prcheck._findings(skipped, report, None)
+    assert not report.must and "every test was skipped" in report.should[0]
+
+    no_runner = "failed to load config from /work/repo/plugins/opencode/vitest.config.ts"
+    broken = FixCheck(passed=False, test_files=["t.ts"], source_files=["a.ts"],
+                      fails_without_fix=run(False, no_runner), passes_with_fix=run(False, no_runner),
+                      problems=["the targeted test FAILS with the fix"])  # fmt: skip
+    report = Report(pr=_pr())
+    prcheck._findings(broken, report, None)
+    assert not report.must and "could not run in this sandbox" in report.should[0]
+
+    same = run(False, "E   assert 1 == 2\n1 failed")  # the fix did not work: still a result, not an environment limit
+    real = FixCheck(passed=False, test_files=["t.py"], source_files=["a.py"], fails_without_fix=same,
+                    passes_with_fix=same, problems=["the targeted test FAILS with the fix"])  # fmt: skip
+    report = Report(pr=_pr())
+    prcheck._findings(real, report, None)
+    assert report.must == ["The targeted test FAILS with the fix."]  # a real failure stays a must-fix
+
+
+def test_a_referenced_issue_is_not_a_closed_one() -> None:
+    pr = _pr(body="Refs #4417. Partial fix.")
+    assert prcheck.linked_issue_number(pr) is None and prcheck.referenced_issue_number(pr) == 4417

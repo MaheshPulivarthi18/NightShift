@@ -88,13 +88,19 @@ def strip_attribution(message: str) -> str:
     return text
 
 
+def _prose(markdown: str) -> str:
+    """Markdown without fenced code blocks and HTML comments: a `# comment` in a code sample is no heading."""
+    markdown = re.sub(r"<!--.*?-->", "", markdown, flags=re.S)
+    return re.sub(r"^(```|~~~).*?^\1[^\n]*$", "", markdown, flags=re.S | re.M)
+
+
 def template_headings(template: str) -> list[str]:
     """The section headings of a PR template, e.g. ["Description", "Testing"]."""
-    return [m.strip().strip("#").strip() for m in re.findall(r"^#{1,6}\s+(.+?)\s*$", template, re.M)]
+    return [m.strip().strip("#").strip() for m in re.findall(r"^#{1,6}\s+(.+?)\s*$", _prose(template), re.M)]
 
 
 def missing_sections(body: str, headings: list[str]) -> list[str]:
-    present = {h.strip().lower() for h in re.findall(r"^#{1,6}\s+(.+?)\s*#*\s*$", body, re.M)}
+    present = {h.strip().lower() for h in re.findall(r"^#{1,6}\s+(.+?)\s*#*\s*$", _prose(body), re.M)}
     return [h for h in headings if h.lower() not in present]
 
 

@@ -130,6 +130,29 @@ class LLMCall(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class PRCheck(Base):
+    """A pull request checked by the PR checker (worker/prcheck.py): its verdict and the full report."""
+
+    __tablename__ = "pr_checks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id", ondelete="CASCADE"), index=True)
+    number: Mapped[int] = mapped_column(Integer)
+    url: Mapped[str] = mapped_column(String(300))
+    title: Mapped[str] = mapped_column(Text, default="")
+    author: Mapped[str] = mapped_column(String(100), default="")
+    head_sha: Mapped[str] = mapped_column(String(40), default="")
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="running")  # running, done, failed
+    verdict: Mapped[str | None] = mapped_column(String(60))
+    must: Mapped[int] = mapped_column(Integer, default=0)
+    should: Mapped[int] = mapped_column(Integer, default=0)
+    markdown: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str | None] = mapped_column(Text)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class ModelOutcome(Base):
     """How a model did at an agent's job: a task outcome (the Coder's fix verified, the plan approved,
     the environment ready) or a failed call (an API error, a refusal, unusable output). The router

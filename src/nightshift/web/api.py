@@ -21,7 +21,7 @@ from nightshift import outcomes
 from nightshift.catalog import ModelConfigError
 from nightshift.chat import chat_turn, get_or_create_chat, load_messages
 from nightshift.config import get_settings
-from nightshift.db import Control, Item, LLMCall, Repo, RepoContext, Report, Run, RunEvent, session_scope
+from nightshift.db import Control, Item, LLMCall, PRCheck, Repo, RepoContext, Report, Run, RunEvent, session_scope
 from nightshift.github import GitHubError
 from nightshift.health.graph import run_health_report
 from nightshift.health.report import is_opportunity
@@ -30,6 +30,7 @@ from nightshift.memory import get_or_create_repo
 from nightshift.router import AGENTS, agent_routes
 from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker.issue import fetch_issue
+from nightshift.worker.prcheck import PRCheckError, check_pr, fetch_pull, prcheck_run_id
 from nightshift.worker.setup_agent import ENVIRONMENT, Environment, setup_repo, setup_run_id
 
 log = structlog.get_logger()
@@ -307,6 +308,78 @@ async def report_live(owner: str, name: str, run_id: str | None = None) -> dict[
 
 
 # ---------- jobs ----------
+
+
+# ---------- PR checks ----------
+
+
+def _check_view(c: PRCheck, repo: Repo, run: Run | None) -> dict[str, Any]:
+    status = run.status if c.status == "running" and run and run.status != "running" else c.status
+    return {
+        "id": c.id, "repo": repo.full_name, "number": c.number, "url": c.url, "title": c.title,
+        "author": c.author, "status": status, "verdict": c.verdict, "must": c.must, "should": c.should,
+        "cost_usd": round(c.cost_usd, 4), "run_id": c.run_id, "created_at": _iso(c.created_at), "error": c.error,
+    }  # fmt: skip
+
+
+@router.get("/pr-checks")
+async def list_pr_checks() -> list[dict[str, Any]]:
+    async with session_scope() as s:
+        rows = (
+            await s.execute(
+                select(PRCheck, Repo, Run)
+                .join(Repo, Repo.id == PRCheck.repo_id)
+                .outerjoin(Run, Run.run_id == PRCheck.run_id)
+                .order_by(PRCheck.created_at.desc())
+                .limit(100)
+            )
+        ).all()
+    return [_check_view(c, repo, run) for c, repo, run in rows]
+
+
+@router.get("/pr-checks/{check_id}")
+async def get_pr_check(check_id: int) -> dict[str, Any]:
+    async with session_scope() as s:
+        row = (
+            await s.execute(
+                select(PRCheck, Repo, Run)
+                .join(Repo, Repo.id == PRCheck.repo_id)
+                .outerjoin(Run, Run.run_id == PRCheck.run_id)
+                .where(PRCheck.id == check_id)
+            )
+        ).first()
+    if row is None:
+        raise HTTPException(404, "No such PR check")
+    c, repo, run = row
+    body = re.sub(r"\A# PR check:[^\n]*\n+", "", c.markdown)  # the page header already shows the PR's title
+    return _check_view(c, repo, run) | {"html": render_markdown(body, repo.full_name)}
+
+
+class CheckIn(BaseModel):
+    url: str
+
+
+@router.post("/pr-checks", dependencies=[Guard])
+async def start_pr_check(body: CheckIn) -> dict[str, str]:
+    """Check a pull request in the background; the PR is read first, so a bad URL fails at once."""
+    try:
+        pr = await fetch_pull(body.url)
+    except PRCheckError as e:
+        raise HTTPException(400, str(e)) from e
+    async with session_scope() as s:
+        repo = await get_or_create_repo(s, pr.repo)
+    run_id = prcheck_run_id(repo.id, pr.number)
+
+    async def job() -> None:
+        try:
+            await check_pr(pr.url, run_id)
+        except Exception as e:  # recorded on the check and the run
+            log.warning("web_pr_check_failed", url=pr.url, error=str(e))
+        finally:
+            _runs.pop(run_id, None)
+
+    _runs[run_id] = asyncio.create_task(job())
+    return {"run_id": run_id}
 
 
 # ---------- models ----------
