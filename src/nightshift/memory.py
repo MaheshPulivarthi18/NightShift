@@ -14,11 +14,11 @@ from functools import lru_cache
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nightshift.config import get_settings
-from nightshift.db import Feedback, Item, Repo
+from nightshift.db import AgentVerdict, Chat, Feedback, Item, Repo, RepoContext, Report, Run, Task
 
 log = structlog.get_logger()
 
@@ -54,6 +54,40 @@ async def get_or_create_repo(
         s.add(repo)
         await s.flush()
     return repo
+
+
+# Everything that belongs to a repo row, and for tables unique per repo, the columns that make a row unique.
+REPO_RECORDS: list[tuple[Any, tuple[str, ...]]] = [
+    (Item, ("number",)), (Chat, ("number",)), (RepoContext, ("kind", "commit")),
+    (AgentVerdict, ()), (Report, ()), (Feedback, ()), (Run, ()), (Task, ()),
+]  # fmt: skip
+
+
+async def follow_rename(s: AsyncSession, old_name: str, new_name: str) -> Repo | None:
+    """GitHub moved `old_name` to `new_name`: the watched repo takes the new name.
+
+    If work already started under the new name (a second row), that row's records move onto the old
+    one, which keeps its reports and history, and the second row goes. Where both rows hold the same
+    item, chat or context, the new row's copy is kept: it is the fresher one."""
+    if old_name == new_name:
+        return None
+    old = (await s.execute(select(Repo).where(Repo.full_name == old_name))).scalar_one_or_none()
+    if old is None:
+        return None
+    new = (await s.execute(select(Repo).where(Repo.full_name == new_name))).scalar_one_or_none()
+    if new is not None:
+        for model, keys in REPO_RECORDS:
+            if keys:
+                cols = [getattr(model, k) for k in keys]
+                newer = select(*cols).where(model.repo_id == new.id)
+                await s.execute(delete(model).where(model.repo_id == old.id, tuple_(*cols).in_(newer)))
+            await s.execute(update(model).where(model.repo_id == new.id).values(repo_id=old.id))
+        await s.delete(new)
+        await s.flush()
+    log.info("repo_renamed", old=old_name, new=new_name, merged=new is not None)
+    old.full_name = new_name
+    await s.flush()
+    return old
 
 
 async def upsert_items(s: AsyncSession, repo: Repo, fetched: list[dict[str, Any]]) -> int:

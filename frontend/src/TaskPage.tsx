@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, CommandResult, GateInfo, ModelUse, ModelView, TaskDetail } from "./api";
-import { Diff, Html, Log, StatusBadge, money } from "./ui";
+import { Diff, Html, Log, StatusBadge, Title, money } from "./ui";
 
 const TABS = ["Plan", "Log", "Verification", "Review", "Diff", "PR"] as const;
 type Tab = (typeof TABS)[number];
@@ -52,7 +52,7 @@ export function TaskPage({ id }: { id: number }) {
           {task.repo}#{task.issue} · task {task.id} · base {task.base_commit.slice(0, 7) || "—"}
           {task.rehearsal && <span className="tag">rehearsal</span>}
         </div>
-        <h1>{task.title}</h1>
+        <h1><Title text={task.title} /></h1>
         <div className="facts">
           <StatusBadge status={task.status} busy={task.busy} />
           <span className="mono">{money(task.cost_usd)}</span>
@@ -91,7 +91,7 @@ export function TaskPage({ id }: { id: number }) {
         {tab === "PR" &&
           (task.pr ? (
             <article className="pr">
-              <h2>{task.pr.title}</h2>
+              <h2><Title text={task.pr.title} /></h2>
               <Html html={task.pr.html} />
               <h3>Commit message</h3>
               <pre className="block">{task.pr.commit}</pre>

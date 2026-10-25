@@ -690,12 +690,19 @@ def spend() -> None:
 def serve(
     port: Annotated[int, typer.Option(help="Port to listen on.")] = 8000,
     host: Annotated[str, typer.Option(help="Interface. Keep 127.0.0.1: the app has no login.")] = "127.0.0.1",
+    reload: Annotated[
+        bool, typer.Option(help="Restart when NightShift's code changes (development). Restarts stop running jobs.")
+    ] = False,
 ) -> None:
     """Start the web app: watchlist, live jobs, reports and issue chat."""
     import uvicorn
 
-    typer.echo(f"NightShift UI on http://{host}:{port}")
-    uvicorn.run("nightshift.web.app:app", host=host, port=port, log_level="warning")
+    typer.echo(f"NightShift UI on http://{host}:{port}" + (" (reloads on code changes)" if reload else ""))
+    src = str(Path(__file__).resolve().parent)
+    uvicorn.run(
+        "nightshift.web.app:app", host=host, port=port, log_level="warning", reload=reload,
+        reload_dirs=[src] if reload else None,
+    )  # fmt: skip
 
 
 @app.command("db-setup")

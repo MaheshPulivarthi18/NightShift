@@ -10,15 +10,15 @@ under "Found by you".
 
 ## UI bugs
 
-- [ ] **Repos, "Last run" counts task and map runs.** microsoft/multilspy shows "done 1h ago" next to
-      "no report yet". Show only health report runs there.
-- [ ] **Moved repos keep their old name in the watchlist.** MadsLorentzen/ai-job-search is now
+- [x] **Repos, "Last run" counts task and map runs.** microsoft/multilspy shows "done 1h ago" next to
+      "no report yet". Show only health report runs there. Fixed: the column shows health report runs only.
+- [x] **Moved repos keep their old name in the watchlist.** MadsLorentzen/ai-job-search is now
       ai-job-search-dev/ai-job-search; Repos, the report and its links still use the old name. Rename
-      the row when GitHub reports a new name.
-- [ ] **"plan" link on issues that are already taken.** The report shows it under "Already being worked
-      on" too. Hide it there, or mark it as taken.
-- [ ] **Backticks in titles show raw** (multilspy #101: `` `start_server` context manager ``). Render
-      inline code in task titles and cards.
+      the row when GitHub reports a new name. Fixed: planning and reports follow GitHub's rename; a row already made under the new name is merged into the watched one (done for ai-job-search).
+- [x] **"plan" link on issues that are already taken.** The report shows it under "Already being worked
+      on" too. Hide it there, or mark it as taken. Fixed: issues under "Already being worked on" get a chat link, no plan link.
+- [x] **Backticks in titles show raw** (multilspy #101: `` `start_server` context manager ``). Render
+      inline code in task titles and cards. Fixed: task cards, task, PR and chat titles render `inline code`.
 - [ ] **No way to archive a task.** The laya rehearsal (task 1) sits in "Waiting on you" forever. Add
       archive, and remove repos from the watchlist in the UI.
 - [ ] **PR Writer skips required template sections** (headroom #4456: no Real Behavior Proof, Runtime Rollout
@@ -36,10 +36,10 @@ under "Found by you".
       on defaults). Show them, editable, and warn when the Testing section contains failures.
 - [ ] **No general Revise button.** Gate 2 now has "Redo on latest commit" for upstream drift (and
       `POST /api/tasks/{id}/revise` exists); ready and stopped tasks still need a revise box with a note.
-- [ ] **After "#N is not free", no way to see who took it.** Link the PRs named in the refusal.
-- [ ] **Report page repeats itself:** the header shows repo, date and cost that the report body shows again.
-- [ ] **Jobs "Step" column is empty** for finished runs. Show the step only while a run is live.
-- [ ] **`nightshift serve` keeps old code** until restarted. Add `--reload` for development.
+- [x] **After "#N is not free", no way to see who took it.** Link the PRs named in the refusal. Fixed: every #N in the refusal links to GitHub.
+- [x] **Report page repeats itself:** the header shows repo, date and cost that the report body shows again. Fixed: the header keeps the repo name and the link hint only.
+- [x] **Jobs "Step" column is empty** for finished runs. Show the step only while a run is live. Fixed: the step shows next to the status while a run is live; the column is gone.
+- [x] **`nightshift serve` keeps old code** until restarted. Add `--reload` for development. Fixed: `nightshift serve --reload`.
 
 ## Worker bugs and gaps
 
@@ -55,9 +55,9 @@ under "Found by you".
 - [ ] **Reviewer missed the event-loop bug** in the first multilspy fix (the issue's own `SyncLanguageServer`
       case). When feasible, run the issue's reproduction as part of review.
 - [ ] **Decide the Reviewer policy on error and fallback paths** that skip a new field (laya `ws_router.py`).
-- [ ] **Setups that pull GPU builds time out** (headroom: `uv sync --extra dev` downloads CUDA PyTorch, over
+- [x] **Setups that pull GPU builds time out** (headroom: `uv sync --extra dev` downloads CUDA PyTorch, over
       2.5 GB). The Planner should default to CPU-only wheels (`uv pip install --torch-backend cpu`) and call
-      `.venv/bin/...` instead of `uv run`, which re-syncs. Task 3 was revised this way by hand.
+      `.venv/bin/...` instead of `uv run`, which re-syncs. Task 3 was revised this way by hand. Fixed: the Setup agent picks CPU-only builds and calls `.venv/bin/...`.
 - [ ] **A run that dies leaves its task "working" forever** (process killed, session closed), and
       `task revise` refuses "working" tasks; its sandbox container can also be left running. Add a heartbeat
       so stale runs become "needs you", remove orphaned `ns-task-*` containers at startup, and allow revise.
@@ -78,7 +78,7 @@ under "Found by you".
        after images in the PR.
 2. [ ] **PR watcher:** follow published PRs (#169) for reviews, CI and merges; draft replies for approval.
 3. [ ] **Free issues across the watchlist:** one live-checked list of issues nobody has taken.
-4. [ ] **Toolchains on demand in the sandbox** (Bun for ai-job-search #765, Rust, Go).
+4. [x] **Toolchains on demand in the sandbox** (Bun for ai-job-search #765, Rust, Go). Done: the Setup agent's environment images (system packages; pnpm, yarn, Go, Rust).
 5. [ ] **Repo recipes in the UI:** see and edit each repo's saved setup and test commands.
 6. [ ] **Architecture map view** (the L1 data exists; show it per repo).
 7. [ ] **Track record:** PRs opened, merged, time to merge; estimated vs actual cost per task.

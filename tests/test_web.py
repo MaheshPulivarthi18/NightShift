@@ -23,6 +23,17 @@ def test_render_markdown_sanitizes_and_links_chat_and_plan() -> None:
     assert 'href="#/?repo=o/r&amp;issue=5"' in html
 
 
+def test_issues_someone_else_took_get_no_plan_link() -> None:
+    html = render_markdown(
+        "## Good places to start\n\n[#5](https://github.com/o/r/issues/5)\n\n"
+        "## Already being worked on\n\n[#6](https://github.com/o/r/issues/6)\n\n"
+        "## Duplicates\n\n[#7](https://github.com/o/r/issues/7)\n",
+        "o/r",
+    )
+    assert "issue=5" in html and "issue=7" in html
+    assert "issue=6" not in html and 'href="#/chat/o/r/6"' in html  # still chat-able
+
+
 @pytest.fixture
 async def client() -> AsyncIterator[httpx.AsyncClient]:
     try:

@@ -102,6 +102,18 @@ export function Diff({ text }: { text: string }) {
 }
 
 // Server-sanitized HTML (nh3) only: every Markdown body is rendered and cleaned by the API.
+/** A title written on GitHub: `backticked` parts render as inline code, the rest as plain text. */
+export function Title({ text }: { text: string }) {
+  const parts = text.split(/(`[^`]+`)/);
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.length > 2 && p.startsWith("`") && p.endsWith("`") ? <code key={i}>{p.slice(1, -1)}</code> : p,
+      )}
+    </>
+  );
+}
+
 export function Html({ html }: { html: string }) {
   return <div className="prose" dangerouslySetInnerHTML={{ __html: html }} />;
 }

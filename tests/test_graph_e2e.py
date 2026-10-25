@@ -103,6 +103,10 @@ async def fake_fetch(
     return FIXTURE, False
 
 
+async def same_name(self: GitHubClient, full_name: str) -> str:
+    return full_name  # the repo has not moved
+
+
 async def fake_docs(self: GitHubClient, full_name: str) -> dict[str, Any]:
     return {
         "head_oid": "abc",
@@ -214,6 +218,7 @@ async def repo_name(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIte
     monkeypatch.setattr(GitHubClient, "aclose", lambda self: _noop())
     monkeypatch.setattr(GitHubClient, "fetch_items", fake_fetch)
     monkeypatch.setattr(GitHubClient, "fetch_repo_docs", fake_docs)
+    monkeypatch.setattr(GitHubClient, "canonical_name", same_name)
     monkeypatch.setattr(memory, "embed", fake_embed)
     monkeypatch.setattr(LLMGateway, "__init__", lambda self, run_id, repo_id, client=None: None)
     monkeypatch.setattr(LLMGateway, "parse", fake_parse)

@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { api, ChatTurn, ChatView, post } from "./api";
-import { Html, money } from "./ui";
+import { Html, Title, money } from "./ui";
 
 /** Talk to Claude about one issue or PR. It can read the repo's code; it drafts but never posts. */
 export function Chat({ repo, number }: { repo: string; number: number }) {
@@ -66,7 +66,7 @@ export function Chat({ repo, number }: { repo: string; number: number }) {
             {repo}#{it.number} · {it.kind === "pr" ? "pull request" : "issue"} · {it.state.toLowerCase()}
             {it.author && ` · by ${it.author}`}
           </div>
-          <h1>{it.title}</h1>
+          <h1><Title text={it.title} /></h1>
           <div className="facts">
             <a href={it.url} target="_blank" rel="noreferrer">on GitHub ↗</a>
             {it.kind === "issue" && it.state === "OPEN" && <a href={`#/?repo=${repo}&issue=${it.number}`}>plan a fix →</a>}

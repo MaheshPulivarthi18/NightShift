@@ -41,6 +41,7 @@ from nightshift.health.signals import pr_signals
 from nightshift.llm import AgentOutputError, BudgetExceeded, KillSwitchActive, LLMGateway, ModelRefused
 from nightshift.memory import (
     feedback_examples,
+    follow_rename,
     get_or_create_repo,
     nearest,
     refresh_embeddings,
@@ -485,6 +486,17 @@ async def run_health_report(repo: str, run_id: str | None = None, resume: bool =
     """Run (or, with `resume=True`, continue) the health report for one repo."""
     run_id = run_id or uuid.uuid4().hex
     config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+    if not resume:  # a moved repo is reported, and kept, under its current name
+        gh = GitHubClient()
+        try:
+            current = await gh.canonical_name(repo)
+        finally:
+            await gh.aclose()
+        if current != repo:
+            async with session_scope() as s:
+                await follow_rename(s, repo, current)
+            log.info("health_report_repo_moved", old=repo, new=current)
+            repo = current
     async with session_scope() as s:
         repo_id = (await get_or_create_repo(s, repo)).id
     await events.start_run(run_id, repo_id)

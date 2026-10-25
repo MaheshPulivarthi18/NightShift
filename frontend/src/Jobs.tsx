@@ -22,7 +22,6 @@ export function Jobs() {
               <th>Repo</th>
               <th>Kind</th>
               <th>Status</th>
-              <th>Step</th>
               <th className="right">Cost</th>
               <th>Started</th>
               <th className="right">Took</th>
@@ -31,7 +30,7 @@ export function Jobs() {
           <tbody>
             {jobs?.length === 0 && (
               <tr>
-                <td colSpan={7} className="muted">No runs yet.</td>
+                <td colSpan={6} className="muted">No runs yet.</td>
               </tr>
             )}
             {jobs?.map((j) => (
@@ -42,8 +41,10 @@ export function Jobs() {
                   </a>
                 </td>
                 <td className="dim">{KIND[j.kind]}</td>
-                <td><StatusBadge status={j.status} /></td>
-                <td className="mono dim">{j.node ?? ""}</td>
+                <td>
+                  <StatusBadge status={j.status} />
+                  {j.status === "running" && j.node && <span className="mono dim"> {j.node}</span>}
+                </td>
                 <td className="mono right">{money(j.cost_usd)}</td>
                 <td className="dim">{ago(j.started_at)}</td>
                 <td className="mono dim right">{duration(j.started_at, j.finished_at)}</td>

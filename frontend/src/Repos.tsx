@@ -188,8 +188,7 @@ export function Report({ repo }: { repo: string }) {
         <div>
           <h1 className="mono-title">{rep.repo}</h1>
           <p className="muted">
-            {rep.role} report · {new Date(rep.created_at).toLocaleString()} · {money(rep.cost_usd)} · links marked <b>chat</b> open a
-            conversation about that issue, <b>plan</b> starts a fix
+            Links marked <b>chat</b> open a conversation about that issue; <b>plan</b> starts a fix.
           </p>
         </div>
         {rep.history.length > 1 && (

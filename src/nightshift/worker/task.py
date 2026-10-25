@@ -33,7 +33,7 @@ from nightshift.github import GitHubClient, GitHubError
 from nightshift.health.agents import RepoBrief
 from nightshift.health.graph import repo_brief
 from nightshift.llm import BudgetExceeded, KillSwitchActive, LLMGateway
-from nightshift.memory import get_or_create_repo
+from nightshift.memory import follow_rename, get_or_create_repo
 from nightshift.router import check_choice, family
 from nightshift.sandbox.docker import Sandbox, SandboxError, prepare_repo
 from nightshift.sandbox.envimage import ensure_env_image
@@ -161,6 +161,9 @@ async def precheck(
     finally:
         await gh.aclose()
     moved = f"{full_name} has moved to {current}; this task uses {current}" if current != full_name else None
+    if moved:  # the watchlist follows the move, so reports, tasks and links all use the current name
+        async with session_scope() as s:
+            await follow_rename(s, full_name, current)
     try:
         issue = await fetch_issue(current, number)
     except GitHubError as e:

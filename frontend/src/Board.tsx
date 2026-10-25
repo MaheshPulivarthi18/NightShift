@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api, Stage, TaskSummary } from "./api";
-import { StatusBadge, money } from "./ui";
+import { StatusBadge, Title, money } from "./ui";
 
 const LANES: { key: string; title: string; stages: Stage[]; hint: string }[] = [
   { key: "you", title: "Waiting on you", stages: ["gate1", "gate2"], hint: "Approve a plan or a PR" },
@@ -78,7 +78,7 @@ export function Board({ prefillRepo, prefillIssue }: { prefillRepo: string; pref
                   </span>
                   <StatusBadge status={t.status} busy={t.busy} />
                 </div>
-                <div className="card-title">{t.title}</div>
+                <div className="card-title"><Title text={t.title} /></div>
                 <div className="card-foot mono dim">
                   <span>task {t.id}</span>
                   {t.rehearsal && <span className="tag">rehearsal</span>}
@@ -92,6 +92,24 @@ export function Board({ prefillRepo, prefillIssue }: { prefillRepo: string; pref
         ))}
       </div>
     </div>
+  );
+}
+
+// "#705 is not free: open PR #706 by someone references it": each #N links to GitHub, so you can see who took it.
+function IssueLinks({ text, repo }: { text: string; repo: string }) {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return <>{text}</>;
+  return (
+    <>
+      {text.split(/(#\d+)/).map((part, i) =>
+        /^#\d+$/.test(part) ? (
+          <a key={i} href={`https://github.com/${repo}/issues/${part.slice(1)}`} target="_blank" rel="noreferrer">
+            {part}
+          </a>
+        ) : (
+          part
+        ),
+      )}
+    </>
   );
 }
 
@@ -152,7 +170,11 @@ function NewTask({ repo0, issue0, onCreated }: { repo0: string; issue0: string; 
       <button className="primary" disabled={state.busy}>
         {state.busy ? "Starting…" : "Plan issue"}
       </button>
-      {state.msg && <p className={`form-msg${state.error ? " error" : ""}`}>{state.msg}</p>}
+      {state.msg && (
+        <p className={`form-msg${state.error ? " error" : ""}`}>
+          {state.error ? <IssueLinks text={state.msg} repo={repo.trim()} /> : state.msg}
+        </p>
+      )}
     </form>
   );
 }

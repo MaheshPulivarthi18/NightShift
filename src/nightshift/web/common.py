@@ -22,21 +22,30 @@ from nightshift.catalog import ModelInfo
 _md = MarkdownIt("commonmark", {"html": True}).enable("table")
 
 
+# Report sections whose issues someone else is already on: they get a chat link, never a plan link.
+TAKEN_SECTIONS = ("Already being worked on",)
+
+
 def render_markdown(text: str, repo: str | None = None) -> str:
-    """Markdown to sanitized HTML. Links to the repo's issues and PRs get chat and plan links next to them."""
+    """Markdown to sanitized HTML. Links to the repo's issues and PRs get chat and plan links next to them
+    (no plan link for issues in a section listing work already taken)."""
     html = nh3.clean(_md.render(text or ""), link_rel="noopener noreferrer")
-    if repo:
-        pattern = re.compile(rf'(<a href="https://github\.com/{re.escape(repo)}/(issues|pull)/(\d+)"[^>]*>[^<]*</a>)')
+    if not repo:
+        return html
+    pattern = re.compile(rf'(<a href="https://github\.com/{re.escape(repo)}/(issues|pull)/(\d+)"[^>]*>[^<]*</a>)')
 
-        def links(m: re.Match[str]) -> str:
-            n = m.group(3)
-            out = f'{m.group(1)} <a class="chat-link" href="#/chat/{repo}/{n}" title="Chat about #{n}">chat</a>'
-            if m.group(2) == "issues":
-                out += f' <a class="plan-link" href="#/?repo={repo}&amp;issue={n}" title="Plan a fix for #{n}">plan</a>'
-            return out
+    def links(m: re.Match[str], plan: bool) -> str:
+        n = m.group(3)
+        out = f'{m.group(1)} <a class="chat-link" href="#/chat/{repo}/{n}" title="Chat about #{n}">chat</a>'
+        if plan and m.group(2) == "issues":
+            out += f' <a class="plan-link" href="#/?repo={repo}&amp;issue={n}" title="Plan a fix for #{n}">plan</a>'
+        return out
 
-        html = pattern.sub(links, html)
-    return html
+    out = []
+    for section in re.split(r"(?=<h2[ >])", html):  # one piece per report section
+        plan = not any(section.startswith(f"<h2>{t}") for t in TAKEN_SECTIONS)
+        out.append(pattern.sub(lambda m: links(m, plan), section))  # noqa: B023 - called right here
+    return "".join(out)
 
 
 async def same_origin(request: Request) -> None:
