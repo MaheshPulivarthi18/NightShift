@@ -1,5 +1,5 @@
-import { FormEvent, useState } from "react";
-import { api, RepoEnvironment, RepoRow, ReportView } from "./api";
+import { FormEvent, useEffect, useState } from "react";
+import { api, LiveCheck, RepoEnvironment, RepoRow, ReportView } from "./api";
 import { Html, StatusBadge, ago, money, usePoll } from "./ui";
 
 export function Repos() {
@@ -193,6 +193,11 @@ function AddRepo({ onAdded }: { onAdded: () => void }) {
 export function Report({ repo }: { repo: string }) {
   const [runId, setRunId] = useState<string | undefined>(undefined);
   const [rep, error] = usePoll<ReportView>(() => api.report(repo, runId), 60000, [repo, runId]);
+  const [live, setLive] = useState<LiveCheck | string | null>(null); // a string: why the check failed
+  useEffect(() => {
+    setLive(null);
+    if (rep) api.reportLive(rep.repo, rep.run_id).then(setLive, (e: Error) => setLive(e.message));
+  }, [rep?.repo, rep?.run_id]); // eslint-disable-line react-hooks/exhaustive-deps
   if (error) return <div className="page"><a className="back" href="#/repos">← Repos</a><p className="error">{error}</p></div>;
   if (!rep) return <p className="muted page">Loading report…</p>;
   return (
@@ -216,14 +221,44 @@ export function Report({ repo }: { repo: string }) {
         )}
       </header>
       <Freshness repo={rep.repo} createdAt={rep.created_at} />
+      <LiveStatus live={live} />
       <article className="report">
-        <Html html={rep.html} />
+        <Html html={live && typeof live !== "string" ? markTaken(rep.html, rep.repo, live) : rep.html} />
       </article>
     </div>
   );
 }
 
 /** A report is a snapshot: issues it lists as free may have been taken since. Say so once it is old. */
+// Issues taken since the report: their plan link becomes a "taken" note saying by whom.
+function markTaken(html: string, repo: string, live: LiveCheck): string {
+  return live.taken.reduce((out, t) => {
+    const link = new RegExp(`<a class="plan-link" href="#/\\?repo=${repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}&amp;issue=${t.number}"[^>]*>plan</a>`);
+    const note = t.why.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] ?? c);
+    return out.replace(link, `<span class="taken" title="${note}">taken</span>`);
+  }, html);
+}
+
+function LiveStatus({ live }: { live: LiveCheck | string | null }) {
+  if (!live) return <p className="muted live-check">Checking the listed issues on GitHub (up to a minute)…</p>;
+  if (typeof live === "string") return <p className="muted live-check">Could not check the issues on GitHub: {live}</p>;
+  if (!live.taken.length)
+    return <p className="muted live-check">Checked the top {live.checked} listed issues on GitHub just now: all still free.</p>;
+  return (
+    <div className="stale">
+      <span>
+        Taken since this report:{" "}
+        {live.taken.map((t, i) => (
+          <span key={t.number}>
+            {i > 0 && "; "}
+            <b>#{t.number}</b> ({t.why})
+          </span>
+        ))}
+      </span>
+    </div>
+  );
+}
+
 function Freshness({ repo, createdAt }: { repo: string; createdAt: string }) {
   const [msg, setMsg] = useState<string | null>(null);
   const hours = (Date.now() - new Date(createdAt).getTime()) / 3_600_000;

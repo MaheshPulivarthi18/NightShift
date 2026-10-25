@@ -32,6 +32,13 @@ export interface RepoEnvironment {
   cost_usd: number;
 }
 
+// The report's listed issues, asked about on GitHub again: the ones someone has taken since.
+export interface LiveCheck {
+  checked: number;
+  taken: { number: number; why: string }[];
+  at: string;
+}
+
 export interface ReportView {
   repo: string;
   role: string;
@@ -247,6 +254,7 @@ export const api = {
   runReport: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/run`, {}),
   removeRepo: (repo: string) => call<RepoRow[]>(`/repos/${repo}/remove`, {}),
   setupRepo: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/setup`, {}),
+  reportLive: (repo: string, runId: string) => call<LiveCheck>(`/repos/${repo}/report/live?run_id=${runId}`),
   report: (repo: string, runId?: string) => call<ReportView>(`/repos/${repo}/report${runId ? `?run_id=${runId}` : ""}`),
   jobs: () => call<JobRow[]>("/jobs"),
   job: (id: string) => call<JobDetail>(`/jobs/${id}`),

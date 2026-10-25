@@ -7,6 +7,8 @@ code builds it from the verification that actually ran, so the PR can only claim
 
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, Field
 
 from nightshift.config import get_settings
@@ -76,9 +78,24 @@ async def draft_pr(
     )
 
 
+# Lines worth quoting from a test run: the runner's result line and the failing assertion. Everything
+# else (progress dots, log output, warnings) is noise in a PR.
+_RESULT = re.compile(
+    r"\b\d+ (passed|failed|errors?|skipped)\b|^Ran \d+ tests?|^(OK|FAILED)\b|^Tests?:\s|^Test Suites:|^(ok|FAIL)\s+\S+"
+    r"|\b\d+ (passing|failing)\b",
+    re.I,
+)
+_FAILURE = re.compile(r"^E\s+|AssertionError|assert |Error:|^FAILED |expected|received|panic:", re.I)
+ESSENTIAL_LINES = 8
+
+
 def _tail(text: str) -> str:
-    lines = [line for line in text.strip().splitlines() if line.strip()]
-    return "\n".join(lines[-TAIL_LINES:])
+    """The test runner's summary and the failing assertion; the last lines when neither is found."""
+    lines = [line.rstrip() for line in text.strip().splitlines() if line.strip()]
+    failures = [line for line in lines if _FAILURE.search(line)][:4]
+    results = [line for line in lines if _RESULT.search(line)][-2:]
+    picked = [line for line in lines if line in failures or line in results]
+    return "\n".join((picked or lines[-TAIL_LINES:])[-ESSENTIAL_LINES:])
 
 
 def evidence_section(check: FixCheck) -> str:

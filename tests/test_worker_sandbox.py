@@ -121,3 +121,12 @@ def test_doc_paths() -> None:
         assert is_doc_path(p), p
     for p in ("src/multilspy/clangd.py", "docsify.py", "tests/test_readme.py", "readme_utils.ts"):
         assert not is_doc_path(p), p
+
+
+async def test_the_repos_own_tools_come_first_on_path(repo: tuple[Sandbox, str]) -> None:
+    box, _ = repo
+    await box.exec("mkdir -p .venv/bin node_modules/.bin")
+    await box.write_file(f"{REPO_DIR}/.venv/bin/pytest", "#!/bin/sh\necho repo-pytest\n")
+    await box.write_file(f"{REPO_DIR}/node_modules/.bin/jest", "#!/bin/sh\necho repo-jest\n")
+    await box.exec("chmod +x .venv/bin/pytest node_modules/.bin/jest")
+    assert (await box.exec("pytest && jest")).stdout.split() == ["repo-pytest", "repo-jest"]

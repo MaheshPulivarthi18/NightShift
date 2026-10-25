@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -21,12 +22,14 @@ from nightshift.catalog import ModelConfigError
 from nightshift.chat import chat_turn, get_or_create_chat, load_messages
 from nightshift.config import get_settings
 from nightshift.db import Control, Item, LLMCall, Repo, RepoContext, Report, Run, RunEvent, session_scope
+from nightshift.github import GitHubError
 from nightshift.health.graph import run_health_report
 from nightshift.health.report import is_opportunity
 from nightshift.llm import spend_summary
 from nightshift.memory import get_or_create_repo
 from nightshift.router import AGENTS, agent_routes
 from nightshift.web.common import Guard, model_view, render_markdown
+from nightshift.worker.issue import fetch_issue
 from nightshift.worker.setup_agent import ENVIRONMENT, Environment, setup_repo, setup_run_id
 
 log = structlog.get_logger()
@@ -260,6 +263,47 @@ async def report(owner: str, name: str, run_id: str | None = None) -> dict[str, 
         "html": render_markdown(current.markdown, repo.full_name),
         "history": [{"run_id": r.run_id, "created_at": _iso(r.created_at)} for r in reports],
     }
+
+
+LIVE_CHECK_LIMIT = 15  # the report's top picks; each costs a few GitHub calls, one of them a search
+LIVE_CHECK_SECONDS = 600
+_live: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
+
+
+@router.get("/repos/{owner}/{name}/report/live")
+async def report_live(owner: str, name: str, run_id: str | None = None) -> dict[str, Any]:
+    """Asks GitHub again about the issues a report lists as free: open, unassigned, and no open or merged
+    PR references them (the three sources planning uses). Reports go stale; this does not."""
+    repo = await _repo(f"{owner}/{name}")
+    async with session_scope() as s:
+        q = select(Report).where(Report.repo_id == repo.id)
+        q = q.where(Report.run_id == run_id) if run_id else q.order_by(Report.created_at.desc()).limit(1)
+        current = (await s.execute(q)).scalars().first()
+    if current is None:
+        raise HTTPException(404, "No report yet.")
+    key = (repo.id, current.run_id)
+    if (hit := _live.get(key)) and time.monotonic() - hit[0] < LIVE_CHECK_SECONDS:
+        return hit[1]
+    numbers = [o["number"] for o in (current.findings or {}).get("opportunities", []) if is_opportunity(o)]
+    login = get_settings().github_login or None
+    gate = asyncio.Semaphore(2)  # GitHub's search API refuses bursts
+
+    async def check(number: int) -> dict[str, Any] | None:
+        async with gate:
+            try:
+                why = (await fetch_issue(repo.full_name, number)).blockers(login)
+            except GitHubError:
+                return None
+        return {"number": number, "why": "; ".join(why)} if why else None
+
+    found = await asyncio.gather(*(check(n) for n in numbers[:LIVE_CHECK_LIMIT]))
+    out = {
+        "checked": min(len(numbers), LIVE_CHECK_LIMIT),
+        "taken": [t for t in found if t],
+        "at": _iso(datetime.now(UTC)),
+    }
+    _live[key] = (time.monotonic(), out)
+    return out
 
 
 # ---------- jobs ----------

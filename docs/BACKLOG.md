@@ -48,10 +48,10 @@ under "Found by you".
       Planner once, and the plan says "setup commands ran successfully" or why they failed.
 - [ ] **Planner proposed a test that cannot fail** (multilspy: a jedi test for a bug jedi does not have).
       Reproduce the issue in the sandbox before planning the test.
-- [ ] **Repo virtualenv and node tools are not on PATH** in the sandbox (`jedi-language-server` not found,
-      so a suite showed red for no reason). Put `.venv/bin` and `node_modules/.bin` on PATH.
-- [ ] **Testing section is noisy:** it quotes log lines. Quote the test runner's summary and the failing
-      assertion only.
+- [x] **Repo virtualenv and node tools are not on PATH** in the sandbox (`jedi-language-server` not found,
+      so a suite showed red for no reason). Put `.venv/bin` and `node_modules/.bin` on PATH. Fixed: every sandbox command has the repo's `.venv/bin` and `node_modules/.bin` first on PATH.
+- [x] **Testing section is noisy:** it quotes log lines. Quote the test runner's summary and the failing
+      assertion only. Fixed: it quotes the test runner's result line and the failing assertion (the last lines only when neither is recognised).
 - [ ] **Reviewer missed the event-loop bug** in the first multilspy fix (the issue's own `SyncLanguageServer`
       case). When feasible, run the issue's reproduction as part of review.
 - [ ] **Decide the Reviewer policy on error and fallback paths** that skip a new field (laya `ws_router.py`).
@@ -61,10 +61,10 @@ under "Found by you".
 - [x] **A run that dies leaves its task "working" forever** (process killed, session closed), and
       `task revise` refuses "working" tasks; its sandbox container can also be left running. Add a heartbeat
       so stale runs become "needs you", remove orphaned `ns-task-*` containers at startup, and allow revise. Fixed: planning and runs write a heartbeat every 30 s; one silent for 3 minutes becomes "needs you" (or "failed" while planning) and can be revised; the server removes task sandboxes older than a run's time limit at startup.
-- [ ] **Health reports go stale:** #705 was "free" in a 4-day-old report. Re-check listed issues when the
-      report is opened, or re-run reports older than a day.
-- [ ] **Report claim detection misses timeline cross-references** with the read-only token (planning now
-      uses three sources; reports still rely on closing references).
+- [x] **Health reports go stale:** #705 was "free" in a 4-day-old report. Re-check listed issues when the
+      report is opened, or re-run reports older than a day. Fixed: opening a report re-checks its top 15 listed issues on GitHub (cached 10 min): taken ones are named in a banner and their plan link becomes "taken". First catch: multilspy #147 (open PR #148).
+- [x] **Report claim detection misses timeline cross-references** with the read-only token (planning now
+      uses three sources; reports still rely on closing references). Fixed: the live re-check uses the same three sources as planning.
 - [x] **Per-repo publish settings:** attribution line and branch prefix are environment variables today;
       store them per repo (multilspy: no attribution). Fixed: Gate 2's "use this attribution and branch prefix from now on" stores them per repo; multilspy and headroom are set to no attribution.
 

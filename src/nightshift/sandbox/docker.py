@@ -35,6 +35,7 @@ TOOLS_PYTHON = "/opt/ns-tools/bin/python"
 REPO_DIR = "/work/repo"
 RESULT_MARKER = "@@NIGHTSHIFT_RESULT@@"
 BASE_LABEL = "nightshift.base"  # on a repo image: the environment image it was built on
+REPO_TOOLS_PATH = f'export PATH="{REPO_DIR}/.venv/bin:{REPO_DIR}/node_modules/.bin:$PATH";'
 OUTPUT_LIMIT = 200_000  # characters kept from each end of a command's output
 
 # Files whose contents decide what a repo's setup installs. A change to any of them means a new image.
@@ -145,8 +146,10 @@ class Sandbox:
         """Run a shell command inside the container. The timeout is enforced inside too, so a
         command that outlives it is killed rather than left running in the background."""
         limit = timeout or get_settings().sandbox_command_timeout
-        # pipefail: `pytest | tail` must fail when pytest does.
-        inner = f"timeout --kill-after=10 {int(limit)} bash -lc {shlex.quote('set -o pipefail; ' + command)}"
+        # pipefail: `pytest | tail` must fail when pytest does. The repo's own virtualenv and node tools come
+        # first on PATH (set after the login shell, which resets it), so `pytest` or `jest` is the repo's.
+        script = f"{REPO_TOOLS_PATH} set -o pipefail; {command}"
+        inner = f"timeout --kill-after=10 {int(limit)} bash -lc {shlex.quote(script)}"
         res = await _docker("exec", "--workdir", workdir, self.name, "bash", "-c", inner, timeout=limit + 30)
         if res.code == 124:
             res.timed_out = True

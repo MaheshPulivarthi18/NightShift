@@ -175,3 +175,17 @@ async def test_only_a_pr_of_the_same_repo_can_be_attached() -> None:
         await publish.pull_info(Repo(full_name="o/r"), "https://github.com/other/repo/pull/1")
     with pytest.raises(publish.PublishError):
         await publish.pull_info(Repo(full_name="o/r"), "https://github.com/o/r/issues/1")
+
+
+def test_the_testing_section_quotes_the_summary_and_the_failure_only() -> None:
+    pytest_out = "\n".join(
+        ["============ test session starts ============", "collected 3 items", "", "tests/test_calc.py F..",
+         "=================== FAILURES ===================", "    def test_add():", ">       assert add(2, 3) == 5",
+         "E       assert -1 == 5", "WARNING some deprecation", "FAILED tests/test_calc.py::test_add - assert -1 == 5",
+         "========= 1 failed, 2 passed in 0.05s ========="]
+    )  # fmt: skip
+    quoted = prwriter._tail(pytest_out)
+    assert "E       assert -1 == 5" in quoted and "1 failed, 2 passed" in quoted
+    assert "collected" not in quoted and "WARNING" not in quoted and "test session starts" not in quoted
+    assert prwriter._tail("Ran 4 tests in 0.1s\n\nOK") == "Ran 4 tests in 0.1s\nOK"
+    assert prwriter._tail("just\nsome\noutput") == "just\nsome\noutput"  # nothing recognised: the last lines
