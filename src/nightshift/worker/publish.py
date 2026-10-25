@@ -14,6 +14,7 @@ Rehearsal tasks can never be published.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -163,6 +164,99 @@ async def publish(repo: Repo, task: Task, prepared: Prepared, *, title: str, bod
         "--head", f"{login}:{prepared.branch}", "--title", title, "--body-file", "-", stdin=body,
     )  # fmt: skip
     return url.strip().splitlines()[-1]
+
+
+# ---------- follow-ups on a published PR ----------
+
+
+class PullInfo(BaseModel):
+    """A published pull request, as GitHub reports it."""
+
+    number: int
+    url: str
+    state: str  # OPEN, CLOSED, MERGED
+    head_owner: str
+    head_branch: str
+    head_url: str  # where its branch can be fetched from
+
+
+PR_URL_RE = re.compile(r"^https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)/?$")
+
+
+async def pull_info(repo: Repo, url: str) -> PullInfo:
+    """Read a PR of this repo with the operator's gh login."""
+    m = PR_URL_RE.match(url.strip())
+    if not m or m.group(1).lower() != repo.full_name.lower():
+        raise PublishError(f"{url} is not a pull request of {repo.full_name}.")
+    raw = json.loads(
+        await _run(
+            "gh", "pr", "view", m.group(2), "--repo", repo.full_name,
+            "--json", "number,url,state,headRefName,headRepositoryOwner,headRepository",
+        )
+    )  # fmt: skip
+    owner, name = raw["headRepositoryOwner"]["login"], raw["headRepository"]["name"]
+    return PullInfo(
+        number=raw["number"], url=raw["url"], state=raw["state"], head_owner=owner, head_branch=raw["headRefName"],
+        head_url=f"https://github.com/{owner}/{name}.git",
+    )  # fmt: skip
+
+
+async def pull_diff(repo: Repo, pr: PullInfo) -> str:
+    """What the PR changes now, as a patch: the published fix when NightShift did not record it."""
+    return await _run("gh", "pr", "diff", str(pr.number), "--repo", repo.full_name, "--patch")
+
+
+class FollowUp(BaseModel):
+    workdir: str
+    branch: str  # the PR's branch, which the commit is pushed to
+    files: list[str]  # files the follow-up commit changes
+
+
+async def prepare_follow_up(
+    repo: Repo, task: Task, pr: PullInfo, published: str, workdir: Path, url: str | None = None
+) -> FollowUp:
+    """The PR's branch with one more change staged: the difference between the fix that was published
+    (`published`) and the revised fix (`task.diff`), both taken from the verified base commit."""
+    if not task.diff:
+        raise PublishError("The task has no diff.")
+    if pr.state != "OPEN":
+        raise PublishError(f"{pr.url} is {pr.state.lower()}; a follow-up needs an open PR.")
+    if workdir.exists():
+        shutil.rmtree(workdir)
+    await _run("git", "clone", "--quiet", "--filter=blob:none", url or f"https://github.com/{repo.full_name}.git",
+               str(workdir))  # fmt: skip
+    ident = ("-c", "user.email=nightshift@localhost", "-c", "user.name=NightShift")  # local commits, never pushed
+    for name, patch in (("published", published), ("revised", task.diff)):
+        await _run("git", "checkout", "--quiet", "-B", name, task.base_commit, cwd=workdir)
+        await _run("git", "apply", "--3way", "--index", "--whitespace=nowarn", "-", stdin=patch, cwd=workdir)
+        await _run("git", *ident, "commit", "--quiet", "--allow-empty", "-m", name, cwd=workdir)
+    change = await _run("git", "diff", "--binary", "published", "revised", cwd=workdir)
+    if not change.strip():
+        raise PublishError("The revised fix is the same as the published one: nothing to push.")
+    await _run("git", "fetch", "--quiet", pr.head_url, f"refs/heads/{pr.head_branch}:refs/remotes/pr/head", cwd=workdir)
+    await _run("git", "checkout", "--quiet", "-B", pr.head_branch, "refs/remotes/pr/head", cwd=workdir)
+    await _run("git", "apply", "--3way", "--index", "--whitespace=nowarn", "-", stdin=change, cwd=workdir)
+    files = [f for f in (await _run("git", "diff", "--cached", "--name-only", cwd=workdir)).splitlines() if f]
+    return FollowUp(workdir=str(workdir), branch=pr.head_branch, files=files)
+
+
+async def push_follow_up(repo: Repo, task: Task, pr: PullInfo, prepared: FollowUp, *, message: str) -> str:
+    """Commit the staged follow-up and push it to the PR's branch on the operator's fork (never forced)."""
+    login = get_settings().github_login
+    if not login or pr.head_owner.lower() != login.lower():
+        raise PublishError(f"{pr.url} comes from {pr.head_owner}'s fork, not yours ({login or 'unset'}).")
+    if blockers := await freshness(repo.full_name, task):
+        raise PublishError("Not pushing: " + "; ".join(blockers))
+    wd = Path(prepared.workdir)
+    await _run("git", "commit", "--quiet", "-F", "-", cwd=wd, stdin=message)
+    fork = (await _run("gh", "repo", "view", f"{login}/{repo.full_name.split('/', 1)[1]}", "--json", "sshUrl",
+                       "--jq", ".sshUrl")).strip()  # fmt: skip
+    await _run("git", "push", "--quiet", fork, f"HEAD:refs/heads/{prepared.branch}", cwd=wd)
+    return pr.url
+
+
+async def update_body(repo: Repo, pr: PullInfo, body: str) -> None:
+    await _run("gh", "pr", "edit", str(pr.number), "--repo", repo.full_name, "--body-file", "-", stdin=body)
 
 
 async def post_claim(repo: Repo, task: Task, text: str) -> str:

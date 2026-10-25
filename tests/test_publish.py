@@ -114,3 +114,64 @@ def test_branch_name_is_short_and_safe() -> None:
     task = _task("x", "")
     task.issue = {"title": "Persist Tool Call References in Chat (UI + API) ünïcode!!"}
     assert branch_name(task) == "nightshift/3-persist-tool-call-references-in-chat-ui"
+
+
+# ---------- follow-ups on a published PR ----------
+
+PUBLISHED = "--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n-y = 1\n+y = 2\n"
+REVISED = "--- a/b.py\n+++ b/b.py\n@@ -1 +1,2 @@\n-y = 1\n+y = 2\n+z = 3\n"
+
+
+@pytest.fixture
+def pr_branch(upstream: tuple[Path, str], tmp_path: Path) -> publish.PullInfo:
+    """The operator's fork, with the published fix on its PR branch (on top of the later upstream commit)."""
+    src, base = upstream
+    fork = tmp_path / "fork"
+    _git(tmp_path, "clone", "-q", str(src), str(fork))
+    _git(fork, "checkout", "-q", "-b", "nightshift/3-fix")
+    (fork / "b.py").write_text("y = 2\n")
+    _git(fork, "commit", "-qam", "fix: the thing")
+    return publish.PullInfo(number=9, url="https://github.com/o/r/pull/9", state="OPEN", head_owner="me",
+                            head_branch="nightshift/3-fix", head_url=str(fork))  # fmt: skip
+
+
+async def test_a_follow_up_stages_only_what_the_revision_changed(
+    upstream: tuple[Path, str], pr_branch: publish.PullInfo, tmp_path: Path
+) -> None:
+    src, base = upstream
+    prepared = await publish.prepare_follow_up(
+        Repo(full_name="o/r"), _task(base, REVISED), pr_branch, PUBLISHED, tmp_path / "wd", url=str(src)
+    )
+    wd = tmp_path / "wd"
+    assert prepared.branch == "nightshift/3-fix" and prepared.files == ["b.py"]
+    assert (wd / "b.py").read_text() == "y = 2\nz = 3\n"
+    assert (wd / "a.py").read_text() == "x = 2\n"  # the PR branch's own base is kept, not the task's
+    staged = _git(wd, "diff", "--cached")
+    assert "+z = 3" in staged and "-y = 1" not in staged  # one more line, not the whole fix again
+
+
+async def test_a_follow_up_with_nothing_new_is_refused(
+    upstream: tuple[Path, str], pr_branch: publish.PullInfo, tmp_path: Path
+) -> None:
+    src, base = upstream
+    with pytest.raises(publish.PublishError, match="nothing to push"):
+        await publish.prepare_follow_up(
+            Repo(full_name="o/r"), _task(base, PUBLISHED), pr_branch, PUBLISHED, tmp_path / "wd", url=str(src)
+        )
+
+
+async def test_a_follow_up_needs_an_open_pr_on_your_fork(pr_branch: publish.PullInfo, tmp_path: Path) -> None:
+    closed = pr_branch.model_copy(update={"state": "MERGED"})
+    with pytest.raises(publish.PublishError, match="merged"):
+        await publish.prepare_follow_up(Repo(full_name="o/r"), _task("x", REVISED), closed, PUBLISHED, tmp_path)
+    theirs = pr_branch.model_copy(update={"head_owner": "someone-else"})
+    staged = publish.FollowUp(workdir=str(tmp_path), branch="b", files=[])
+    with pytest.raises(publish.PublishError, match="someone-else's fork"):
+        await publish.push_follow_up(Repo(full_name="o/r"), _task("x", REVISED), theirs, staged, message="m")
+
+
+async def test_only_a_pr_of_the_same_repo_can_be_attached() -> None:
+    with pytest.raises(publish.PublishError, match="not a pull request of o/r"):
+        await publish.pull_info(Repo(full_name="o/r"), "https://github.com/other/repo/pull/1")
+    with pytest.raises(publish.PublishError):
+        await publish.pull_info(Repo(full_name="o/r"), "https://github.com/o/r/issues/1")

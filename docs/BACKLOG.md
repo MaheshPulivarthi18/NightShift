@@ -25,9 +25,9 @@ under "Found by you".
       Safety or Review Readiness; its own Testing section replaced the template's checkboxes). Fill every
       template section, tick only what ran, and have code refuse Gate 2 when a template heading is missing.
       Repos that require real-run proof need it gathered before Gate 2, not after. Fixed: the PR Writer keeps every template heading and fills it (ticks only what ran; says what is missing instead of inventing it), test runs go into the template's testing section, and Gate 2 blocks a body that lost a section. Still open: gathering real-run proof before Gate 2 (see "Proof environments").
-- [ ] **Follow-ups on a published PR end at "ready"** (headroom #4456 after review fixes), and there is no way to
+- [x] **Follow-ups on a published PR end at "ready"** (headroom #4456 after review fixes), and there is no way to
       push a follow-up commit or attach an existing PR (laya #60) from NightShift. Add "push follow-up to the
-      PR" at Gate 2 for published tasks, and "attach PR" for work published by hand; set "published" from them.
+      PR" at Gate 2 for published tasks, and "attach PR" for work published by hand; set "published" from them. Fixed: a revised published task's Gate 2 pushes one follow-up commit (the difference between the published fix and the revised one) to its PR's branch on your fork, never forced, optionally replacing the description; "Attach it" links a PR opened by hand (`nightshift task attach`), keeping its diff for later follow-ups.
 - [ ] **Proof environments must match the repo's pinned models** (headroom pins Hugging Face revisions; caching
       the latest revision made a working fix look broken), and proof inputs must be ones the code acts on
       (use the issue's own reproduction payload).

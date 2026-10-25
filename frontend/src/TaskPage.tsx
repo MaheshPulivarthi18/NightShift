@@ -75,6 +75,7 @@ export function TaskPage({ id }: { id: number }) {
 
       <ActionPanel task={task} onChange={load} />
       {REVISABLE.has(task.status) && <RevisePanel task={task} onChange={load} />}
+      {!task.pr_url && ATTACHABLE.has(task.status) && <AttachPr task={task} onChange={load} />}
 
       <nav className="tabs" role="tablist">
         {TABS.map((t) => (
@@ -132,6 +133,27 @@ function ArchiveButton({ task, onChange }: { task: TaskDetail; onChange: () => v
 }
 
 const REVISABLE = new Set(["ready", "needs_operator", "failed", "published"]);
+const ATTACHABLE = new Set(["ready", "needs_operator", "failed"]);
+
+// Opened the PR yourself: link it, and the task counts as published; revisions follow up on that PR.
+function AttachPr({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
+  const [url, setUrl] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  return (
+    <details className="gate calm revise">
+      <summary>Opened the pull request yourself? Attach it</summary>
+      <div className="actions">
+        <input className="mono" placeholder={`https://github.com/${task.repo}/pull/123`} value={url}
+          onChange={(e) => setUrl(e.target.value)} />
+        <button className="primary" disabled={!url.trim()}
+          onClick={() => api.attach(task.id, url.trim()).then(onChange, (e: Error) => setMsg(e.message))}>
+          Attach PR
+        </button>
+        {msg && <span className="error">{msg}</span>}
+      </div>
+    </details>
+  );
+}
 
 // Send a finished or stopped task back with a correction: the note joins the approved plan, and the run
 // starts again (from the same commit, or the latest one). A published task's PR and claim are kept.
@@ -334,6 +356,14 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   const [armed, setArmed] = useState(false);
   const [edits, setEdits] = useState<PublishEdits | null>(null); // what will go out, as last checked or edited
   const [remember, setRemember] = useState(false);
+  const followUp = Boolean(task.pr_url);
+  const [replaceBody, setReplaceBody] = useState(false); // follow-up: also replace the PR's description
+  const payload = (): PublishEdits => {
+    const e = { ...(edits ?? {}), remember };
+    if (followUp && !replaceBody) delete e.body;
+    if (followUp) delete e.title;
+    return e;
+  };
 
   const show = (r: GateInfo) => {
     setInfo(r);
@@ -342,11 +372,11 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   const dryRun = () => {
     setBusy(true);
     setMsg(null);
-    api.publish(task.id, false, { ...(edits ?? {}), remember }).then(show, (e: Error) => setMsg(e.message)).finally(() => setBusy(false));
+    api.publish(task.id, false, payload()).then(show, (e: Error) => setMsg(e.message)).finally(() => setBusy(false));
   };
   const publish = () => {
     setBusy(true);
-    api.publish(task.id, true, { ...(edits ?? {}), remember }).then(
+    api.publish(task.id, true, payload()).then(
       (r) => {
         show(r);
         onChange();
@@ -362,10 +392,22 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
     <section className="gate">
       <header>
         <span className="gate-mark">Gate 2</span>
-        <h2>Publish the pull request</h2>
-        <p className="muted">
-          Checks the issue is still free and upstream has not changed these files, then pushes to your fork and opens the PR.
-        </p>
+        {followUp ? (
+          <>
+            <h2>Push a follow-up commit to the pull request</h2>
+            <p className="muted">
+              One more commit on <a href={task.pr_url ?? ""} target="_blank" rel="noreferrer">the PR</a>: the difference between
+              the fix you published and this revised one. Pushed to your fork's branch, never forced.
+            </p>
+          </>
+        ) : (
+          <>
+            <h2>Publish the pull request</h2>
+            <p className="muted">
+              Checks the issue is still free and upstream has not changed these files, then pushes to your fork and opens the PR.
+            </p>
+          </>
+        )}
       </header>
       <div className="actions">
         <button className="ghost" onClick={dryRun} disabled={busy}>
@@ -376,7 +418,9 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
       {info && (
         <div className="gate-result">
           <p className="mono">
-            {info.branch} → {info.base} @ {info.head.slice(0, 7)} · {info.files.length} files
+            {followUp
+              ? `${info.branch} (the PR's branch) · ${info.files.length} files: ${info.files.join(", ")}`
+              : `${info.branch} → ${info.base} @ ${info.head.slice(0, 7)} · ${info.files.length} files`}
           </p>
           {info.blockers.map((b) => (
             <p key={b} className="blocked">Blocked: {b}</p>
@@ -386,16 +430,20 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
           ))}
           {edits && !info.published && (
             <div className="publish-form">
-              <h3>What will be published</h3>
-              <label className="full">
-                <span>Title</span>
-                <input value={edits.title ?? ""} onChange={edit("title")} />
-              </label>
-              <div className="gate-grid">
-                <label>
-                  <span>Branch on your fork</span>
-                  <input className="mono" value={edits.branch ?? ""} onChange={edit("branch")} />
+              <h3>{followUp ? "What will be pushed" : "What will be published"}</h3>
+              {!followUp && (
+                <label className="full">
+                  <span>Title</span>
+                  <input value={edits.title ?? ""} onChange={edit("title")} />
                 </label>
+              )}
+              <div className="gate-grid">
+                {!followUp && (
+                  <label>
+                    <span>Branch on your fork</span>
+                    <input className="mono" value={edits.branch ?? ""} onChange={edit("branch")} />
+                  </label>
+                )}
                 <label>
                   <span>Attribution line (last line of the commit; empty leaves it out)</span>
                   <input className="mono" value={edits.attribution ?? ""} onChange={edit("attribution")} />
@@ -405,13 +453,21 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
                 <span>Commit message</span>
                 <textarea className="mono" rows={4} value={edits.commit_message ?? ""} onChange={edit("commit_message")} />
               </label>
-              <label className="full">
-                <span>
-                  Body
-                  {info.template_headings.length > 0 && ` (must keep the template's sections: ${info.template_headings.join(", ")})`}
-                </span>
-                <textarea className="mono" rows={14} value={edits.body ?? ""} onChange={edit("body")} />
-              </label>
+              {followUp && (
+                <label className="check">
+                  <input type="checkbox" checked={replaceBody} onChange={(e) => setReplaceBody(e.target.checked)} />
+                  <span>Also replace the PR's description</span>
+                </label>
+              )}
+              {(!followUp || replaceBody) && (
+                <label className="full">
+                  <span>
+                    {followUp ? "New description" : "Body"}
+                    {info.template_headings.length > 0 && ` (must keep the template's sections: ${info.template_headings.join(", ")})`}
+                  </span>
+                  <textarea className="mono" rows={14} value={edits.body ?? ""} onChange={edit("body")} />
+                </label>
+              )}
               <div className="actions">
                 <label className="check">
                   <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
@@ -455,7 +511,7 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
                 <input className="mono" value={typed} onChange={(e) => setTyped(e.target.value)} />
               </label>
               <button className="danger" disabled={typed !== task.repo || busy} onClick={publish}>
-                Push and open PR
+                {followUp ? "Push follow-up commit" : "Push and open PR"}
               </button>
             </div>
           )}

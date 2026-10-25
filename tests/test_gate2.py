@@ -112,3 +112,25 @@ async def test_gate2_publishes_the_edited_pr_and_remembers_the_repo_settings(rea
     assert repo is not None and repo.publish == {"attribution": "", "branch_prefix": "fix"}
     assert task is not None and task.status == "published" and task.result["published_diff"] == "d"
     assert publish.attribution_for(repo) == "" and publish.branch_name(task, repo) == "fix/7-a-bug"
+
+
+async def test_a_revised_published_task_follows_up_on_its_pr(
+    ready: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async with session_scope() as s:
+        task = await s.get(Task, ready["task"])
+        assert task is not None
+        task.result = {**task.result, "pr_url": "https://github.com/o/r/pull/9", "published_diff": "old"}
+        task.note = "Revision: split the paragraph"
+    pr = publish.PullInfo(number=9, url="https://github.com/o/r/pull/9", state="MERGED", head_owner="me",
+                          head_branch="nightshift/7-a-bug", head_url="u")  # fmt: skip
+
+    async def info(*_: Any) -> publish.PullInfo:
+        return pr
+
+    monkeypatch.setattr(publish, "pull_info", info)
+    shown = await worker.gate2(ready["task"], confirm=True)
+    assert shown["mode"] == "follow_up" and not shown["published"]
+    assert shown["commit_message"] == "Address review feedback\n\nsplit the paragraph"
+    assert any("merged" in b for b in shown["blockers"])
+    assert ready["sent"] == {}  # no new PR was opened

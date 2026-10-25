@@ -198,6 +198,7 @@ export interface GateInfo {
   commit_message: string;
   attribution: string;
   template_headings: string[];
+  mode?: "follow_up"; // a revised published task: one more commit on its PR
   blockers: string[];
   warnings: string[];
   published: boolean;
@@ -253,6 +254,7 @@ export const api = {
   resumeJob: (id: string) => call<JobDetail>(`/jobs/${id}/resume`, {}),
   chat: (repo: string, n: number) => call<ChatView>(`/chat/${repo}/${n}`),
   tasks: (archived = false) => call<TaskSummary[]>(`/tasks${archived ? "?archived=true" : ""}`),
+  attach: (id: number, url: string) => call<TaskDetail>(`/tasks/${id}/attach`, { url }),
   archive: (id: number, archived: boolean) => call<TaskDetail>(`/tasks/${id}/archive`, { archived }),
   task: (id: number) => call<TaskDetail>(`/tasks/${id}`),
   create: (repo: string, issue: number, base: string, rehearsal: boolean, note = "") =>

@@ -346,7 +346,11 @@ async def revise(
         raise TaskError(f"Task {task_id} is {task.status}; it cannot be revised now.")
     combined = f"{task.note}\n\nRevision: {note}" if task.note else f"Revision: {note}"
     # A published task keeps its PR and claim, so review feedback becomes a follow-up commit on that PR.
-    keep = {k: v for k, v in task.result.items() if k in ("brief", "map_commit", "pr_url", "claim_url")}
+    keep = {
+        k: v
+        for k, v in task.result.items()
+        if k in ("brief", "map_commit", "pr_url", "claim_url", "published_diff", "branch")
+    }
     plan = dict(task.plan)
     if setup_commands:
         plan["setup_commands"] = setup_commands
@@ -696,6 +700,8 @@ async def gate2(
     if task.status != "ready":
         raise TaskError(f"Task {task_id} is {task.status}; only a ready task can be published.")
     edits = {k: v for k, v in (edits or {}).items() if k in GATE2_EDITS and v is not None}
+    if task.result.get("pr_url"):  # revised after publishing: the change goes onto that PR, not a new one
+        return await _follow_up(task, repo, confirm=confirm, edits=edits)
     pr = dict(task.result.get("pr") or await draft_pr(task, repo))
     pr["commit_message"] = publish.strip_attribution(pr["commit_message"])  # drafts before Gate 2 showed it
     pr.update({k: edits[k] for k in ("title", "body", "commit_message") if k in edits})
@@ -734,3 +740,65 @@ async def gate2(
     result = {**task.result, "pr": pr, "pr_url": url, "published_diff": task.diff, "branch": prepared.branch}
     await _save(task, status="published", result=result)
     return info | {"published": True, "url": url}
+
+
+async def _follow_up(task: Task, repo: Repo, *, confirm: bool, edits: dict[str, str]) -> dict[str, Any]:
+    """Gate 2 for a published task that was revised: one more commit on its PR's branch, holding the
+    difference between the published fix and the revised one. With a `body` edit, the PR's description
+    is replaced too."""
+    try:
+        pr = await publish.pull_info(repo, task.result["pr_url"])
+        published = task.result.get("published_diff") or await publish.pull_diff(repo, pr)
+    except publish.PublishError as e:
+        raise TaskError(str(e)) from e
+    revision = (task.note or "").rsplit("Revision:", 1)[-1].strip()
+    default = "Address review feedback" + (f"\n\n{revision}" if revision else "")
+    message = edits.get("commit_message") or task.result.get("follow_up_message") or default
+    attribution = edits.get("attribution", publish.attribution_for(repo)).strip()
+    if "commit_message" in edits:
+        await _save(task, result={**task.result, "follow_up_message": message})
+    blockers = await publish.freshness(repo.full_name, task)
+    login = get_settings().github_login
+    if pr.state != "OPEN":
+        blockers.append(f"the pull request is {pr.state.lower()}")
+    if not login or pr.head_owner.lower() != login.lower():
+        blockers.append(
+            f"the PR's branch is on {pr.head_owner}'s fork, not yours ({login or 'NIGHTSHIFT_GITHUB_LOGIN unset'})"
+        )
+    warnings = [f'The commit ends with the line "{attribution}". Clear it to leave it out.'] if attribution else []
+    info: dict[str, Any] = {
+        "mode": "follow_up", "url": pr.url, "branch": pr.head_branch, "base": "", "head": "", "drift": [],
+        "files": [], "title": (task.result.get("pr") or {}).get("title", ""),
+        "body": (task.result.get("pr") or {}).get("body", ""), "commit_message": message,
+        "attribution": attribution, "template_headings": [], "blockers": blockers,
+        "warnings": warnings,
+        "published": False,
+    }  # fmt: skip
+    if blockers:
+        return info
+    prepared = await publish.prepare_follow_up(repo, task, pr, published, task_dir(repo.full_name, task.id) / "publish")
+    info["files"] = prepared.files
+    if not confirm:
+        return info
+    await publish.push_follow_up(repo, task, pr, prepared, message=publish.with_attribution(message, attribution))
+    if "body" in edits:
+        await publish.update_body(repo, pr, edits["body"])
+    result = {**task.result, "published_diff": task.diff, "follow_up_message": None}
+    await _save(task, status="published", result=result)
+    return info | {"published": True}
+
+
+async def attach_pr(task_id: int, url: str) -> Task:
+    """Link a PR opened by hand to its task: the task becomes published, and the PR's current diff is
+    kept as what was published, so a revision can follow up on it."""
+    task, repo = await load_task(task_id)
+    if task.status in ("planning", "working", "planned", "approved"):
+        raise TaskError(f"Task {task_id} is {task.status}; attach a PR once it has a fix.")
+    try:
+        pr = await publish.pull_info(repo, url)
+        patch = await publish.pull_diff(repo, pr)
+    except publish.PublishError as e:
+        raise TaskError(str(e)) from e
+    result = {**task.result, "pr_url": pr.url, "published_diff": patch, "branch": pr.head_branch}
+    await _save(task, status="published", result=result)
+    return task

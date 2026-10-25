@@ -242,6 +242,20 @@ async def claim(task_id: int, body: Confirm) -> dict[str, str]:
         raise HTTPException(409, str(e)) from e
 
 
+class Attach(BaseModel):
+    url: str = Field(max_length=300)
+
+
+@router.post("/tasks/{task_id}/attach", dependencies=[Guard])
+async def attach(task_id: int, body: Attach) -> dict[str, Any]:
+    """Link a PR opened by hand: the task becomes published, and revisions follow up on that PR."""
+    try:
+        await worker.attach_pr(task_id, body.url)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+    return await get_task(task_id)
+
+
 class Publish(BaseModel):
     confirm: bool = False
     title: str | None = Field(default=None, max_length=300)

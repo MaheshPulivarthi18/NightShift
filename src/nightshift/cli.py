@@ -546,6 +546,19 @@ def task_list() -> None:
     asyncio.run(run())
 
 
+@task_app.command("attach")
+def task_attach(task_id: int, url: str) -> None:
+    """Link a PR you opened by hand to its task; later revisions push follow-up commits to it."""
+    from nightshift.worker.task import TaskError, attach_pr
+
+    try:
+        asyncio.run(attach_pr(task_id, url))
+    except TaskError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    typer.echo(f"Task {task_id} is published as {url}.")
+
+
 @task_app.command("archive")
 def task_archive(
     task_id: int, undo: Annotated[bool, typer.Option("--undo", help="Put it back on the board.")] = False
