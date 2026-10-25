@@ -656,7 +656,7 @@ async def run_task(task_id: int) -> Task:
 # ---------- PR draft, claim and Gate 2 ----------
 
 
-async def _repo_conventions(full_name: str) -> tuple[str, list[str]]:
+async def repo_conventions(full_name: str) -> tuple[str, list[str]]:
     """The repo's PR template and the titles of its recently merged PRs."""
     gh = GitHubClient()
     try:
@@ -674,7 +674,7 @@ async def draft_pr(task: Task, repo: Repo, llm: LLMGateway | None = None) -> dic
         raise TaskError(f"Task {task.id} has no verified fix to write a PR for.")
     llm = llm or LLMGateway(task.run_id, repo.id, run_budget_usd=get_settings().task_budget_usd)
     check = FixCheck.model_validate(task.result["check"])
-    template, titles = await _repo_conventions(repo.full_name)
+    template, titles = await repo_conventions(repo.full_name)
     reviews = task.result.get("reviews", [])
     draft = await prwriter.draft_pr(
         llm,

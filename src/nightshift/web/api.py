@@ -90,7 +90,7 @@ def _start_setup(repo: str, run_id: str) -> None:
 
 
 def _job_kind(run_id: str) -> str:
-    for prefix in ("task", "map", "setup"):
+    for prefix in ("task", "map", "setup", "prcheck"):
         if run_id.startswith(f"{prefix}-"):
             return prefix
     return "report"

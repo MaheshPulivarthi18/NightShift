@@ -1,0 +1,421 @@
+"""The PR checker: what a careful maintainer checks on any pull request, run by code wherever it can be.
+
+    nightshift check-pr https://github.com/owner/repo/pull/123
+
+1. Guidelines: the repo's PR template is filled, the title follows its recent merged PRs, a linked issue
+   exists and is open.
+2. Evidence: the PR adds or changes tests; its description shows a test run or the steps taken.
+3. Verified by running, in the sandbox, on the repo's environment (the Setup agent's): the suites on the
+   base branch and with the PR (GitHub's merge preview, what CI tests); the PR's own tests fail without
+   its source changes and pass with them; the linked issue's reproduction fails before and passes after.
+4. Review: the Reviewer reads the diff, the verification and the change context and names exact problems.
+
+The result is one Markdown report, split into what must be fixed and what should be. Nothing is posted.
+The PR's code is untrusted: it only ever runs inside the sandbox.
+"""
+
+from __future__ import annotations
+
+import re
+import shlex
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+
+import structlog
+from pydantic import BaseModel, Field
+
+from nightshift import events
+from nightshift.catalog import ModelConfigError
+from nightshift.config import get_settings
+from nightshift.context.change import change_context
+from nightshift.context.change import to_markdown as change_markdown
+from nightshift.db import Repo, session_scope
+from nightshift.github import GitHubClient, GitHubError
+from nightshift.health.agents import UNTRUSTED_RULE
+from nightshift.health.graph import repo_brief
+from nightshift.llm import AgentOutputError, BudgetExceeded, LLMGateway, ModelAPIError, ModelRefused
+from nightshift.memory import get_or_create_repo
+from nightshift.sandbox.docker import DEP_FILES, Sandbox, SandboxError, prepare_repo
+from nightshift.sandbox.envimage import ensure_env_image
+from nightshift.worker import publish, reviewer
+from nightshift.worker.issue import IssueView, fetch_issue
+from nightshift.worker.planner import Reproduction
+from nightshift.worker.prwriter import essential_lines
+from nightshift.worker.setup_agent import Environment, ensure_environment
+from nightshift.worker.task import brief_text, issue_text, repo_conventions
+from nightshift.worker.verify import (
+    CommandResult,
+    FixCheck,
+    _suites,
+    check_docs,
+    check_fix,
+    is_doc_path,
+    is_test_path,
+    run_commands,
+    run_reproduction,
+)
+
+log = structlog.get_logger()
+
+PR_URL = re.compile(r"^https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)/?$")
+CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)\b", re.I)
+CONVENTIONAL = re.compile(r"^\w+(\([^)]*\))?!?: \S")
+TEST_RUN = re.compile(r"\b\d+ passed\b|\bPASS(ED)?\b|\bRan \d+ tests?\b|\bOK\b|tests? (pass|passed)", re.I)
+DIFF_CHARS = 30_000
+
+
+class PRCheckError(RuntimeError):
+    pass
+
+
+MODEL_ERRORS = (ModelAPIError, ModelRefused, AgentOutputError, BudgetExceeded, ModelConfigError)
+
+
+def _short(e: Exception) -> str:
+    """The reason, without provider links or account details: reports may be posted on public PRs."""
+    text = re.split(r"\s*(?:To increase|https?://)", str(e), maxsplit=1)[0]
+    return f"{type(e).__name__}: {text[:200].rstrip(' .,')}"
+
+
+def verification_summary(check: FixCheck) -> str:
+    """Each run as one line with the lines that matter (result, failing assertion), not whole logs."""
+    runs: list[tuple[str, CommandResult | None]] = [
+        ("Without the PR's source changes", check.fails_without_fix),
+        ("With the PR", check.passes_with_fix),
+        ("Issue reproduction with the PR", check.reproduction),
+        *[("Suite", r) for r in check.suite],
+    ]
+    out = []
+    for label, r in runs:
+        if r is None:
+            continue
+        out.append(f"{label}: {r.line()}")
+        out += [f"    {line}" for line in essential_lines(r.tail).splitlines()[-3:] if line.strip()]
+    if check.already_failing:
+        out.append("Already failing on the base: " + ", ".join(check.already_failing))
+    return "\n".join(out)
+
+
+class CheckPlan(BaseModel):
+    targeted_command: str = Field(
+        description="Runs only the tests this PR adds or changes, from the repo root, with the environment's test "
+        "runner (e.g. `.venv/bin/pytest tests/test_x.py -q`). Empty if the PR adds or changes no tests"
+    )
+    reproduction: Reproduction | None = Field(
+        default=None,
+        description="The linked issue's own case as a tiny script that fails without the fix and passes with it. "
+        "None when there is no linked bug or it cannot be shown without services or network",
+    )
+
+
+CHECKER_SYSTEM = f"""You help a maintainer check a pull request by running it. Code runs everything you propose in a sandbox with the repo set up, on the base branch and with the PR.
+
+- targeted_command runs only the tests the PR adds or changes, with the same runner and style as the environment's test commands. Leave it empty if the PR touches no test files.
+- For a linked bug, write a reproduction: the issue's own case as the smallest script, saved as /tmp/nightshift-repro/<script_name> and run from the repo root, that exits non-zero while the bug is there and 0 once fixed. Use the repo's code the way the issue does. No network, done in under a minute. None if there is no linked bug or it needs services.
+
+{UNTRUSTED_RULE} The pull request's title, description and diff are inside it too."""
+
+
+class PullRequest(BaseModel):
+    repo: str
+    number: int
+    url: str
+    title: str
+    body: str
+    author: str
+    state: str
+    draft: bool
+    base_ref: str
+    base_sha: str
+    head_sha: str
+    files: list[str]
+
+
+async def fetch_pull(url: str) -> PullRequest:
+    m = PR_URL.match(url.strip())
+    if not m:
+        raise PRCheckError(f"Not a pull request URL: {url}")
+    repo, number = m.group(1), int(m.group(2))
+    gh = GitHubClient()
+    try:
+        raw = await gh.rest_get(f"/repos/{repo}/pulls/{number}")
+        files = await gh.rest_get(f"/repos/{repo}/pulls/{number}/files?per_page=100")
+    except GitHubError as e:
+        raise PRCheckError(f"Cannot read {url}: {e}") from e
+    finally:
+        await gh.aclose()
+    return PullRequest(
+        repo=raw["base"]["repo"]["full_name"], number=number, url=raw["html_url"], title=raw["title"],
+        body=raw.get("body") or "", author=raw["user"]["login"], state=raw["state"], draft=bool(raw.get("draft")),
+        base_ref=raw["base"]["ref"], base_sha=raw["base"]["sha"], head_sha=raw["head"]["sha"],
+        files=[f["filename"] for f in files],
+    )  # fmt: skip
+
+
+def linked_issue_number(pr: PullRequest) -> int | None:
+    m = CLOSING.search(pr.body) or CLOSING.search(pr.title)
+    return int(m.group(1)) if m else None
+
+
+class Report(BaseModel):
+    """What the checker found. `must`: problems a maintainer would block on; `should`: worth fixing."""
+
+    pr: PullRequest
+    must: list[str] = []
+    should: list[str] = []
+    passed: list[str] = []  # what was checked and is fine
+    verification: str = ""
+    review: str = ""
+    environment: str = ""
+    cost_usd: float = 0.0
+
+    @property
+    def verdict(self) -> str:
+        if self.must:
+            return "Needs work before review"
+        return "Ready for a maintainer's review" if not self.should else "Ready for review, with suggestions"
+
+    def markdown(self) -> str:
+        pr = self.pr
+        out = [f"# PR check: {pr.repo}#{pr.number} {pr.title}", "", f"**{self.verdict}.** {pr.url} by @{pr.author}", ""]
+        if self.must:
+            out += ["## Must fix", "", *[f"- {m}" for m in self.must], ""]
+        if self.should:
+            out += ["## Should fix", "", *[f"- {s}" for s in self.should], ""]
+        if self.passed:
+            out += ["## Checked and fine", "", *[f"- {p}" for p in self.passed], ""]
+        if self.verification:
+            out += ["## Verified by running", "", self.environment, "", "```", self.verification.strip(), "```", ""]
+        if self.review:
+            out += [self.review.replace("## Review round 1", "## Review"), ""]
+        out += [f"_Checked {datetime.now(UTC):%Y-%m-%d %H:%M} UTC at {pr.head_sha[:7]} for ${self.cost_usd:.2f}._"]
+        return "\n".join(out)
+
+
+# ---------- the checks ----------
+
+
+async def check_guidelines(pr: PullRequest, report: Report) -> IssueView | None:
+    """Template, title, linked issue. Returns the linked issue when there is one."""
+    template, titles = await repo_conventions(pr.repo)
+    headings = publish.template_headings(template)
+    if headings:
+        if missing := publish.missing_sections(pr.body, headings):
+            report.must.append(
+                "The description is missing these sections of the repo's PR template: " + ", ".join(missing)
+            )
+        else:
+            report.passed.append("Every section of the repo's PR template is present.")
+        unticked = len(re.findall(r"^\s*[-*] \[ \]", pr.body, re.M))
+        if unticked and not re.findall(r"^\s*[-*] \[[xX]\]", pr.body, re.M):
+            report.should.append(f"None of the template's {unticked} checkboxes is ticked.")
+    conventional = sum(bool(CONVENTIONAL.match(t)) for t in titles)
+    if titles and conventional >= len(titles) * 0.7 and not CONVENTIONAL.match(pr.title):
+        report.should.append(
+            f'The title does not follow the repo\'s commit-style titles (e.g. "{titles[0]}") used by '
+            f"{conventional} of its last {len(titles)} merged PRs."
+        )
+    if pr.draft:
+        report.should.append("The PR is still a draft.")
+    number = linked_issue_number(pr)
+    if number is None:
+        report.should.append('No linked issue: the description has no "Fixes #N" or "Closes #N".')
+        return None
+    try:
+        issue = await fetch_issue(pr.repo, number)
+    except GitHubError as e:
+        report.must.append(f"The linked issue #{number} cannot be read: {e}")
+        return None
+    if issue.state != "open":
+        report.should.append(f"The linked issue #{number} is {issue.state}.")
+    else:
+        report.passed.append(f"Linked issue #{number} is open.")
+    others = [p for p in issue.linked_prs if p.number != pr.number and p.state in ("open", "merged")]
+    if others:
+        names = ", ".join(f"#{p.number} ({p.state}, by {p.author})" for p in others)
+        report.should.append(f"Other PRs also reference #{number}: {names}.")
+    return issue
+
+
+def check_evidence(pr: PullRequest, report: Report) -> None:
+    tests = [f for f in pr.files if is_test_path(f)]
+    code = [f for f in pr.files if not is_test_path(f) and not is_doc_path(f)]
+    if code and not tests:
+        report.should.append("The PR changes code but adds or changes no test.")
+    elif tests:
+        report.passed.append(f"Tests changed: {', '.join(tests[:6])}{' …' if len(tests) > 6 else ''}.")
+    if code and not TEST_RUN.search(pr.body):
+        report.should.append("The description shows no test run or steps to verify the change.")
+
+
+async def plan_check(
+    llm: LLMGateway, pr: PullRequest, issue: IssueView | None, env: Environment, patch: str
+) -> CheckPlan:
+    clipped = patch if len(patch) <= DIFF_CHARS else patch[:DIFF_CHARS] + "\n[diff cut here]"
+    user = (
+        f"Repository: {pr.repo}\n\nEnvironment test commands (proven in the sandbox):\n"
+        + "\n".join(f"- {c}" for c in env.test_commands)
+        + f"\n\n<untrusted_github_data>\n<pull_request title={pr.title!r}>\n{pr.body}\n</pull_request>\n"
+        + (f"<linked_issue>\n{issue_text(issue)}\n</linked_issue>\n" if issue else "")
+        + f"<files>\n{chr(10).join(pr.files)}\n</files>\n<diff>\n{clipped}\n</diff>\n</untrusted_github_data>"
+    )
+    return await llm.parse(
+        agent="pr_checker", cfg=get_settings().pr_checker, system=CHECKER_SYSTEM, user=user, schema=CheckPlan,
+        cache_key_parts=(pr.head_sha,), label=f"PR #{pr.number}",
+    )  # fmt: skip
+
+
+async def _fetch_pr(box: Sandbox, pr: PullRequest) -> tuple[str, str, str]:
+    """Fetch the PR without checking it out: GitHub's merge preview (what CI tests), or its head when it
+    conflicts with the base branch. Returns (the base commit it is compared with, its ref, a note)."""
+    merge = await box.exec(f"git fetch --quiet origin +refs/pull/{pr.number}/merge:refs/remotes/pr/merge")
+    if merge.ok:
+        base = (await box.exec("git rev-parse refs/remotes/pr/merge^1")).stdout.strip()
+        return base, "refs/remotes/pr/merge", "the PR merged into the current base branch (GitHub's merge preview)"
+    head = await box.exec(f"git fetch --quiet origin +refs/pull/{pr.number}/head:refs/remotes/pr/head")
+    if not head.ok:
+        raise SandboxError(f"cannot fetch the PR: {head.tail(400)}")
+    base = (await box.exec(f"git merge-base refs/remotes/pr/head {shlex.quote(pr.base_sha)}")).stdout.strip()
+    return base, "refs/remotes/pr/head", "the PR's own head: it does not merge cleanly into the current base branch"
+
+
+async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Repo, issue: IssueView | None) -> str:
+    """Set up, run the base, run the PR, review it. Returns the diff."""
+    async with await Sandbox.start() as hints_box:
+        await hints_box.exec(
+            f"git clone --quiet --filter=blob:none https://github.com/{pr.repo}.git repo", workdir="/work"
+        )
+        await hints_box.exec(f"git checkout --quiet --force --detach {shlex.quote(pr.base_sha)}")
+        env = await ensure_environment(llm, repo, hints_box, pr.base_sha)
+    if env.status != "ready":
+        report.should.append(f"Not run: the repo's environment is {env.status} ({env.blocker or env.detail}).")
+        return ""
+    image = await ensure_env_image(env.system_packages, env.tools)
+    box, _ = await prepare_repo(pr.repo, pr.base_sha, env.setup_commands, image=image)
+    async with box:
+        base_commit, target, how = await _fetch_pr(box, pr)
+        await box.exec(f"git checkout --quiet --force --detach {shlex.quote(base_commit)}")
+        report.environment = f"Environment: {', '.join(env.setup_commands) or 'none'}. Ran {how}."
+        baseline = await run_commands(box, env.test_commands)
+        patch = (await box.exec(f"git diff {shlex.quote(base_commit)} {target}")).stdout
+        try:
+            plan = await plan_check(llm, pr, issue, env, patch)
+        except MODEL_ERRORS as e:  # without it the suites are still compared
+            report.should.append(f"The PR's own tests and the issue's reproduction were not run: {_short(e)}")
+            plan = CheckPlan(targeted_command="")
+        # The reproduction counts only if it fails without the PR: it runs on the base first.
+        repro = plan.reproduction.model_dump() if plan.reproduction else None
+        if repro and (await run_reproduction(box, repro)).ok:
+            report.should.append("The linked issue's reproduction already passes without this PR; it was not used.")
+            repro = None
+
+        await box.exec(f"git checkout --quiet --force --detach {target}")
+        if any(f.rsplit("/", 1)[-1] in DEP_FILES for f in pr.files):  # the PR changes dependencies
+            for command in env.setup_commands:
+                if not (res := await box.exec(command)).ok:
+                    report.must.append(f"Setup fails with this PR: `{command}`: {res.tail(300).strip()}")
+                    return patch
+        check = await _verify(box, base_commit, plan, env, baseline, repro)
+        report.verification = verification_summary(check)
+        _findings(check, report, repro)
+        pack, _ = change_markdown(await change_context(box, base_commit), budget_tokens=6000)
+        try:
+            rules = brief_text((await repo_brief(llm, pr.repo))[0])
+            rv = await reviewer.review(
+                llm, repo=pr.repo, issue=issue_text(issue) if issue else "(no linked issue)",
+                plan=f"The PR's own description (not a plan approved by anyone):\n{pr.title}\n\n{pr.body}",
+                diff=patch, verification=check.report(), rules=rules, change_context=pack,
+            )  # fmt: skip
+        except MODEL_ERRORS as e:  # what was verified by running still stands
+            report.should.append(f"The code review did not run: {_short(e)}")
+            return patch
+        report.review = reviewer.to_markdown(rv, 1)
+        for issue_found in reviewer.blocking(rv):
+            where = f"{issue_found.path}:{issue_found.line}" if issue_found.line else issue_found.path
+            report.must.append(f"Review ({issue_found.severity}): `{where}`: {issue_found.problem}")
+        return patch
+
+
+async def _verify(
+    box: Sandbox,
+    base: str,
+    plan: CheckPlan,
+    env: Environment,
+    baseline: list[CommandResult],
+    repro: dict[str, str] | None,
+) -> FixCheck:
+    names = [f for f in (await box.exec(f"git diff --name-only {shlex.quote(base)}")).stdout.splitlines() if f]
+    if names and all(is_doc_path(f) for f in names):
+        return await check_docs(box, base, env.test_commands, baseline)
+    if plan.targeted_command.strip():
+        return await check_fix(box, base, plan.targeted_command, env.test_commands, baseline, reproduction=repro)
+    check = FixCheck(passed=False, test_files=[f for f in names if is_test_path(f)],
+                     source_files=[f for f in names if not is_test_path(f)])  # fmt: skip
+    await _suites(check, box, env.test_commands, baseline)
+    if repro:
+        check.reproduction = await run_reproduction(box, repro)
+        if not check.reproduction.ok:
+            check.problems.append("the issue's reproduction still fails with the PR, so the issue is not fixed")
+    check.passed = not check.problems
+    return check
+
+
+def _findings(check: FixCheck, report: Report, repro: dict[str, str] | None) -> None:
+    for problem in check.problems:
+        if problem.startswith(("no test file", "no targeted test")):
+            continue  # already said under evidence
+        if problem.startswith("no source file"):
+            report.should.append("Only tests changed: no source change to verify.")
+        else:
+            report.must.append(problem[0].upper() + problem[1:] + ".")
+    if (
+        check.fails_without_fix
+        and not check.fails_without_fix.ok
+        and check.passes_with_fix
+        and check.passes_with_fix.ok
+    ):
+        report.passed.append("The PR's tests fail without its source changes and pass with them.")
+    if check.reproduction and check.reproduction.ok and repro:
+        report.passed.append("The linked issue's reproduction fails without the PR and passes with it.")
+    if check.suite and not check.regressions:
+        report.passed.append(f"No regressions: {sum(r.ok for r in check.suite)} of {len(check.suite)} suites pass "
+                             f"({len(check.already_failing)} already failing on the base).")  # fmt: skip
+
+
+async def check_pr(url: str) -> Report:
+    """Check one pull request and save the report next to the repo's other reports."""
+    pr = await fetch_pull(url)
+    async with session_scope() as s:
+        repo = await get_or_create_repo(s, pr.repo)
+    run_id = f"prcheck-{repo.id}-{pr.number}-{uuid.uuid4().hex[:6]}"
+    await events.start_run(run_id, repo.id)
+    llm = LLMGateway(run_id, repo.id, run_budget_usd=get_settings().pr_check_budget_usd)
+    report = Report(pr=pr)
+    try:
+        if pr.state != "open":
+            report.should.append(f"The PR is {pr.state}.")
+        await events.record(run_id, "node_start", "guidelines", node="guidelines")
+        issue = await check_guidelines(pr, report)
+        check_evidence(pr, report)
+        await events.record(run_id, "node_start", "run", node="run")
+        await run_checks(pr, report, llm, repo, issue)
+    except BaseException as e:
+        await events.finish_run(run_id, "failed", error=f"{type(e).__name__}: {e}")
+        raise
+    report.cost_usd = await _cost(run_id)
+    folder = Path(get_settings().reports_dir) / pr.repo.replace("/", "__") / "pr-checks"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{pr.number}.md").write_text(report.markdown())
+    await events.finish_run(run_id, "done")
+    return report
+
+
+async def _cost(run_id: str) -> float:
+    from sqlalchemy import func, select
+
+    from nightshift.db import LLMCall
+
+    async with session_scope() as s:
+        q = select(func.coalesce(func.sum(LLMCall.cost_usd), 0.0)).where(LLMCall.run_id == run_id)
+        return float((await s.execute(q)).scalar_one())

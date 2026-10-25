@@ -363,6 +363,22 @@ def sandbox_setup(repo: str) -> None:
     _run_sandboxed(run())
 
 
+@app.command("check-pr")
+def check_pr_cmd(url: Annotated[str, typer.Argument(help="https://github.com/owner/repo/pull/123")]) -> None:
+    """Check a pull request as a careful maintainer would: guidelines, evidence, run it, review it. Posts nothing."""
+    from nightshift.worker.prcheck import PRCheckError, check_pr
+
+    async def run() -> None:
+        try:
+            report = await check_pr(url)
+        except PRCheckError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1) from e
+        typer.echo(report.markdown())
+
+    _run_sandboxed(run())
+
+
 @app.command("models")
 def models_cmd(agent: Annotated[str | None, typer.Argument(help="One agent, e.g. coder")] = None) -> None:
     """Each agent's models in the order the router uses now, why, and how each has done."""

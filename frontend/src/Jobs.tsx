@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api, JobDetail } from "./api";
 import { Log, StatusBadge, ago, duration, money, usePoll } from "./ui";
 
-const KIND: Record<string, string> = { report: "health report", task: "task", map: "architecture map", setup: "environment setup" };
+const KIND: Record<string, string> = { report: "health report", task: "task", map: "architecture map", setup: "environment setup", prcheck: "PR check" };
 
 export function Jobs() {
   const [jobs, error] = usePoll(api.jobs, 4000, []);

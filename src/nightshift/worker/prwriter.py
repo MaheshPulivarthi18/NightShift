@@ -89,7 +89,7 @@ _FAILURE = re.compile(r"^E\s+|AssertionError|assert |Error:|^FAILED |expected|re
 ESSENTIAL_LINES = 8
 
 
-def _tail(text: str) -> str:
+def essential_lines(text: str) -> str:
     """The test runner's summary and the failing assertion; the last lines when neither is found."""
     lines = [line.rstrip() for line in text.strip().splitlines() if line.strip()]
     failures = [line for line in lines if _FAILURE.search(line)][:4]
@@ -111,13 +111,13 @@ def evidence_section(check: FixCheck) -> str:
             "- **Before the fix** (source changes removed): fails",
             "",
             "```",
-            _tail(check.fails_without_fix.tail),
+            essential_lines(check.fails_without_fix.tail),
             "```",
             "",
             "- **After the fix:** passes",
             "",
             "```",
-            _tail(check.passes_with_fix.tail),
+            essential_lines(check.passes_with_fix.tail),
             "```",
             "",
         ]
