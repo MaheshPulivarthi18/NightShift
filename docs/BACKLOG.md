@@ -1,4 +1,4 @@
-# Backlog for the next session
+# Backlog
 
 Collected 2026-10-24 after the first live PR ([microsoft/multilspy#169](https://github.com/microsoft/multilspy/pull/169))
 and the move of every page into the React app. Tick items off as they land; add the UI bugs you found

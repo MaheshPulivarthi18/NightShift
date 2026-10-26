@@ -1,156 +1,99 @@
 # NightShift
 
-Agents that find open-source issues worth fixing and fix them, with you approving every step that
-is public. Two parts:
+A self-hosted workbench for open-source work. It helps a **contributor** find an issue, fix it and
+follow it up, and helps a **maintainer** check incoming pull requests. AI does the work; you approve
+everything public.
 
-1. **Repo Health Reports** (read-only): is a repo worth contributing to, and which issues are free.
-2. **Contribution Worker**: plans a fix (Gate 1: you approve), writes a failing test and the fix in a
-   Docker sandbox, verifies it by code, has it reviewed, drafts the PR, then opens it from your
-   account only after Gate 2. First PR made this way:
-   [microsoft/multilspy#169](https://github.com/microsoft/multilspy/pull/169).
+- **Fix an issue:** NightShift plans the fix, you approve the plan, it writes a test that fails first
+  and then the fix inside a Docker sandbox, a second model reviews it, and you publish the PR from your
+  own GitHub account.
+- **Check a PR:** paste a pull request; NightShift checks its template and evidence, runs it on the
+  merge preview (its tests must fail without the change and pass with it), reviews it, and lists
+  must-fix and should-fix findings. Nothing is posted.
+- **Follow up:** review threads, reviews, comments and comments on the closing issue come back to you
+  with drafted replies or a revision, pushed as a follow-up commit, never forced.
 
-![Task board](docs/screenshots/tasks-board.jpg)
+It never merges, never force-pushes and never posts without a click from you.
 
-## Repo Health Reports
+> **Status:** pre-release. The engine works end to end and has opened real, merged PRs
+> (for example [ai-job-search#768](https://github.com/ai-job-search-dev/ai-job-search/pull/768)).
+> The first release (R1) is being built: a repo-first workspace and a shared prompt builder.
+> See the [PRD](docs/PRD.md) for where it is going.
 
-Each watched repo has a role that picks the report:
+## Quick start
 
-- **contributor** (default): for repos you don't maintain. Is it worth contributing (outside PR merge rate, time to first maintainer response)? Which open issues are free and worth taking, which need a maintainer's OK first, and which are already being worked on?
-- **maintainer**: backlog triage. Related clusters, duplicates, and which PRs can be closed, merged or need a decision, each with a reason and evidence checked by a separate Verifier.
-
-### How reports are made
-
-```
-maintainer:  fetch -> link -> analyse_groups -> assess_prs -> verify -> report
-contributor: fetch -> link -> scout -> contributor_report
-```
-
-| Node | Kind | What it does |
-| --- | --- | --- |
-| fetch | code | GitHub GraphQL, incremental after the first run; stores items in Postgres and embeds them locally |
-| link | code | Candidate groups from explicit links plus pgvector similarity |
-| analyse_groups | agent | **Relevance Analyst** confirms clusters and duplicates |
-| assess_prs | agent | **PR Assessor** classifies open PRs using signals computed by code |
-| verify | agent | **Verifier** checks each claim against its evidence only; unsupported claims are dropped |
-| report | code | Markdown report and a stored snapshot, compared with the previous one |
-| scout | code + agent | Contributor pulse and who is on which issue (code); **Opportunity Scout** judges which free issues are actionable, their size, and whether to ask first |
-| contributor_report | code | Contributor Markdown report, compared with the previous one |
-
-- **Orchestration:** LangGraph, checkpointed in Postgres, so a stopped run resumes with `--resume <run id>`.
-- **Model access:** every Claude call goes through `nightshift.llm.LLMGateway`, which enforces the kill switch and budget caps, caches verdicts by input hash, and records cost per call.
-- **Memory:** items and embeddings (repo memory), cached verdicts, and operator feedback that calibrates future reports.
-
-## Setup
+You need Docker, Python 3.12 with [uv](https://docs.astral.sh/uv/), Node 20, the GitHub CLI, an
+[OpenRouter](https://openrouter.ai) API key and a read-only GitHub token.
 
 ```bash
-docker compose up -d            # Postgres 16 + pgvector
-cp .env.example .env            # add ANTHROPIC_API_KEY (or NIGHTSHIFT_PROVIDER=openrouter + OPENROUTER_API_KEY)
-                                # and a read-only GITHUB_TOKEN
+git clone https://github.com/MaheshPulivarthi18/NightShift.git && cd NightShift
+cp .env.example .env                      # add OPENROUTER_API_KEY, GITHUB_TOKEN, NIGHTSHIFT_GITHUB_LOGIN
+docker compose up -d                      # Postgres 16 with pgvector
 uv sync
-uv run alembic upgrade head     # app tables
-uv run nightshift db-setup      # LangGraph checkpoint tables
+uv run alembic upgrade head && uv run nightshift db-setup
+uv run nightshift sandbox build           # the base image repo code runs in
+(cd frontend && npm install && npm run build)
+uv run nightshift serve                   # http://127.0.0.1:8000
 ```
+
+The full walkthrough, every setting and common problems: **[docs/SETUP.md](docs/SETUP.md)**.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Add a repo] --> B[Setup agent<br/>proves install and tests<br/>in the sandbox]
+    B --> C{Issue or PR?}
+    C -->|issue you fix| D[Plan] --> G1([Gate 1: approve plan]) --> E[Fix: failing test, then the fix] --> F[Verify and review] --> G2([Gate 2: publish]) --> H[Follow up]
+    C -->|incoming PR| P[Check guidelines and evidence] --> R[Run on merge preview] --> V[Review: must and should findings]
+```
+
+- **Sandbox:** all repo code, including every PR under check, runs only in a Docker container: non-root,
+  no capabilities, CPU, memory and process limits, a timeout on every command, and no keys or tokens
+  inside. One image per repo, reused by every issue and PR in it.
+- **Models:** every call goes through one gateway to OpenRouter. A router picks a model per agent,
+  falls back on failure, keeps the Reviewer on a different model family from the Coder, and learns from
+  outcomes. Spend caps are checked before every call; `nightshift kill` stops all of them.
+- **Memory:** repo knowledge (environment, PR guide, code map) is built once per repo and reused; model
+  answers are cached by their inputs; every call is recorded with its cost.
+- **GitHub:** NightShift reads with a read-only token. Publishing, replies and claims use your own `gh`
+  login, only after you approve them.
 
 ## Use
 
+The web app (`nightshift serve`) has Tasks, Repos, PR checks, Jobs and Models pages. The same work is
+available from the CLI:
+
 ```bash
-uv run nightshift watch add aayushch/laya MadsLorentzen/ai-job-search   # contributor view
-uv run nightshift watch add my-org/my-repo --role maintainer
-uv run nightshift watch role aayushch/laya maintainer                   # switch views
-uv run nightshift report run aayushch/laya
-uv run nightshift report run --all
-uv run nightshift report show aayushch/laya
-uv run nightshift report feedback aayushch/laya "close_candidate:#42" --wrong --note "still wanted"
+uv run nightshift watch add owner/repo                  # add a repo
+uv run nightshift sandbox setup owner/repo              # find and prove its install and test commands
+uv run nightshift task plan owner/repo 123              # plan a fix for issue #123; stops at Gate 1
+uv run nightshift task approve 1 && uv run nightshift task run 1
+uv run nightshift task publish 1 --yes                  # Gate 2: opens the PR from your account
+uv run nightshift check-pr https://github.com/owner/repo/pull/45
+uv run nightshift task from-pr https://github.com/owner/repo/pull/67   # follow up a PR you opened by hand
+uv run nightshift models                                # which model each agent uses, and how each has done
 uv run nightshift spend
-uv run nightshift kill          # blocks every model call; `nightshift resume` clears it
+uv run nightshift kill                                  # block every model call; `nightshift resume` clears it
 ```
 
-Reports are written to `reports/<owner>__<repo>/`.
+Run `uv run nightshift --help` (and `--help` on any command) for everything else.
 
-## Sandboxes and repo context (Contribution Worker, M1)
+## Documentation
 
-Repo code only ever runs in a Docker container: no credentials or host files inside, a non-root
-user with no capabilities, CPU, memory and process caps, and a timeout on every command. After a
-repo's setup succeeds the container is saved as a per-repo image, so the next task skips the install.
-
-```bash
-uv run nightshift sandbox build                      # base image: Python, Node, uv, git, language servers
-uv run nightshift sandbox try aayushch/laya \
-  --setup "cd engine && uv venv -q .venv && uv pip install -q --python .venv/bin/python -r requirements-dev.lock" \
-  --setup "cd ui && npm ci" \
-  --test "cd engine && .venv/bin/pytest -q" --test "cd ui && npm test"
-
-uv run nightshift context map aayushch/laya           # L1 architecture map: one Sonnet call per new commit
-uv run nightshift context change aayushch/laya --base e5f1610 --patch fix.diff   # L3, no model calls
-```
-
-- **L1 architecture map:** code builds a source index inside the sandbox (imports for Python,
-  TypeScript, Svelte and Rust; entry points; central files), then the **Cartographer** maps
-  components and relationships, each citing a file. Code drops any path that does not exist.
-  Stored per commit in `repo_context`.
-- **L3 change context:** for a diff, the enclosing functions, their callers and called definitions
-  (jedi and typescript-language-server via multilspy), plus code elsewhere that uses the same string
-  keys. Code the diff did not change but probably should have is listed first.
-
-Outputs go to `reports/<owner>__<repo>/context/`.
-
-## Contribution tasks (M2)
-
-```bash
-uv run nightshift task plan aayushch/laya 6           # Planner; stops at Gate 1
-uv run nightshift task approve 1 [--setup ...] [--test ...]   # or: task reject 1 --note "..."
-uv run nightshift task run 1                          # setup, baseline, Coder, verification, Reviewer
-uv run nightshift task show 1
-```
-
-- **Planner** (Sonnet): the issue fetched fresh, repo brief, architecture map and the files that
-  mention the issue's terms (L2). Refuses an issue someone else has claimed (assigned, or an open PR
-  that closes, cross-references or names it); set `NIGHTSHIFT_GITHUB_LOGIN` so yours do not count.
-- **Coder** (Sonnet): reads, searches, edits and runs inside the sandbox, then submits.
-- **Verification by code:** the targeted test must fail with the source changes taken out and pass
-  with them, and every test command that passed at baseline must still pass.
-- **Reviewer** (Sonnet, independent): judges every item of related code the diff did not change;
-  changes it asks for go back to the Coder, up to `review_rounds` more times.
-- Limits per task: `task_budget_usd` ($5), `task_minutes` (30), `coder_max_steps` (60). Nothing is
-  posted to GitHub.
-
-## Web app
-
-```bash
-cd frontend && npm install && npm run build   # once, and after UI changes
-uv run nightshift serve                        # http://127.0.0.1:8000
-```
-
-A React + TypeScript app (`frontend/`) on a JSON API (`/api`); the server renders no HTML itself.
-
-- **Tasks:** lanes by stage, "Waiting on you" first. A task page puts the gate to act on at the top
-  (Gate 1: approve the plan and its commands; Gate 2: freshness check, then publish after typing the
-  repo name), then Plan, live Log, Verification, Review, Diff and PR.
-- **Repos:** watchlist with view, latest report and last run; add repos, switch view, run a report.
-- **Report:** the health report, with **chat** and **plan** links next to every issue.
-- **Jobs:** every run (reports, tasks, maps) from the app or the CLI, with a live log, stop and resume.
-- **Chat:** talk to Claude about one issue or PR; it reads the repo's code, drafts, never posts.
-- Spend today and this month, and the kill switch, are always in the header.
-
-| | |
+| Document | What it covers |
 | --- | --- |
-| ![Gate 2 and verification](docs/screenshots/task-gate2-verification.jpg) | ![PR draft](docs/screenshots/task-pr.jpg) |
-| **Task at Gate 2:** freshness dry run, and the fix verified by code (fails without it, passes with it) | **PR draft** in the repo's own style; the Testing section comes from the real runs |
-| ![Repos](docs/screenshots/repos.jpg) | ![Report](docs/screenshots/report.jpg) |
-| **Repos:** verdict, issues to work on, last run | **Report:** warns when it is old; **chat** and **plan** next to every issue |
-| ![Jobs](docs/screenshots/jobs.jpg) | |
-| **Jobs:** every report, task and map run with cost and duration | |
+| [docs/SETUP.md](docs/SETUP.md) | Installing and running NightShift, every setting, troubleshooting |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Project layout, tests, conventions, how to send a change |
+| [docs/PRD.md](docs/PRD.md) | The product spec: users, lifecycle, the memory harness, requirements, roadmap |
+| [docs/BACKLOG.md](docs/BACKLOG.md) | Known bugs and planned work |
 
-The app has no login, so the server binds to 127.0.0.1 and refuses cross-site writes. Put it behind
-authentication before exposing it. For UI work, `npm run dev` in `frontend/` proxies `/api` to a
-running `nightshift serve`.
+## Safety
 
-Known bugs and planned work: [docs/BACKLOG.md](docs/BACKLOG.md).
+The web app has no login: it binds to `127.0.0.1` and refuses cross-site writes. Do not expose it to a
+network without putting authentication in front of it. Issue, PR and comment text is treated as
+untrusted data, never as instructions.
 
-## Development
+## License
 
-```bash
-uv run pytest        # unit tests, plus Postgres-backed tests when docker compose is up
-uv run ruff check src tests
-uv run mypy src
-```
+[Apache License 2.0](LICENSE).
