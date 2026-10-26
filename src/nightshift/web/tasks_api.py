@@ -150,6 +150,7 @@ async def get_task(task_id: int) -> dict[str, Any]:
         "claim_url": res.get("claim_url"),
         "baseline": res.get("baseline", []),
         "check": res.get("check"),
+        "context_check": res.get("context_check"),
         "reviews": [
             {"round": rv["round"], "verdict": rv["verdict"], "html": _md(rv["markdown"])}
             for rv in res.get("reviews", [])

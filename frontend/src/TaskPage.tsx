@@ -730,6 +730,25 @@ function Run({ r, label }: { r: CommandResult; label?: string }) {
   );
 }
 
+// Whether the Planner's context held the code the fix needed. A miss points at how context is built.
+function ContextCheck({ cc }: { cc: NonNullable<TaskDetail["context_check"]> }) {
+  const held = cc.changed.length - cc.missed.length;
+  return (
+    <>
+      <h3>Context</h3>
+      <p className={cc.missed.length ? "blocked" : "ok"}>
+        The planning context held {held} of {cc.changed.length} files the fix changed
+        {cc.missed.length ? "." : ": nothing was missing."}
+      </p>
+      {cc.missed.length > 0 && <p className="mono dim">missed: {cc.missed.join(", ")}</p>}
+      <p className="mono dim">
+        in the relevant files: {cc.relevant.join(", ") || "none"} · named in the plan: {cc.planned.join(", ") || "none"}
+        {cc.new.length > 0 && <> · new files: {cc.new.join(", ")}</>}
+      </p>
+    </>
+  );
+}
+
 function Verification({ task }: { task: TaskDetail }) {
   const c = task.check;
   return (
@@ -753,6 +772,7 @@ function Verification({ task }: { task: TaskDetail }) {
       ) : (
         <p className="muted">No verification has run yet.</p>
       )}
+      {task.context_check && <ContextCheck cc={task.context_check} />}
       {task.baseline.length > 0 && (
         <>
           <h3>Baseline (before any change)</h3>

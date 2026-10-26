@@ -460,6 +460,32 @@ def context_map(repo: str, ref: RefOpt = "HEAD", fetch: FetchOpt = None, out: Ou
     _run_sandboxed(run())
 
 
+@context_app.command("coverage")
+def context_coverage() -> None:
+    """For every task that ran: did its planning context hold the files the fix changed?"""
+    from nightshift.db import Task
+
+    async def run() -> None:
+        async with session_scope() as s:
+            rows = (await s.execute(select(Task, Repo).join(Repo).order_by(Task.id))).all()
+        changed = relevant = planned = missed = 0
+        for t, r in rows:
+            if not (cc := (t.result or {}).get("context_check")):
+                continue
+            changed, relevant = changed + len(cc["changed"]), relevant + len(cc["relevant"])
+            planned, missed = planned + len(cc["planned"]), missed + len(cc["missed"])
+            typer.echo(f"{r.full_name}#{t.issue_number} (task {t.id}): {_context_line(cc)}")
+        if not changed:
+            typer.echo("No checked task yet: the check runs after a fix, for tasks planned from now on.")
+            return
+        typer.echo(
+            f"\nAll tasks: {changed - missed} of {changed} changed files were in context "
+            f"({relevant} in the relevant files, {planned} named in the plan); {missed} missed."
+        )
+
+    asyncio.run(run())
+
+
 @context_app.command("change")
 def context_change(
     repo: str,
@@ -552,6 +578,14 @@ def task_show(task_id: int) -> None:
     typer.echo(task.plan.get("markdown", ""))
     for r in task.result.get("reviews", []):
         typer.echo("\n" + r["markdown"])
+    if cc := task.result.get("context_check"):
+        typer.echo("\n" + _context_line(cc))
+
+
+def _context_line(cc: dict[str, list[str]]) -> str:
+    held = len(cc["changed"]) - len(cc["missed"])
+    line = f"Context check: planning context held {held} of {len(cc['changed'])} files the fix changed"
+    return line + (f"; missed {', '.join(cc['missed'])}" if cc["missed"] else "")
 
 
 @task_app.command("list")

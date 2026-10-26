@@ -43,7 +43,7 @@ from nightshift.sandbox.envimage import ensure_env_image
 from nightshift.worker import feedback, planner, prwriter, publish, reviewer
 from nightshift.worker.coder import CoderRun
 from nightshift.worker.issue import IssueView, fetch_issue
-from nightshift.worker.relevant import relevant_files
+from nightshift.worker.relevant import coverage, relevant_files
 from nightshift.worker.setup_agent import RECIPE, ensure_environment, environment_for, load_recipe
 from nightshift.worker.verify import CommandResult, FixCheck, diff, run_commands, run_reproduction
 
@@ -187,7 +187,7 @@ async def plan_task(
         await events.record(task.run_id, "node_start", "context", node="context")
         brief, _ = await repo_brief(llm, full_name)
         amap = await archmap.architecture_map(box, repo, llm)
-        _, l2 = await relevant_files(
+        l2_paths, l2 = await relevant_files(
             box, f"{issue.title}\n{issue.body}\n" + "\n".join(c["body"] for c in issue.comments)
         )
         recipe = await load_recipe(repo.id)
@@ -243,6 +243,7 @@ async def plan_task(
                 # The reproduction's run on the code before any change; when it failed, the fix must make it pass.
                 "reproduced": repro.model_dump() if repro else None,
                 "planning_note": note.strip(),
+                "relevant_files": l2_paths,  # for the context check after the run
                 "environment": {"system_packages": env.system_packages, "tools": env.tools}
                 if env.status == "ready"
                 else {},
@@ -605,6 +606,15 @@ async def run_task(task_id: int) -> Task:
             why = "the review still asks for changes after the last round"
 
         final_diff = await diff(box, task.base_commit)
+        if "relevant_files" in plan:  # plans made before the list was kept cannot be checked
+            planned = [f["path"] for f in plan.get("files_to_change", [])]
+            result["context_check"] = coverage(final_diff, plan["relevant_files"], planned)
+            if missed := result["context_check"]["missed"]:
+                await events.record(
+                    task.run_id,
+                    "warning",
+                    "the fix changed files its planning context did not hold: " + ", ".join(missed),
+                )
         result.update(
             reviews=reviews,
             check=coder.check.model_dump() if coder.check else None,

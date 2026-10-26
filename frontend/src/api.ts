@@ -138,6 +138,8 @@ export interface TaskDetail extends TaskSummary {
   claim_url: string | null;
   baseline: CommandResult[];
   check: FixCheck | null;
+  // Did the planning context hold the files the fix changed? Null for tasks planned before it was kept.
+  context_check: { changed: string[]; relevant: string[]; planned: string[]; missed: string[]; new: string[] } | null;
   reviews: { round: number; verdict: string; html: string }[];
   diff: string;
   pr: { title: string; html: string; commit: string } | null;

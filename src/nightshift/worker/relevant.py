@@ -36,6 +36,31 @@ def issue_terms(text: str) -> list[str]:
     return list(seen)[:MAX_TERMS]
 
 
+def changed_files(diff: str) -> tuple[list[str], list[str]]:
+    """The source files a diff changes (not tests or docs), split into (existing, new)."""
+    existing: list[str] = []
+    new: list[str] = []
+    for section in re.split(r"^(?=diff --git )", diff, flags=re.M):
+        m = re.match(r"diff --git a/(\S+) b/", section)
+        if m and _is_code(m.group(1)):
+            (new if re.search(r"^new file mode", section, re.M) else existing).append(m.group(1))
+    return list(dict.fromkeys(existing)), list(dict.fromkeys(new))
+
+
+def coverage(diff: str, relevant: list[str], planned: list[str]) -> dict[str, list[str]]:
+    """Whether the Planner's context held the code the fix needed: of the existing source files the diff
+    changed, which were among the relevant files (L2), which the plan named, and which neither had. A miss
+    points at context-building, not at the agent. New files are listed apart: no context could hold them."""
+    changed, new = changed_files(diff)
+    return {
+        "changed": changed,
+        "relevant": [p for p in changed if p in relevant],
+        "planned": [p for p in changed if p in planned],
+        "missed": [p for p in changed if p not in relevant and p not in planned],
+        "new": new,
+    }
+
+
 def _is_code(path: str) -> bool:
     return not is_test_path(path) and not path.endswith((".md", ".lock", ".json", ".txt", ".svg", ".yml", ".yaml"))
 
