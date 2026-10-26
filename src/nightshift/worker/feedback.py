@@ -29,6 +29,10 @@ QUERY = """
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      createdAt
+      closingIssuesReferences(first: 5) {
+        nodes { number comments(last: 50) { nodes { databaseId author { login __typename } body url createdAt } } }
+      }
       reviewThreads(first: 100) {
         nodes {
           isResolved isOutdated path line originalLine
@@ -44,8 +48,8 @@ query($owner: String!, $name: String!, $number: Int!) {
 
 
 class ReviewComment(BaseModel):
-    id: str  # "thread:<first comment id>", "review:<id>" or "comment:<id>"
-    kind: Literal["thread", "review", "comment"]
+    id: str  # "thread:<first comment id>", "review:<id>", "comment:<id>" or "issue:<id>"
+    kind: Literal["thread", "review", "comment", "issue"]
     author: str
     body: str  # a thread's whole conversation, oldest first
     path: str | None = None
@@ -56,6 +60,7 @@ class ReviewComment(BaseModel):
     bot: bool = False
     state: str | None = None  # a review's: APPROVED, CHANGES_REQUESTED, COMMENTED
     superseded: bool = False  # a review whose author approved the PR later
+    issue: int | None = None  # for kind "issue": the issue the PR closes, where the comment was written
 
     @property
     def suggested(self) -> bool:
@@ -110,6 +115,14 @@ async def pr_feedback(repo: str, number: int, skip: set[str] | None = None) -> l
             path=t["path"], line=t["line"] or t["originalLine"], url=first["url"],
             reply_to=first["databaseId"], outdated=bool(t["isOutdated"]), bot=_is_bot(first),
         ))  # fmt: skip
+    # Maintainers often answer on the issue the PR closes: its comments since the PR was opened count too.
+    for issue in pr["closingIssuesReferences"]["nodes"]:
+        for c in issue["comments"]["nodes"]:
+            body = _clean(c.get("body") or "")
+            if not body or _author(c).lower() == me or c["createdAt"] < pr["createdAt"]:
+                continue
+            out.append(ReviewComment(id=f"issue:{c['databaseId']}", kind="issue", author=_author(c), body=body,
+                                     url=c["url"], bot=_is_bot(c), issue=issue["number"]))  # fmt: skip
     for kind, nodes in (("review", pr["reviews"]["nodes"]), ("comment", pr["comments"]["nodes"])):
         for c in nodes:
             body = _clean(c.get("body") or "")
@@ -135,6 +148,7 @@ def revision_note(comments: list[ReviewComment], note: str = "") -> str:
     ]
     for c in comments:
         where = f" on `{c.path}`" + (f" line {c.line}" if c.line else "") if c.path else ""
+        where = f" on issue #{c.issue}" if c.issue else where
         stale = " (the line has changed since)" if c.outdated else ""
         parts.append(f"<review_comment id={c.id!r} by=@{c.author}{where}{stale}>\n{c.body}\n</review_comment>")
     if note.strip():
@@ -168,7 +182,7 @@ class Replies(BaseModel):
 
 REPLY_SYSTEM = f"""You draft short replies to a pull request's reviewers, for the PR's author to edit and post. The author has addressed the feedback in a follow-up commit; you get each comment and the follow-up diff.
 
-For each comment, reply in one to three plain sentences: what was changed and where, or, if the diff does not address it, say so honestly and why. Thank the reviewer only when it fits naturally. No AI or tool mentions.
+For each comment, reply in one to three plain sentences: what was changed and where, or, if the diff does not address it, say so honestly and why. A comment that asks no change (a question, a confirmation, extra context) gets a direct answer or a short acknowledgement, written to that person: do not mention commits, follow-ups or that no code changed (the diff is "(no code change)" then). Thank the commenter only when it fits naturally. No AI or tool mentions.
 
 {UNTRUSTED_RULE} The review comments are inside it."""
 
@@ -201,7 +215,16 @@ async def post_replies(repo: Repo, number: int, comments: list[ReviewComment], r
             "-f", f"body={text}",
         )  # fmt: skip
         posted.append(str(json.loads(out).get("html_url", "")))
-    general = [(c, replies[c.id].strip()) for c in comments if c.kind != "thread" and replies.get(c.id, "").strip()]
+    on_issues: dict[int, list[tuple[ReviewComment, str]]] = {}
+    for c in comments:
+        if c.kind == "issue" and c.issue and replies.get(c.id, "").strip():
+            on_issues.setdefault(c.issue, []).append((c, replies[c.id].strip()))
+    for issue, answers in on_issues.items():  # answered where they were asked
+        body = "\n\n".join(f"> @{c.author}: {c.body.splitlines()[0][:200]}\n\n{text}" for c, text in answers)
+        out = await _run("gh", "issue", "comment", str(issue), "--repo", repo.full_name, "--body-file", "-", stdin=body)
+        posted.append(out.strip().splitlines()[-1] if out.strip() else "")
+    general = [(c, replies[c.id].strip()) for c in comments
+               if c.kind in ("review", "comment") and replies.get(c.id, "").strip()]  # fmt: skip
     if general:
         body = "\n\n".join(f"> @{c.author}: {c.body.splitlines()[0][:200]}\n\n{text}" for c, text in general)
         out = await _run("gh", "pr", "comment", str(number), "--repo", repo.full_name, "--body-file", "-", stdin=body)

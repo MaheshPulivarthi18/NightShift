@@ -161,6 +161,21 @@ function FeedbackPanel({ task, onChange }: { task: TaskDetail; onChange: () => v
     setBusy(true);
     api.address(task.id, [...chosen], note.trim()).then(onChange, (e: Error) => setMsg(e.message)).finally(() => setBusy(false));
   };
+  const [drafts, setDrafts] = useState<(ReviewComment & { text: string })[] | null>(null);
+  const [armed, setArmed] = useState(false);
+  const replyOnly = () => {
+    setBusy(true);
+    setMsg(null);
+    api.draftReplies(task.id, [...chosen]).then(setDrafts, (e: Error) => setMsg(e.message)).finally(() => setBusy(false));
+  };
+  const post = () => {
+    if (!drafts) return;
+    setBusy(true);
+    api.postReplies(task.id, Object.fromEntries(drafts.map((d) => [d.id, d.text]))).then(
+      (r) => (setMsg(`Posted ${r.posted.length}: ${r.posted.join(" ")}`), setDrafts(null), setArmed(false), setComments(null)),
+      (e: Error) => setMsg(e.message),
+    ).finally(() => setBusy(false));
+  };
   return (
     <section className="gate calm feedback">
       <header>
@@ -182,7 +197,8 @@ function FeedbackPanel({ task, onChange }: { task: TaskDetail; onChange: () => v
                   {c.bot && <span className="tag">bot</span>}
                   {c.outdated && <span className="tag">outdated</span>}
                   {c.superseded && <span className="tag">superseded</span>}
-                  {c.state && <span className="tag">{c.state.toLowerCase().replace("_", " ")}</span>}{" "}
+                  {c.state && <span className="tag">{c.state.toLowerCase().replace("_", " ")}</span>}
+                  {c.issue && <span className="tag">on issue #{c.issue}</span>}{" "}
                   <a href={c.url} target="_blank" rel="noreferrer">↗</a>
                 </span>
               </label>
@@ -202,11 +218,38 @@ function FeedbackPanel({ task, onChange }: { task: TaskDetail; onChange: () => v
             <button className="primary" disabled={busy || (!chosen.size && !note.trim())} onClick={address}>
               Address {chosen.size} selected
             </button>
+            <button className="ghost" disabled={busy || !chosen.size} onClick={replyOnly}
+              title="For questions and confirmations: draft replies, change no code">
+              Reply only
+            </button>
             <button className="ghost small" disabled={busy} onClick={load}>Read again</button>
           </div>
         </>
       )}
-      {msg && <p className="error">{msg}</p>}
+      {drafts && (
+        <div className="replies">
+          <h3>Replies (nothing is posted until you confirm)</h3>
+          {drafts.map((d, i) => (
+            <label key={d.id} className="full">
+              <span>To @{d.author}{d.issue ? ` on issue #${d.issue}` : d.path ? ` on ${d.path}` : ""}: {d.body.split("\n")[0].slice(0, 120)}</span>
+              <textarea rows={3} value={d.text}
+                onChange={(e) => setDrafts((cur) => cur && cur.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)))} />
+            </label>
+          ))}
+          <div className="actions">
+            {!armed ? (
+              <button className="primary" disabled={busy} onClick={() => setArmed(true)}>Post {drafts.filter((d) => d.text.trim()).length} replies…</button>
+            ) : (
+              <>
+                <span>Post these publicly as you on {task.repo}?</span>
+                <button className="danger" disabled={busy} onClick={post}>Yes, post them</button>
+                <button className="ghost" onClick={() => setArmed(false)}>Cancel</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      {msg && <p className={msg.startsWith("Posted") ? "ok" : "error"}>{msg}</p>}
     </section>
   );
 }
@@ -438,7 +481,8 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   const [replies, setReplies] = useState<Record<string, string>>({});
   const [postReplies, setPostReplies] = useState(false);
   const payload = (): PublishEdits => {
-    const e: PublishEdits = { ...(edits ?? {}), remember, replies, post_replies: postReplies };
+    // With nothing to push, Gate 2 exists to post the replies: confirming means posting them.
+    const e: PublishEdits = { ...(edits ?? {}), remember, replies, post_replies: postReplies || info?.mode === "replies_only" };
     if (followUp && !replaceBody) delete e.body;
     if (followUp) delete e.title;
     return e;
@@ -532,6 +576,9 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
                 <span>Commit message</span>
                 <textarea className="mono" rows={4} value={edits.commit_message ?? ""} onChange={edit("commit_message")} />
               </label>
+              {info.mode === "replies_only" && (
+                <p className="warn">The run changed no code: there is nothing to push. Post the replies below, or revise.</p>
+              )}
               {followUp && info.replies && info.replies.length > 0 && (
                 <div className="replies">
                   <h3>Replies to the reviewers</h3>
@@ -608,7 +655,7 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
                 <input className="mono" value={typed} onChange={(e) => setTyped(e.target.value)} />
               </label>
               <button className="danger" disabled={typed !== task.repo || busy} onClick={publish}>
-                {followUp ? "Push follow-up commit" : "Push and open PR"}
+                {info.mode === "replies_only" ? "Post replies" : followUp ? "Push follow-up commit" : "Push and open PR"}
               </button>
             </div>
           )}

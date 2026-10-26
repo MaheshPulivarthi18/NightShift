@@ -27,7 +27,14 @@ def _graphql(me: str) -> dict[str, Any]:
     thread = lambda resolved, comments, **kw: {"isResolved": resolved, "isOutdated": kw.get("outdated", False),  # noqa: E731
                                                "path": "src/a.py", "line": 12, "originalLine": 10,
                                                "comments": {"nodes": comments}}  # fmt: skip
+    issue_comment = lambda author, body, n, when: _node(author, body, n) | {"createdAt": when}  # noqa: E731
     return {"repository": {"pullRequest": {
+        "createdAt": "2026-10-24T06:21:00Z",
+        "closingIssuesReferences": {"nodes": [{"number": 765, "comments": {"nodes": [
+            issue_comment(me, "I'll take this one.", 20, "2026-10-24T06:18:00Z"),
+            issue_comment("erin", "Before the PR: context only.", 21, "2026-10-23T00:00:00Z"),
+            issue_comment("youngledo", "Confirming this also hits forks.", 22, "2026-10-26T07:16:00Z"),
+        ]}}]},
         "reviewThreads": {"nodes": [
             thread(False, [_node("alice", "Please rename `x` to `count`.", 1)]),
             thread(True, [_node("alice", "Resolved already.", 2)]),
@@ -66,8 +73,18 @@ def github(monkeypatch: pytest.MonkeyPatch) -> str:
 
 async def test_open_feedback_and_what_is_suggested(github: str) -> None:
     got = {c.id: c for c in await feedback.pr_feedback("o/r", 9)}
-    assert set(got) == {"thread:1", "thread:5", "review:6", "review:7", "review:8", "comment:10", "comment:11"}
-    assert {i for i, c in got.items() if c.suggested} == {"thread:1", "review:8"}
+    assert set(got) == {
+        "thread:1",
+        "thread:5",
+        "review:6",
+        "review:7",
+        "review:8",
+        "comment:10",
+        "comment:11",
+        "issue:22",
+    }
+    assert {i for i, c in got.items() if c.suggested} == {"thread:1", "review:8", "issue:22"}
+    assert got["issue:22"].issue == 765 and got["issue:22"].kind == "issue"  # said on the issue, after the PR
     assert got["thread:1"].path == "src/a.py" and got["thread:1"].line == 12 and got["thread:1"].reply_to == 1
     assert got["thread:5"].outdated and got["review:6"].superseded and got["review:7"].state == "APPROVED"
     assert got["comment:10"].bot and got["comment:11"].bot  # a Bot account, and a service account by name
@@ -96,11 +113,14 @@ async def test_replies_go_into_their_threads_and_the_rest_into_one_comment(monke
     thread = ReviewComment(id="thread:1", kind="thread", author="alice", body="Rename", url="u", reply_to=1)
     review = ReviewComment(id="review:8", kind="review", author="dave", body="Handle None.\nThanks", url="u")
     skipped = ReviewComment(id="review:6", kind="review", author="carol", body="old", url="u")
-    posted = await feedback.post_replies(Repo(full_name="o/r"), 9, [thread, review, skipped],
-                                         {"thread:1": "Renamed.", "review:8": "Done: None is handled."})  # fmt: skip
-    assert posted == ["https://github.com/o/r/pull/9#r1", "https://x/c"]
+    on_issue = ReviewComment(id="issue:22", kind="issue", author="yl", body="Also hits forks.", url="u", issue=765)
+    replies = {"thread:1": "Renamed.", "review:8": "Done: None is handled.", "issue:22": "Thanks for confirming."}
+    posted = await feedback.post_replies(Repo(full_name="o/r"), 9, [thread, review, skipped, on_issue], replies)
+    assert len(posted) == 3
     assert calls[0][0][-3:] == ("repos/o/r/pulls/9/comments/1/replies", "-f", "body=Renamed.")
-    assert calls[1][1] == "> @dave: Handle None.\n\nDone: None is handled."  # one comment, quoting the reviewer
+    assert calls[1][0][:3] == ("gh", "issue", "comment") and calls[1][0][3] == "765"  # answered on the issue
+    assert calls[1][1] == "> @yl: Also hits forks.\n\nThanks for confirming."
+    assert calls[2][1] == "> @dave: Handle None.\n\nDone: None is handled."  # one PR comment, quoting the reviewer
 
 
 # ---------- addressing a task, end to end with git and GitHub faked ----------
@@ -211,3 +231,56 @@ def test_the_follow_up_commit_says_what_was_asked_not_the_instructions() -> None
     assert feedback.commit_message([], "Fix the typo in the docstring.") == (
         "Address review feedback\n\n- Fix the typo in the docstring."
     )
+
+
+async def test_reply_only_drafts_without_a_run_and_posts_the_edits(
+    published: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: dict[str, Any] = {}
+
+    async def drafts(llm: Any, comments: list[ReviewComment], change: str) -> dict[str, str]:
+        sent["change"] = change
+        return {c.id: "Thanks!" for c in comments}
+
+    async def post(repo: Any, number: int, comments: list[ReviewComment], replies: dict[str, str]) -> list[str]:
+        sent["replies"] = replies
+        return ["https://github.com/o/r/issues/765#c1"]
+
+    monkeypatch.setattr(feedback, "draft_replies", drafts)
+    monkeypatch.setattr(feedback, "post_replies", post)
+    shown = await worker.draft_reply_only(published["task"], ["thread:1"])
+    assert shown[0]["text"] == "Thanks!" and sent["change"] == "(no code change)"
+    async with session_scope() as s:
+        row = await s.get(Task, published["task"])
+    assert row is not None and row.status == "published"  # no run, no revision
+    assert await worker.post_reply_only(published["task"], {"thread:1": "Thanks, renamed in 1a2b3c."}) == [
+        "https://github.com/o/r/issues/765#c1"
+    ]
+    assert sent["replies"] == {"thread:1": "Thanks, renamed in 1a2b3c."}
+    assert await worker.review_feedback(published["task"]) == []  # answered: not offered again
+
+
+async def test_a_claim_is_posted_once(published: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    posts: list[str] = []
+
+    async def post_claim(repo: Any, task: Any, text: str) -> str:
+        await asyncio.sleep(0.05)
+        posts.append(text)
+        return "https://github.com/o/r/issues/3#c9"
+
+    monkeypatch.setattr(publish, "post_claim", post_claim)
+    async with session_scope() as s:
+        row = await s.get(Task, published["task"])
+        assert row is not None
+        row.plan = {**row.plan, "claim_comment": "I'll take this one."}
+        row.result = {k: v for k, v in row.result.items() if k != "claim_url"}
+    first, second = await asyncio.gather(
+        worker.claim(published["task"], confirm=True), worker.claim(published["task"], confirm=True),
+        return_exceptions=True,
+    )  # fmt: skip
+    assert len(posts) == 1  # a double click posts once
+    assert {type(first), type(second)} == {str, worker.TaskError}
+    with pytest.raises(worker.TaskError, match="Already posted"):
+        await worker.claim(published["task"], confirm=True)

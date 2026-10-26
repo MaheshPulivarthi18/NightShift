@@ -18,10 +18,11 @@ import shlex
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from sqlalchemy import func, select, update
+from sqlalchemy.engine import CursorResult
 
 from nightshift import events, outcomes
 from nightshift.catalog import ModelConfigError
@@ -716,9 +717,25 @@ async def claim(task_id: int, *, confirm: bool) -> str:
     if task.status in ("planned", "rejected", "failed") and not asking:
         raise TaskError(f"Task {task_id} is {task.status}; claim after approving the plan.")
     text = task.plan.get("claim_comment", "")
+    if task.result.get("claim_url"):
+        raise TaskError(f"Already posted: {task.result['claim_url']}")
     if not confirm:
         return f"Would post on {repo.full_name}#{task.issue_number}:\n\n{text}"
-    url = await publish.post_claim(repo, task, text)
+    # Marked before posting, so a second click (or a second request) finds it taken and posts nothing.
+    async with session_scope() as s:
+        marked = await s.execute(
+            update(Task)
+            .where(Task.id == task.id, Task.result["claim_url"].as_string().is_(None))
+            .values(result={**task.result, "claim_url": "posting"})
+        )
+        claimed = cast(CursorResult[Any], marked).rowcount
+    if not claimed:
+        raise TaskError("The claim comment is already posted or being posted.")
+    try:
+        url = await publish.post_claim(repo, task, text)
+    except BaseException:
+        await _save(task, result={k: v for k, v in task.result.items() if k != "claim_url"})
+        raise
     await _save(task, result={**task.result, "claim_url": url})
     return url
 
@@ -828,9 +845,17 @@ async def _follow_up(
     }  # fmt: skip
     if blockers:
         return info
-    prepared = await publish.prepare_follow_up(repo, task, pr, published, task_dir(repo.full_name, task.id) / "publish")
-    info["files"] = prepared.files
     addressing = [feedback.ReviewComment.model_validate(c) for c in task.result.get("addressing") or []]
+    try:
+        prepared = await publish.prepare_follow_up(
+            repo, task, pr, published, task_dir(repo.full_name, task.id) / "publish"
+        )
+    except publish.PublishError as e:
+        if "nothing to push" not in str(e) or not addressing:
+            raise
+        # The comments asked no code change (a question, a confirmation): answer them, push nothing.
+        return await _replies_only(task, repo, pr.number, addressing, info, confirm, replies, post_replies)
+    info["files"] = prepared.files
     drafted: dict[str, str] = dict(task.result.get("replies") or {})
     if addressing and not drafted:
         change = (await publish._run("git", "diff", "--cached", cwd=Path(prepared.workdir))) or ""
@@ -852,6 +877,64 @@ async def _follow_up(
               "addressing": [], "replies": {}, "reply_urls": posted}  # fmt: skip
     await _save(task, status="published", result=result)
     return info | {"published": True, "reply_urls": posted}
+
+
+async def _replies_only(
+    task: Task,
+    repo: Repo,
+    number: int,
+    addressing: list[feedback.ReviewComment],
+    info: dict[str, Any],
+    confirm: bool,
+    replies: dict[str, str] | None,
+    post_replies: bool,
+) -> dict[str, Any]:
+    drafted: dict[str, str] = dict(task.result.get("replies") or {})
+    if not drafted:
+        llm = LLMGateway(task.run_id, repo.id, run_budget_usd=get_settings().task_budget_usd)
+        drafted = await feedback.draft_replies(llm, addressing, "(no code change)")
+    drafted.update({k: v for k, v in (replies or {}).items() if k in {c.id for c in addressing}})
+    await _save(task, result={**task.result, "replies": drafted})
+    info |= {"mode": "replies_only", "files": [],
+             "replies": [c.model_dump() | {"text": drafted.get(c.id, "")} for c in addressing]}  # fmt: skip
+    if not confirm:
+        return info
+    posted = await feedback.post_replies(repo, number, addressing, drafted) if post_replies else []
+    done = sorted({*task.result.get("addressed", []), *(c.id for c in addressing)})
+    result = {**task.result, "addressed": done, "addressing": [], "replies": {}, "reply_urls": posted}
+    await _save(task, status="published", result=result)
+    return info | {"published": True, "reply_urls": posted}
+
+
+async def draft_reply_only(task_id: int, comment_ids: list[str]) -> list[dict[str, Any]]:
+    """Replies to comments that ask no code change (a question, a confirmation), drafted without a run."""
+    task, repo = await load_task(task_id)
+    chosen = [c for c in await review_feedback(task_id) if c.id in set(comment_ids)]
+    if not chosen:
+        raise TaskError("Choose at least one comment to reply to.")
+    llm = LLMGateway(task.run_id, repo.id, run_budget_usd=get_settings().task_budget_usd)
+    drafted = await feedback.draft_replies(llm, chosen, "(no code change)")
+    await _save(task, result={**task.result, "reply_only": {"comments": [c.model_dump() for c in chosen],
+                                                             "replies": drafted}})  # fmt: skip
+    return [c.model_dump() | {"text": drafted.get(c.id, "")} for c in chosen]
+
+
+async def post_reply_only(task_id: int, replies: dict[str, str]) -> list[str]:
+    """Post the operator's approved replies (from draft_reply_only), with their gh login."""
+    task, repo = await load_task(task_id)
+    pending = task.result.get("reply_only") or {}
+    comments = [feedback.ReviewComment.model_validate(c) for c in pending.get("comments", [])]
+    if not comments:
+        raise TaskError("Draft the replies first.")
+    texts = {c.id: (replies.get(c.id) if c.id in replies else pending["replies"].get(c.id, "")) for c in comments}
+    number = int(str(task.result["pr_url"]).rstrip("/").rsplit("/", 1)[-1])
+    try:
+        posted = await feedback.post_replies(repo, number, comments, {k: v or "" for k, v in texts.items()})
+    except publish.PublishError as e:
+        raise TaskError(str(e)) from e
+    done = sorted({*task.result.get("addressed", []), *(c.id for c in comments if (texts.get(c.id) or "").strip())})
+    await _save(task, result={**task.result, "addressed": done, "reply_only": {}, "reply_urls": posted})
+    return posted
 
 
 async def attach_pr(task_id: int, url: str) -> Task:

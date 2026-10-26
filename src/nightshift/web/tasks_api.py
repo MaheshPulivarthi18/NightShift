@@ -268,6 +268,32 @@ async def address(task_id: int, body: Address) -> dict[str, Any]:
     return await get_task(task_id)
 
 
+class ReplyDraft(BaseModel):
+    comment_ids: list[str]
+
+
+@router.post("/tasks/{task_id}/replies/draft", dependencies=[Guard])
+async def draft_replies(task_id: int, body: ReplyDraft) -> list[dict[str, Any]]:
+    """Replies to comments that ask no code change, drafted without a run. Nothing is posted."""
+    try:
+        return await worker.draft_reply_only(task_id, body.comment_ids)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+
+
+class ReplyPost(BaseModel):
+    replies: dict[str, str]
+
+
+@router.post("/tasks/{task_id}/replies/post", dependencies=[Guard])
+async def post_replies(task_id: int, body: ReplyPost) -> dict[str, list[str]]:
+    """Post the approved replies with the operator's GitHub login."""
+    try:
+        return {"posted": await worker.post_reply_only(task_id, body.replies)}
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+
+
 class FromPR(BaseModel):
     url: str = Field(max_length=300)
 
