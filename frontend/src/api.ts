@@ -102,6 +102,7 @@ export interface TaskSummary {
   busy: boolean;
   archived: boolean;
   updated_at: string | null;
+  feedback: number; // unanswered review feedback on the task's open PR, found by the background sync
 }
 
 export interface CommandResult {
@@ -287,6 +288,16 @@ export interface RepoItem {
   hidden: boolean;
   rehearsal?: boolean;
   updated_at: string | null;
+  feedback?: number;
+}
+
+export interface SyncStatus {
+  at: string | null;
+  running: boolean;
+  checked: number;
+  with_feedback: number;
+  error: string | null;
+  minutes: number;
 }
 
 export interface MapComponent {
@@ -350,6 +361,8 @@ export const api = {
   repoMap: (repo: string) => call<RepoMap>(`/repos/${repo}/map`),
   repoKnowledge: (repo: string) => call<RepoKnowledge>(`/repos/${repo}/knowledge`),
   repoStats: (repo: string) => call<RepoStats>(`/repos/${repo}/stats`),
+  syncStatus: () => call<SyncStatus>("/sync"),
+  syncNow: () => call<SyncStatus>("/sync", {}),
   addRepo: (full_name: string, role: string) => call<RepoRow[]>("/repos", { full_name, role }),
   setRole: (repo: string, role: string) => call<RepoRow[]>(`/repos/${repo}/role`, { role }),
   runReport: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/run`, {}),

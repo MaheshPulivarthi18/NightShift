@@ -62,6 +62,10 @@ def _summary(t: Task, r: Repo) -> dict[str, Any]:
         "error": t.error,
         "busy": f"task-{t.id}" in _jobs and not _jobs[f"task-{t.id}"].done(),
         "archived": t.archived_at is not None,
+        # unanswered review feedback found by the background sync on the task's open PR
+        "feedback": len(((t.result or {}).get("sync") or {}).get("open") or [])
+        if ((t.result or {}).get("sync") or {}).get("pr_state") == "OPEN"
+        else 0,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
 

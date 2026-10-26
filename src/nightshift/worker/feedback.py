@@ -1,7 +1,8 @@
 """Review feedback on a published PR: what reviewers asked for, ready to address and to answer.
 
     pr_feedback  the PR's open feedback: unresolved review threads (with file and line), review summaries
-                 and conversation comments, leaving out the operator's own and threads they already answered
+                 and conversation comments, leaving out the operator's own and what they already answered:
+                 a thread whose last comment is theirs, or a comment they commented after in the same place
     revision_note  the selected feedback as the note a revision runs with
     draft_replies  one reply per addressed comment, for the operator to edit and approve at Gate 2
     post_replies   posts the approved replies with the operator's gh login
@@ -14,7 +15,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -115,18 +116,21 @@ async def pr_feedback(repo: str, number: int, skip: set[str] | None = None) -> l
             path=t["path"], line=t["line"] or t["originalLine"], url=first["url"],
             reply_to=first["databaseId"], outdated=bool(t["isOutdated"]), bot=_is_bot(first),
         ))  # fmt: skip
-    # Maintainers often answer on the issue the PR closes: its comments since the PR was opened count too.
+    # Maintainers often answer on the issue the PR closes: its comments since the PR was opened count too,
+    # unless the operator commented there after them (they answered on GitHub themselves).
     for issue in pr["closingIssuesReferences"]["nodes"]:
+        answered = _last_by(me, issue["comments"]["nodes"])
         for c in issue["comments"]["nodes"]:
             body = _clean(c.get("body") or "")
-            if not body or _author(c).lower() == me or c["createdAt"] < pr["createdAt"]:
+            if not body or _author(c).lower() == me or c["createdAt"] < pr["createdAt"] or c["createdAt"] < answered:
                 continue
             out.append(ReviewComment(id=f"issue:{c['databaseId']}", kind="issue", author=_author(c), body=body,
                                      url=c["url"], bot=_is_bot(c), issue=issue["number"]))  # fmt: skip
+    answered = _last_by(me, pr["comments"]["nodes"])  # a later comment of theirs on the PR answers what came before
     for kind, nodes in (("review", pr["reviews"]["nodes"]), ("comment", pr["comments"]["nodes"])):
         for c in nodes:
             body = _clean(c.get("body") or "")
-            if not body or _author(c).lower() == me:
+            if not body or _author(c).lower() == me or c["createdAt"] < answered:
                 continue
             out.append(ReviewComment(id=f"{kind}:{c['databaseId']}", kind=kind, author=_author(c), body=body,
                                      url=c["url"], bot=_is_bot(c), state=c.get("state")))  # fmt: skip
@@ -137,6 +141,11 @@ async def pr_feedback(repo: str, number: int, skip: set[str] | None = None) -> l
         elif c.state == "APPROVED":
             approved_later.add(c.author)
     return [c for c in out if c.id not in (skip or set())]
+
+
+def _last_by(login: str, comments: list[dict[str, Any]]) -> str:
+    """When `login` last commented among `comments` (an ISO time), or "" if never: earlier ones are answered."""
+    return max((c["createdAt"] for c in comments if login and _author(c).lower() == login), default="")
 
 
 def revision_note(comments: list[ReviewComment], note: str = "") -> str:

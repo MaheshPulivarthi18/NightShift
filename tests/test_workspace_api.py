@@ -12,6 +12,7 @@ from sqlalchemy import delete, select
 
 from nightshift.db import PRCheck, Repo, Task, session_scope
 from nightshift.web import workspace_api
+from nightshift.worker import sync
 
 
 @pytest.fixture
@@ -51,11 +52,11 @@ async def test_items_are_open_or_closed_by_their_prs_state(repo: Repo, monkeypat
         ])  # fmt: skip
     asked: list[list[int]] = []
 
-    async def fake_states(name: str, numbers: list[int]) -> dict[int, str]:
+    async def fake_states(name: str, numbers: list[int], fresh: bool = False) -> dict[int, str]:
         asked.append(sorted(numbers))
         return {11: "MERGED", 12: "OPEN", 21: "CLOSED"}
 
-    monkeypatch.setattr(workspace_api, "pr_states", fake_states)
+    monkeypatch.setattr(sync, "pr_states", fake_states)
     owner, name = repo.full_name.split("/")
     items = {(i["kind"], i["number"]): i for i in await workspace_api.repo_items(owner, name)}
 

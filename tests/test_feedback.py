@@ -93,6 +93,25 @@ async def test_open_feedback_and_what_is_suggested(github: str) -> None:
     assert [c.id for c in await feedback.pr_feedback("o/r", 9, skip={"thread:1"})][0] == "thread:5"
 
 
+async def test_a_comment_the_operator_answered_on_github_is_not_open(
+    github: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = _graphql(github)
+    issue = data["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"][0]["comments"]["nodes"]
+    issue.append(_node(github, "Thanks for confirming on your fork.", 23) | {"createdAt": "2026-10-26T13:28:00Z"})
+    pr_comments = data["repository"]["pullRequest"]["comments"]["nodes"]
+    pr_comments.append(_node(github, "Answered above.", 24) | {"createdAt": "2026-10-26T00:00:00Z"})
+
+    async def graphql(self: Any, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        return data
+
+    monkeypatch.setattr(feedback.GitHubClient, "graphql", graphql)
+    open_ids = {c.id for c in await feedback.pr_feedback("o/r", 9)}
+    assert "issue:22" not in open_ids  # youngledo, answered later on the issue (the #765 case)
+    assert not {"review:6", "review:8", "comment:10", "comment:11"} & open_ids  # before the operator's PR comment
+    assert {"thread:1", "thread:5"} <= open_ids  # review threads are answered in the thread, not by a PR comment
+
+
 def test_the_revision_note_keeps_each_comment_as_data_where_it_applies() -> None:
     c = ReviewComment(id="thread:1", kind="thread", author="alice", body="Rename `x`.", path="src/a.py", line=12,
                       url="u", outdated=True)  # fmt: skip

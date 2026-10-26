@@ -7,7 +7,7 @@ PR states come from one batched GraphQL query per repo, kept for a few minutes.
 
 from __future__ import annotations
 
-import re
+import asyncio
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -20,44 +20,15 @@ from nightshift.context import archmap
 from nightshift.db import PRCheck, RepoContext, Task, session_scope
 from nightshift.github import GitHubClient, GitHubError
 from nightshift.web.api import _environment_view, _iso, _repo
+from nightshift.web.common import Guard
 from nightshift.web.tasks_api import STAGES
+from nightshift.worker import sync
 from nightshift.worker.setup_agent import ENVIRONMENT, Environment, load_recipe
 
 router = APIRouter(prefix="/api")
 
-PR_STATES_SECONDS = 300
 STATS_SECONDS = 3600
-_pr_states: dict[tuple[str, int], tuple[float, str]] = {}  # (repo, number) -> (fetched at, OPEN|MERGED|CLOSED)
 _stats: dict[str, tuple[float, dict[str, Any]]] = {}
-
-
-def _pr_number(url: str | None) -> int | None:
-    m = re.search(r"/pull/(\d+)", url or "")
-    return int(m.group(1)) if m else None
-
-
-async def pr_states(repo: str, numbers: list[int]) -> dict[int, str]:
-    """GitHub's state of each PR: OPEN, MERGED or CLOSED. Unknown ones are left out (shown as open)."""
-    now = time.monotonic()
-    fresh = {n: s for n in numbers if (hit := _pr_states.get((repo, n))) and now - hit[0] < PR_STATES_SECONDS
-             for s in [hit[1]]}  # fmt: skip
-    missing = [n for n in dict.fromkeys(numbers) if n not in fresh]
-    if missing:
-        owner, name = repo.split("/", 1)
-        fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ state }}" for n in missing)
-        gh = GitHubClient()
-        try:
-            query = f"query($o: String!, $n: String!) {{ repository(owner: $o, name: $n) {{ {fields} }} }}"
-            data = await gh.graphql(query, {"o": owner, "n": name})
-        except GitHubError:
-            return fresh  # GitHub is unreachable: show what is known, the rest as open
-        finally:
-            await gh.aclose()
-        for n in missing:
-            if pr := ((data.get("repository") or {}).get(f"p{n}")):
-                _pr_states[(repo, n)] = (now, pr["state"])
-                fresh[n] = pr["state"]
-    return fresh
 
 
 def _task_item(t: Task, state: str | None) -> dict[str, Any]:
@@ -70,6 +41,7 @@ def _task_item(t: Task, state: str | None) -> dict[str, Any]:
         "role": "yours" if pr_url else "issue", "status": t.status, "stage": stage,
         "pr_url": pr_url, "pr_state": state, "open": not closed, "hidden": t.archived_at is not None,
         "rehearsal": t.rehearsal, "updated_at": _iso(t.updated_at),
+        "feedback": len(((res.get("sync") or {}).get("open")) or []) if state == "OPEN" else 0,
     }  # fmt: skip
 
 
@@ -91,9 +63,9 @@ async def repo_items(owner: str, name: str) -> list[dict[str, Any]]:
         checks = list(
             (await s.execute(select(PRCheck).where(PRCheck.repo_id == repo.id).order_by(PRCheck.id.desc()))).scalars()
         )
-    task_prs = {t.id: _pr_number((t.result or {}).get("pr_url")) for t in tasks}
+    task_prs = {t.id: sync.pr_number((t.result or {}).get("pr_url")) for t in tasks}
     numbers = [n for n in task_prs.values() if n] + [c.number for c in checks]
-    states = await pr_states(repo.full_name, numbers) if numbers else {}
+    states = await sync.pr_states(repo.full_name, numbers) if numbers else {}
     me = (get_settings().github_login or "").lower()
     items = [_task_item(t, states.get(n) if (n := task_prs[t.id]) else None) for t in tasks]
     items += [_check_item(c, states.get(c.number), me) for c in checks]
@@ -180,3 +152,17 @@ async def repo_stats(owner: str, name: str) -> dict[str, Any]:
     }
     _stats[repo.full_name] = (now, out)
     return out
+
+
+@router.get("/sync")
+async def sync_status() -> dict[str, Any]:
+    """When GitHub was last checked for feedback on your published PRs, and what was found."""
+    return {**sync.status, "minutes": get_settings().sync_minutes}
+
+
+@router.post("/sync", dependencies=[Guard])
+async def sync_now() -> dict[str, Any]:
+    """Check now, in the background; the status says when it is done."""
+    if not sync.status["running"]:
+        asyncio.create_task(sync.sync_once())
+    return {**sync.status, "running": True, "minutes": get_settings().sync_minutes}

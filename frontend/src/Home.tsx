@@ -1,18 +1,37 @@
-import { api, Overview, RepoRow, TaskSummary } from "./api";
+import { useState } from "react";
+import { api, Overview, RepoRow, SyncStatus, TaskSummary } from "./api";
 import { ago, money, Title, usePoll } from "./ui";
 
 // The global overview: what waits on you across repos, and every repo at a glance.
 
-/** Tasks that wait on the operator: a plan to approve, a fix to publish, or a stopped run. */
+/** Tasks that wait on the operator: a plan to approve, a fix to publish, a stopped run, or review feedback
+ * on a published PR that nobody has answered yet. */
 export function needsYou(tasks: TaskSummary[]): TaskSummary[] {
-  return tasks.filter((t) => !t.archived && !t.busy && ["gate1", "gate2", "stopped"].includes(t.stage));
+  return tasks.filter((t) => !t.archived && !t.busy && (["gate1", "gate2", "stopped"].includes(t.stage) || t.feedback > 0));
 }
 
-const ASK: Record<string, [string, string]> = {
-  gate1: ["Approve plan", "badge info"],
-  gate2: ["Publish", "badge info"],
-  stopped: ["Stopped", "badge must"],
-};
+function ask(t: TaskSummary): [string, string] {
+  if (t.stage === "done" && t.feedback) return [`Reply · ${t.feedback}`, "badge yours"];
+  return ({ gate1: ["Approve plan", "badge info"], gate2: ["Publish", "badge info"], stopped: ["Stopped", "badge must"] } as
+    Record<string, [string, string]>)[t.stage] ?? [t.stage, "badge"];
+}
+
+/** When GitHub was last checked for feedback on your PRs, and a button to check now. */
+export function SyncBar() {
+  const [st, , reload] = usePoll<SyncStatus>(api.syncStatus, 10000, []);
+  const [asked, setAsked] = useState(false);
+  const running = asked || st?.running;
+  const now = () => { setAsked(true); api.syncNow().finally(() => window.setTimeout(() => (setAsked(false), reload()), 4000)); };
+  return (
+    <span className="sync">
+      <span className="status">
+        <span className={`dot ${st?.error ? "bad" : st?.at ? "ok" : ""}`} />
+        {running ? "Checking GitHub…" : st?.error ? "Last check failed" : st?.at ? `Checked GitHub ${ago(st.at)}` : "Not checked yet"}
+      </span>
+      <button className="ghost small" onClick={now} disabled={!!running}>Sync now</button>
+    </span>
+  );
+}
 
 export function Home() {
   const [repos] = usePoll<RepoRow[]>(api.repos, 30000, []);
@@ -23,7 +42,7 @@ export function Home() {
   const per = (repo: string) => needs.filter((t) => t.repo === repo).length;
   return (
     <div className="page home">
-      <header className="page-head"><h1>Overview</h1></header>
+      <header className="page-head"><h1>Overview</h1><SyncBar /></header>
       <div className="stats">
         <div className="stat"><div className="v">{repos?.length ?? "—"}</div><div className="l">Repos</div></div>
         <div className="stat"><div className="v">{needs.length}</div><div className="l">Need you</div></div>
@@ -36,7 +55,7 @@ export function Home() {
         {needs.length === 0 && <p className="panel-b dim">Nothing waits on you.</p>}
         {needs.map((t) => (
           <a key={t.id} className="row" href={`#/r/${t.repo}/items/t${t.id}`}>
-            <span className={ASK[t.stage][1]}>{ASK[t.stage][0]}</span>
+            <span className={ask(t)[1]}>{ask(t)[0]}</span>
             <span className="mono dim">{t.repo.split("/")[1]}#{t.issue}</span>
             <span className="grow ell"><Title text={t.title} /></span>
             <span className="dim">{ago(t.updated_at)}</span>

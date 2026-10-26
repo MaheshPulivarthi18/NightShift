@@ -22,6 +22,7 @@ from nightshift.sandbox.docker import remove_orphans
 from nightshift.web.api import router as api_router
 from nightshift.web.tasks_api import router as tasks_router
 from nightshift.web.workspace_api import router as workspace_router
+from nightshift.worker.sync import sync_loop
 from nightshift.worker.task import mark_stale_runs
 
 log = structlog.get_logger()
@@ -43,8 +44,10 @@ async def _tidy_up() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     tidy = asyncio.create_task(_tidy_up())  # in the background: startup never waits on Docker
+    syncing = asyncio.create_task(sync_loop())  # your published PRs' feedback, now and every sync_minutes
     yield
     tidy.cancel()
+    syncing.cancel()
 
 
 app = FastAPI(title="NightShift", lifespan=lifespan)

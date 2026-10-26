@@ -1,5 +1,6 @@
 import { FormEvent, ReactNode, useState } from "react";
 import { api, RepoItem, RepoKnowledge } from "./api";
+import { SyncBar } from "./Home";
 import { MapCanvas } from "./MapCanvas";
 import { PRCheckPage } from "./PRChecks";
 import { TaskPage } from "./TaskPage";
@@ -19,6 +20,7 @@ export function Workspace({ repo, tab, sel }: { repo: string; tab: WorkspaceTab;
         <div className="crumb">
           <span className="dim">{owner}</span><span className="dim">/</span><b>{name}</b>
           <a className="dim" href={`https://github.com/${repo}`} target="_blank" rel="noreferrer">GitHub ↗</a>
+          <span className="push"><SyncBar /></span>
         </div>
         <nav className="tabs" role="tablist">
           {TABS.map(([key, label]) => (
@@ -48,6 +50,7 @@ function itemStatus(i: RepoItem): [string, string] {
     return [`Checked · ${i.verdict ?? ""}`, i.must ? "bad" : i.should ? "warn" : "ok"];
   }
   if (i.rehearsal) return ["Practice run", ""];
+  if (i.stage === "done" && i.feedback) return [`In review · ${i.feedback} new comment${i.feedback > 1 ? "s" : ""}`, "info"];
   return ({
     plan: ["Planning", ""], gate1: ["Plan ready: approve it", "info"], work: ["Working", ""],
     gate2: ["Ready to publish", "info"], done: ["In review", ""], stopped: ["Stopped", "bad"], closed: ["Plan rejected", ""],
