@@ -376,8 +376,9 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 .publish-form { margin: 12px 0; display: grid; gap: 10px; }
 .publish-form h3 { margin: 4px 0 0; font-size: 14px; }
 .publish-form label { display: grid; gap: 4px; font-size: 12px; color: var(--ink-3); }
-.publish-form input, .publish-form textarea { width: 100%; }
-.publish-form label.check { display: flex; align-items: center; gap: 6px; }
+.publish-form input:not([type="checkbox"]), .publish-form textarea { width: 100%; }
+.publish-form label.check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
+.publish-form label.check input { margin-top: 2px; flex: none; }
 
 /* Report: issues taken since it was written */
 .report .taken { font: 500 10px var(--mono); text-transform: uppercase; color: var(--bad); border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; margin-left: 4px; cursor: help; }

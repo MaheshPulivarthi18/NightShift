@@ -233,6 +233,7 @@ export interface GateInfo {
   warnings: string[];
   published: boolean;
   url?: string;
+  reply_urls?: string[];
 }
 
 // Review feedback on a published PR (written on GitHub: shown as text, never as HTML).

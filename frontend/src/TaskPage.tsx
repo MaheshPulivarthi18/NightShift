@@ -441,6 +441,35 @@ function ModelPickers({
   );
 }
 
+// "[text](https://…)" reads as "text" in a one-line preview of a comment.
+const plain = (markdown: string) => markdown.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_]/g, "");
+
+function RepliesEditor({
+  items,
+  replies,
+  setReplies,
+}: {
+  items: (ReviewComment & { text: string })[];
+  replies: Record<string, string>;
+  setReplies: (f: (cur: Record<string, string>) => Record<string, string>) => void;
+}) {
+  return (
+    <div className="replies">
+      <h3>Replies</h3>
+      {items.map((r) => (
+        <label key={r.id} className="full">
+          <span>
+            To @{r.author}
+            {r.issue ? ` on issue #${r.issue}` : r.path ? ` on ${r.path}${r.line ? `:${r.line}` : ""}` : ""}:{" "}
+            {plain(r.body.split("\n")[0]).slice(0, 140)}
+          </span>
+          <textarea rows={3} value={replies[r.id] ?? r.text} onChange={(e) => setReplies((cur) => ({ ...cur, [r.id]: e.target.value }))} />
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function RunPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   const [msg, setMsg] = useState<string | null>(null);
   return (
@@ -477,6 +506,7 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   const [edits, setEdits] = useState<PublishEdits | null>(null); // what will go out, as last checked or edited
   const [remember, setRemember] = useState(false);
   const followUp = Boolean(task.pr_url);
+  const repliesOnly = info?.mode === "replies_only";
   const [replaceBody, setReplaceBody] = useState(false); // follow-up: also replace the PR's description
   const [replies, setReplies] = useState<Record<string, string>>({});
   const [postReplies, setPostReplies] = useState(false);
@@ -515,7 +545,14 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
     <section className="gate">
       <header>
         <span className="gate-mark">Gate 2</span>
-        {followUp ? (
+        {repliesOnly ? (
+          <>
+            <h2>Reply on the pull request</h2>
+            <p className="muted">
+              The comments asked no code change, so nothing is pushed: only the replies below are posted, under your name.
+            </p>
+          </>
+        ) : followUp ? (
           <>
             <h2>Push a follow-up commit to the pull request</h2>
             <p className="muted">
@@ -540,18 +577,23 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
       </div>
       {info && (
         <div className="gate-result">
-          <p className="mono">
+          {!repliesOnly && <p className="mono">
             {followUp
               ? `${info.branch} (the PR's branch) · ${info.files.length} files: ${info.files.join(", ")}`
               : `${info.branch} → ${info.base} @ ${info.head.slice(0, 7)} · ${info.files.length} files`}
-          </p>
+          </p>}
           {info.blockers.map((b) => (
             <p key={b} className="blocked">Blocked: {b}</p>
           ))}
           {info.warnings.map((w) => (
             <p key={w} className="warn">{w}</p>
           ))}
-          {edits && !info.published && (
+          {edits && !info.published && repliesOnly && (
+            <div className="publish-form">
+              <RepliesEditor items={info.replies ?? []} replies={replies} setReplies={setReplies} />
+            </div>
+          )}
+          {edits && !info.published && !repliesOnly && (
             <div className="publish-form">
               <h3>{followUp ? "What will be pushed" : "What will be published"}</h3>
               {!followUp && (
@@ -576,26 +618,14 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
                 <span>Commit message</span>
                 <textarea className="mono" rows={4} value={edits.commit_message ?? ""} onChange={edit("commit_message")} />
               </label>
-              {info.mode === "replies_only" && (
-                <p className="warn">The run changed no code: there is nothing to push. Post the replies below, or revise.</p>
-              )}
               {followUp && info.replies && info.replies.length > 0 && (
-                <div className="replies">
-                  <h3>Replies to the reviewers</h3>
-                  {info.replies.map((r) => (
-                    <label key={r.id} className="full">
-                      <span>
-                        To @{r.author}{r.path ? ` on ${r.path}${r.line ? `:${r.line}` : ""}` : ""}: {r.body.split("\n")[0].slice(0, 120)}
-                      </span>
-                      <textarea rows={2} value={replies[r.id] ?? r.text}
-                        onChange={(e) => setReplies((cur) => ({ ...cur, [r.id]: e.target.value }))} />
-                    </label>
-                  ))}
+                <>
+                  <RepliesEditor items={info.replies} replies={replies} setReplies={setReplies} />
                   <label className="check">
                     <input type="checkbox" checked={postReplies} onChange={(e) => setPostReplies(e.target.checked)} />
-                    <span>Post these replies on the PR after pushing (in each thread; others as one comment)</span>
+                    <span>Post these replies after pushing (in each review thread; on the issue; the rest as one PR comment)</span>
                   </label>
-                </div>
+                </>
               )}
               {followUp && (
                 <label className="check">
@@ -612,11 +642,11 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
                   <textarea className="mono" rows={14} value={edits.body ?? ""} onChange={edit("body")} />
                 </label>
               )}
+              <label className="check">
+                <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+                <span>Use this attribution{followUp ? "" : " and branch prefix"} for {task.repo} from now on</span>
+              </label>
               <div className="actions">
-                <label className="check">
-                  <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
-                  <span>Use this attribution and branch prefix for {task.repo} from now on</span>
-                </label>
                 <button className="ghost small" disabled={busy} onClick={dryRun}>
                   {busy ? "Checking…" : "Save edits and check again"}
                 </button>
@@ -643,14 +673,16 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
           )}
           {info.published && info.url && (
             <p className="ok">
-              Opened <a href={info.url} target="_blank" rel="noreferrer">{info.url}</a>
+              {repliesOnly ? "Replied on" : followUp ? "Pushed the follow-up commit to" : "Opened"}{" "}
+              <a href={info.url} target="_blank" rel="noreferrer">{info.url}</a>
+              {info.reply_urls && info.reply_urls.length > 0 && ` · ${info.reply_urls.length} replies posted`}
             </p>
           )}
           {!blocked && !info.published && (
             <div className="confirm">
               <label>
                 <span>
-                  Type <b className="mono">{task.repo}</b> to publish under your name
+                  Type <b className="mono">{task.repo}</b> to {repliesOnly ? "post the replies" : followUp ? "push" : "publish"} under your name
                 </span>
                 <input className="mono" value={typed} onChange={(e) => setTyped(e.target.value)} />
               </label>

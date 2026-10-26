@@ -895,7 +895,7 @@ async def _replies_only(
         drafted = await feedback.draft_replies(llm, addressing, "(no code change)")
     drafted.update({k: v for k, v in (replies or {}).items() if k in {c.id for c in addressing}})
     await _save(task, result={**task.result, "replies": drafted})
-    info |= {"mode": "replies_only", "files": [],
+    info |= {"mode": "replies_only", "files": [], "warnings": [],  # no commit: no attribution line
              "replies": [c.model_dump() | {"text": drafted.get(c.id, "")} for c in addressing]}  # fmt: skip
     if not confirm:
         return info
