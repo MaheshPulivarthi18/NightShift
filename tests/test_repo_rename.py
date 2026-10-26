@@ -67,3 +67,19 @@ async def test_a_row_made_under_the_new_name_is_merged_into_the_old_one(names: t
         ctx = (await s.execute(select(RepoContext).where(RepoContext.repo_id == keep_id))).scalar_one()
         assert ctx.kind == "environment"
         assert len(list((await s.execute(select(Repo).where(Repo.full_name.in_([old, new])))).scalars())) == 1
+
+
+async def test_deleting_a_repo_deletes_its_records(names: tuple[str, str]) -> None:
+    old, _ = names
+    async with session_scope() as s:
+        repo = Repo(full_name=old)
+        s.add(repo)
+        await s.flush()
+        s.add(_item(repo.id, 1, "an issue"))
+        repo_id = repo.id
+    async with session_scope() as s:
+        stored = await s.get(Repo, repo_id)
+        assert stored is not None
+        await s.delete(stored)  # as `nightshift watch remove --purge` does
+    async with session_scope() as s:
+        assert (await s.execute(select(Item).where(Item.repo_id == repo_id))).first() is None

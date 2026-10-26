@@ -57,7 +57,8 @@ class Repo(Base):
     fetch_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    items: Mapped[list[Item]] = relationship(back_populates="repo")
+    # Deleting a repo leaves its rows to the foreign keys' ON DELETE CASCADE, rather than nulling repo_id.
+    items: Mapped[list[Item]] = relationship(back_populates="repo", passive_deletes=True)
 
 
 class Item(Base):
