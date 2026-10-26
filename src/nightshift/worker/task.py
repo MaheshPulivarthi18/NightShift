@@ -40,7 +40,7 @@ from nightshift.memory import follow_rename, get_or_create_repo
 from nightshift.router import check_choice, family
 from nightshift.sandbox.docker import Sandbox, SandboxError, prepare_repo
 from nightshift.sandbox.envimage import ensure_env_image
-from nightshift.worker import feedback, planner, prwriter, publish, reviewer
+from nightshift.worker import feedback, plancheck, planner, prwriter, publish, reviewer
 from nightshift.worker.coder import CoderRun
 from nightshift.worker.issue import IssueView, fetch_issue
 from nightshift.worker.relevant import coverage, relevant_files
@@ -203,6 +203,18 @@ async def plan_task(
         }  # fmt: skip
         plan = await planner.make_plan(llm, planner.plan_prompt(**inputs))
 
+        # An independent check of the plan against the code; must-fix findings send it back to the Planner once.
+        await events.record(task.run_id, "node_start", "plan check", node="plan_check")
+        draft = planner.to_markdown(plan, title=f"{full_name}#{number} {issue.title}", warnings=[])
+        pcheck = await plancheck.check_plan(llm, box, issue=issue_text(issue), plan=draft, avoid=family(llm.last_model))
+        revised = bool(pcheck.must())
+        if revised:
+            await events.record(
+                task.run_id, "warning", f"plan check: {len(pcheck.must())} must-fix finding(s); re-planning"
+            )
+            inputs["plan_check"] = plancheck.as_note(pcheck.must())
+            plan = await planner.make_plan(llm, planner.plan_prompt(**inputs))
+
         # Run the setup now, before Gate 1, so a plan whose commands cannot work is caught before any paid run.
         # A failure goes back to the Planner once. Success also saves the repo image the run will start from.
         await events.record(task.run_id, "node_start", "setup check", node="setup_check")
@@ -228,8 +240,9 @@ async def plan_task(
         warnings += [f"rehearsal: {b}" for b in blockers]
         warnings += [moved] if moved else []
         markdown = planner.to_markdown(
-            plan, title=f"{full_name}#{number} {issue.title}", warnings=warnings, checks=checks, note=note.strip()
-        )
+            plan, title=f"{full_name}#{number} {issue.title}", warnings=warnings, checks=checks, note=note.strip(),
+            plan_check=plancheck.to_markdown(pcheck, revised),
+        )  # fmt: skip
         (task_dir(full_name, task.id) / "plan.md").write_text(markdown)
         await _save(
             task,
@@ -244,6 +257,7 @@ async def plan_task(
                 "reproduced": repro.model_dump() if repro else None,
                 "planning_note": note.strip(),
                 "relevant_files": l2_paths,  # for the context check after the run
+                "plan_check": {**pcheck.model_dump(mode="json"), "revised": revised},
                 "environment": {"system_packages": env.system_packages, "tools": env.tools}
                 if env.status == "ready"
                 else {},

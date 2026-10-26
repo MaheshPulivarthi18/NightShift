@@ -137,6 +137,38 @@ class ToolError(Exception):
     pass
 
 
+READ_TOOL_NAMES = ("read_file", "list_files", "search")
+
+
+async def read_tool(box: Sandbox, name: str, args: dict[str, Any]) -> str:
+    """The read-only tools, shared with agents that may look at the repo but never change it."""
+    if name == "read_file":
+        path = safe_path(args.get("path", ""))
+        start = max(1, int(args.get("start_line") or 1))
+        end = min(int(args.get("end_line") or start + READ_WINDOW - 1), start + READ_WINDOW - 1)
+        res = await box.exec(
+            f"test -f {shlex.quote(path)} && wc -l < {shlex.quote(path)} && "
+            f"awk 'NR>={start} && NR<={end} {{printf \"%6d  %s\\n\", NR, $0}}' {shlex.quote(path)}"
+        )
+        if not res.ok:
+            raise ToolError(f"{path}: no such file")
+        total, _, body = res.stdout.partition("\n")
+        return f"{path} lines {start}-{min(end, int(total or 0) + 1)} of about {total.strip()}\n{body}"
+    if name == "list_files":
+        prefix = str(args.get("prefix") or "").strip("/")
+        target = shlex.quote(safe_path(prefix)) if prefix else "."
+        res = await box.exec(f"git ls-files -- {target} | head -300")
+        return res.stdout or "No tracked files there."
+    if name == "search":
+        flag = "-E" if args.get("regex") else "-F"
+        where = shlex.quote(safe_path(args["path"])) if args.get("path") else "."
+        res = await box.exec(
+            f"git grep -n -I {flag} -e {shlex.quote(str(args.get('pattern', '')))} -- {where} | head -200"
+        )
+        return res.stdout or "No matches."
+    raise ToolError(f"unknown tool {name}")
+
+
 def safe_path(path: str) -> str:
     """A repo-relative path that stays inside the repo and out of .git."""
     norm = posixpath.normpath(str(path).strip())
@@ -193,30 +225,8 @@ class CoderRun:
 
     async def _tool(self, name: str, args: dict[str, Any]) -> str:
         box = self.box
-        if name == "read_file":
-            path = safe_path(args.get("path", ""))
-            start = max(1, int(args.get("start_line") or 1))
-            end = min(int(args.get("end_line") or start + READ_WINDOW - 1), start + READ_WINDOW - 1)
-            res = await box.exec(
-                f"test -f {shlex.quote(path)} && wc -l < {shlex.quote(path)} && "
-                f"awk 'NR>={start} && NR<={end} {{printf \"%6d  %s\\n\", NR, $0}}' {shlex.quote(path)}"
-            )
-            if not res.ok:
-                raise ToolError(f"{path}: no such file")
-            total, _, body = res.stdout.partition("\n")
-            return f"{path} lines {start}-{min(end, int(total or 0) + 1)} of about {total.strip()}\n{body}"
-        if name == "list_files":
-            prefix = str(args.get("prefix") or "").strip("/")
-            target = shlex.quote(safe_path(prefix)) if prefix else "."
-            res = await box.exec(f"git ls-files -- {target} | head -300")
-            return res.stdout or "No tracked files there."
-        if name == "search":
-            flag = "-E" if args.get("regex") else "-F"
-            where = shlex.quote(safe_path(args["path"])) if args.get("path") else "."
-            res = await box.exec(
-                f"git grep -n -I {flag} -e {shlex.quote(str(args.get('pattern', '')))} -- {where} | head -200"
-            )
-            return res.stdout or "No matches."
+        if name in READ_TOOL_NAMES:
+            return await read_tool(box, name, args)
         if name == "write_file":
             path = safe_path(args.get("path", ""))
             await box.exec(f"mkdir -p -- {shlex.quote(posixpath.dirname(path) or '.')}")

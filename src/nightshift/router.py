@@ -42,6 +42,7 @@ AGENTS: dict[str, tuple[str, bool]] = {
     "reviewer": ("reviewer", False),
     "pr_writer": ("pr_writer", False),
     "pr_checker": ("pr_checker", False),
+    "plan_checker": ("plan_checker", True),
 }
 
 

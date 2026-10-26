@@ -91,6 +91,7 @@ You get the issue with its comments, the repository's contribution rules and com
 - The container has Python 3.12, Node 22, Bun, uv, git and a C/C++ compiler, plus the system packages and tools in <sandbox_environment>, and no sudo. If <setup_failed> is present, your earlier setup commands were run there and failed with that output: propose commands that work in that container.
 - If the issue is unclear or needs a maintainer's decision first, set actionable to false and ask in questions.
 - <developer_note>, when present, is the developer's own instruction, written in NightShift (not on GitHub): follow it. It sets the scope, e.g. "treat this as a docs task" makes a question issue actionable as that docs change. Set actionable to false only if the note's task itself cannot be done from the repo.
+- <independent_plan_check>, when present, lists problems an independent reviewer found in your previous plan after reading the code: code that needs the same change but was not in the plan, or steps too vague to carry out. Fix each one in this plan, or say in risks why it does not apply.
 - For a bug, write a reproduction: the issue's own case as a tiny script that fails on the current code and passes once fixed (e.g. the issue's code sample with an assert on the expected result). It is run in the sandbox before the developer sees your plan, so a plan built on a misread bug shows up at once, and again after the fix. Use the repo's test or library code the way the issue does, not internals the issue never touches.
 - kind docs is for a change to documentation files only. It has no reproducing test: leave the test_plan's file and targeted_command empty, keep test_commands as a sanity run of the suites, and plan to check every statement and example against the code that implements it.
 - Use only paths that appear in the input or follow the repo's layout for a new test file.
@@ -108,6 +109,7 @@ def plan_prompt(
     issue: str,
     relevant_files: str,
     note: str = "",
+    plan_check: str = "",
     setup_failed: str = "",
 ) -> Prompt:
     """Repo knowledge first, then the issue, then what this call adds: a plan for another issue in the repo
@@ -122,6 +124,7 @@ def plan_prompt(
     # Written by the developer in NightShift, not on GitHub: trusted, and it sets the scope.
     p.add("item", "developer_note", note, prompt.ITEM)
     p.add("task", "relevant_files", relevant_files, prompt.CODE)
+    p.add("task", "independent_plan_check", plan_check, prompt.ENVIRONMENT)
     if setup_failed:
         p.add(
             "task", "setup_failed", f"These setup commands failed in the sandbox:\n{setup_failed}", prompt.ENVIRONMENT
@@ -147,7 +150,15 @@ def unknown_paths(plan: Plan, tracked: set[str]) -> list[str]:
     return [p for p in named if p not in tracked and p != plan.test_plan.file]
 
 
-def to_markdown(plan: Plan, *, title: str, warnings: list[str], checks: list[str] | None = None, note: str = "") -> str:
+def to_markdown(
+    plan: Plan,
+    *,
+    title: str,
+    warnings: list[str],
+    checks: list[str] | None = None,
+    note: str = "",
+    plan_check: list[str] | None = None,
+) -> str:
     out = [f"# Plan: {title}", ""]
     if note:
         out += ["**Developer's note to the Planner:**", "", *[f"> {line}" for line in note.splitlines()], ""]
@@ -181,6 +192,8 @@ def to_markdown(plan: Plan, *, title: str, warnings: list[str], checks: list[str
     out += ["## Commands", "Setup:", *[f"- `{c}`" for c in plan.setup_commands], "Tests:"]
     out += [f"- `{c}`" for c in plan.test_commands]
     out += ["", "## Risks", *[f"- {r}" for r in plan.risks]]
+    if plan_check:
+        out += ["", *plan_check]
     out += ["", f"## Size: {plan.size} (expected cost about ${SIZE_COST[plan.size]:.2f})"]
     out += ["", "## Claim comment (draft, not posted)", "", plan.claim_comment]
     return "\n".join(out)
