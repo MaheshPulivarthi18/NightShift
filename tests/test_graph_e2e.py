@@ -257,7 +257,9 @@ async def test_full_pipeline(repo_name: str) -> None:
         steps = (
             (
                 await s.execute(
-                    select(RunEvent.node).where(RunEvent.run_id == state["run_id"], RunEvent.kind == "node_end")
+                    select(RunEvent.node)
+                    .where(RunEvent.run_id == state["run_id"], RunEvent.kind == "node_end")
+                    .order_by(RunEvent.id)  # without it Postgres may return rows in any order
                 )
             )
             .scalars()
