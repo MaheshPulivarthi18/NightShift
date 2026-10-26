@@ -204,9 +204,14 @@ async def plan_task(
         plan = await planner.make_plan(llm, planner.plan_prompt(**inputs))
 
         # An independent check of the plan against the code; must-fix findings send it back to the Planner once.
-        await events.record(task.run_id, "node_start", "plan check", node="plan_check")
-        draft = planner.to_markdown(plan, title=f"{full_name}#{number} {issue.title}", warnings=[])
-        pcheck = await plancheck.check_plan(llm, box, issue=issue_text(issue), plan=draft, avoid=family(llm.last_model))
+        # A plan with nothing to code (it asks the maintainers first) has nothing to check.
+        pcheck = plancheck.PlanCheck(summary="Not checked: the plan asks questions before any code.", findings=[])
+        if plan.actionable:
+            await events.record(task.run_id, "node_start", "plan check", node="plan_check")
+            draft = planner.to_markdown(plan, title=f"{full_name}#{number} {issue.title}", warnings=[])
+            pcheck = await plancheck.check_plan(
+                llm, box, issue=issue_text(issue), plan=draft, avoid=family(llm.last_model)
+            )
         revised = bool(pcheck.must())
         if revised:
             await events.record(
