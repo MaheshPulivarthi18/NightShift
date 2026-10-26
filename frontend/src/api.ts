@@ -267,6 +267,58 @@ export interface PublishEdits {
   remember?: boolean;
 }
 
+// ---------- repo workspace ----------
+
+// One issue or PR in a repo: a task (an issue NightShift worked on, or a PR of yours) or a PR check.
+export interface RepoItem {
+  kind: "task" | "check";
+  id: number;
+  number: number;
+  title: string;
+  role: "yours" | "incoming" | "issue";
+  status: string;
+  stage?: Stage;
+  verdict?: string;
+  must?: number;
+  should?: number;
+  pr_url: string | null;
+  pr_state: "OPEN" | "MERGED" | "CLOSED" | null;
+  open: boolean;
+  hidden: boolean;
+  rehearsal?: boolean;
+  updated_at: string | null;
+}
+
+export interface MapComponent {
+  id: string;
+  name: string;
+  path: string | null;
+  group: string;
+  responsibility: string;
+}
+
+export interface RepoMap {
+  commit: string;
+  built_at: string;
+  summary: string;
+  components: MapComponent[];
+  relationships: { source: string; target: string; verb: string; evidence_path: string | null }[];
+}
+
+export interface RepoKnowledge {
+  environment: RepoEnvironment | null;
+  recipe: { setup: string[]; tests: string[]; passing: string[] } | null;
+  map: { commit: string; built_at: string; components: number; relationships: number } | null;
+  brief: string | null;
+}
+
+export interface RepoStats {
+  open_issues: number | null;
+  open_prs: number | null;
+  merged_30d: number | null;
+  stars: number | null;
+}
+
 export async function post(path: string, body: unknown): Promise<Response> {
   const res = await fetch(`/api${path}`, {
     method: "POST",
@@ -294,6 +346,10 @@ export const api = {
   overview: () => call<Overview>("/overview"),
   setKill: (killed: boolean) => call<Overview>("/control/kill", { killed }),
   repos: () => call<RepoRow[]>("/repos"),
+  repoItems: (repo: string) => call<RepoItem[]>(`/repos/${repo}/items`),
+  repoMap: (repo: string) => call<RepoMap>(`/repos/${repo}/map`),
+  repoKnowledge: (repo: string) => call<RepoKnowledge>(`/repos/${repo}/knowledge`),
+  repoStats: (repo: string) => call<RepoStats>(`/repos/${repo}/stats`),
   addRepo: (full_name: string, role: string) => call<RepoRow[]>("/repos", { full_name, role }),
   setRole: (repo: string, role: string) => call<RepoRow[]>(`/repos/${repo}/role`, { role }),
   runReport: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/run`, {}),

@@ -21,6 +21,7 @@ from nightshift.config import get_settings
 from nightshift.sandbox.docker import remove_orphans
 from nightshift.web.api import router as api_router
 from nightshift.web.tasks_api import router as tasks_router
+from nightshift.web.workspace_api import router as workspace_router
 from nightshift.worker.task import mark_stale_runs
 
 log = structlog.get_logger()
@@ -49,6 +50,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="NightShift", lifespan=lifespan)
 app.include_router(api_router)
 app.include_router(tasks_router)
+app.include_router(workspace_router)
 if (APP_DIR / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=APP_DIR / "assets"), name="assets")
 

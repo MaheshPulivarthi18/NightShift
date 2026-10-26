@@ -5,7 +5,7 @@ import { Diff, Html, Log, StatusBadge, Title, money } from "./ui";
 const TABS = ["Plan", "Log", "Verification", "Review", "Diff", "PR"] as const;
 type Tab = (typeof TABS)[number];
 
-export function TaskPage({ id }: { id: number }) {
+export function TaskPage({ id, embedded = false }: { id: number; embedded?: boolean }) {
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("Plan");
@@ -46,7 +46,7 @@ export function TaskPage({ id }: { id: number }) {
 
   return (
     <div className="task">
-      <a className="back" href="#/">← Tasks</a>
+      {!embedded && <a className="back" href={`#/r/${task.repo}/items`}>← {task.repo}</a>}
       <header className="task-head">
         <div className="mono dim">
           {task.repo}#{task.issue} · task {task.id} · base {task.base_commit.slice(0, 7) || "—"}

@@ -82,13 +82,13 @@ function NewCheck({ onStarted }: { onStarted: () => void }) {
   );
 }
 
-export function PRCheckPage({ id }: { id: number }) {
+export function PRCheckPage({ id, embedded = false }: { id: number; embedded?: boolean }) {
   const [c, error, reload] = usePoll<PRCheckView>(() => api.prCheck(id), 5000, [id]);
   if (error) return <div className="page"><a className="back" href="#/checks">← PR checks</a><p className="error">{error}</p></div>;
   if (!c) return <p className="muted page">Loading…</p>;
   return (
     <div className="page narrow">
-      <a className="back" href="#/checks">← PR checks</a>
+      {!embedded && <a className="back" href="#/checks">← PR checks</a>}
       <header className="page-head">
         <div>
           <h1><Title text={c.title} /></h1>

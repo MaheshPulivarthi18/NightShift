@@ -1,100 +1,134 @@
-import { useEffect, useState } from "react";
-import { api, Overview } from "./api";
+import { FormEvent, useEffect, useState } from "react";
+import { api, Overview, RepoRow, TaskSummary } from "./api";
 import { Board } from "./Board";
 import { Chat } from "./Chat";
+import { Home, needsYou } from "./Home";
 import { Job, Jobs } from "./Jobs";
 import { Models } from "./Models";
 import { PRCheckPage, PRChecks } from "./PRChecks";
 import { Report, Repos } from "./Repos";
+import { applyTheme, savedTheme, Settings, Theme } from "./Settings";
 import { TaskPage } from "./TaskPage";
-import { money } from "./ui";
+import { money, usePoll } from "./ui";
+import { Workspace, WorkspaceTab } from "./Workspace";
 
 // Hash routes, so the server only serves one page:
-//   #/  tasks · #/tasks/12 · #/repos · #/repos/o/r/report · #/checks · #/checks/3 · #/jobs · #/jobs/<id>
-//   #/models · #/chat/o/r/42
+//   #/  overview · #/r/o/r/<tab>[/t12 | /c3]  a repo's workspace · #/settings
+//   older pages, under Settings > Advanced: #/board · #/tasks/12 · #/repos · #/repos/o/r/report · #/checks ·
+//   #/checks/3 · #/jobs · #/jobs/<id> · #/models · #/chat/o/r/42
 function useHash(): string {
   const [hash, setHash] = useState(window.location.hash || "#/");
   useEffect(() => {
-    const onChange = () => {
-      setHash(window.location.hash || "#/");
-      window.scrollTo(0, 0);
-    };
+    const onChange = () => setHash(window.location.hash || "#/");
     window.addEventListener("hashchange", onChange);
     return () => window.removeEventListener("hashchange", onChange);
   }, []);
   return hash;
 }
 
-function route(hash: string): { page: string; el: JSX.Element } {
+interface Route { page: string; repo?: string; full?: boolean; el: JSX.Element }
+
+function route(hash: string): Route {
   const [path, query = ""] = hash.slice(1).split("?");
   const parts = path.split("/").filter(Boolean);
-  if (parts[0] === "tasks" && parts[1]) return { page: "tasks", el: <TaskPage id={Number(parts[1])} /> };
+  if (parts[0] === "r" && parts.length >= 3) {
+    const repo = `${parts[1]}/${parts[2]}`;
+    const tab = (["overview", "items", "map", "knowledge"].includes(parts[3]) ? parts[3] : "items") as WorkspaceTab;
+    return { page: "repo", repo, full: true, el: <Workspace repo={repo} tab={tab} sel={parts[4] ?? null} /> };
+  }
+  if (parts[0] === "settings") return { page: "settings", el: <Settings /> };
+  if (parts[0] === "tasks" && parts[1]) return { page: "", el: <TaskPage id={Number(parts[1])} /> };
+  if (parts[0] === "board" || parts[0] === "tasks") {
+    const q = new URLSearchParams(query);
+    return { page: "", el: <Board prefillRepo={q.get("repo") ?? ""} prefillIssue={q.get("issue") ?? ""} /> };
+  }
   if (parts[0] === "repos" && parts.length === 4 && parts[3] === "report")
-    return { page: "repos", el: <Report repo={`${parts[1]}/${parts[2]}`} /> };
-  if (parts[0] === "repos") return { page: "repos", el: <Repos /> };
-  if (parts[0] === "jobs" && parts[1]) return { page: "jobs", el: <Job id={parts[1]} /> };
-  if (parts[0] === "jobs") return { page: "jobs", el: <Jobs /> };
-  if (parts[0] === "models") return { page: "models", el: <Models /> };
-  if (parts[0] === "checks" && parts[1]) return { page: "checks", el: <PRCheckPage id={Number(parts[1])} /> };
-  if (parts[0] === "checks") return { page: "checks", el: <PRChecks /> };
+    return { page: "repo", repo: `${parts[1]}/${parts[2]}`, el: <Report repo={`${parts[1]}/${parts[2]}`} /> };
+  if (parts[0] === "repos") return { page: "", el: <Repos /> };
+  if (parts[0] === "jobs" && parts[1]) return { page: "", el: <Job id={parts[1]} /> };
+  if (parts[0] === "jobs") return { page: "", el: <Jobs /> };
+  if (parts[0] === "models") return { page: "", el: <Models /> };
+  if (parts[0] === "checks" && parts[1]) return { page: "", el: <PRCheckPage id={Number(parts[1])} /> };
+  if (parts[0] === "checks") return { page: "", el: <PRChecks /> };
   if (parts[0] === "chat" && parts.length === 4)
-    return { page: "repos", el: <Chat repo={`${parts[1]}/${parts[2]}`} number={Number(parts[3])} /> };
-  const q = new URLSearchParams(query);
-  return { page: "tasks", el: <Board prefillRepo={q.get("repo") ?? ""} prefillIssue={q.get("issue") ?? ""} /> };
+    return { page: "repo", repo: `${parts[1]}/${parts[2]}`, el: <Chat repo={`${parts[1]}/${parts[2]}`} number={Number(parts[3])} /> };
+  return { page: "home", el: <Home /> };
 }
 
 export function App() {
-  const { page, el } = route(useHash());
+  const r = route(useHash());
   return (
-    <div className="shell">
-      <header className="topbar">
-        <a className="brand" href="#/">
-          <span className="lamp" aria-hidden />
-          NightShift
-        </a>
-        <nav>
-          <a href="#/" className={page === "tasks" ? "active" : ""}>Tasks</a>
-          <a href="#/repos" className={page === "repos" ? "active" : ""}>Repos</a>
-          <a href="#/checks" className={page === "checks" ? "active" : ""}>PR checks</a>
-          <a href="#/jobs" className={page === "jobs" ? "active" : ""}>Jobs</a>
-          <a href="#/models" className={page === "models" ? "active" : ""}>Models</a>
-        </nav>
-        <Spend />
-      </header>
-      <main>{el}</main>
+    <div className="app">
+      <Sidebar page={r.page} repo={r.repo} />
+      <main className={r.full ? "main full" : "main"}>{r.el}</main>
     </div>
   );
 }
 
-/** Model spend and the kill switch: always in view, because they guard the budget. */
-function Spend() {
-  const [ov, setOv] = useState<Overview | null>(null);
-  const [armed, setArmed] = useState(false);
-  useEffect(() => {
-    const load = () => api.overview().then(setOv, () => undefined);
-    load();
-    const t = window.setInterval(load, 15000);
-    return () => window.clearInterval(t);
-  }, []);
-  if (!ov) return <div className="spend" />;
-  const toggle = (killed: boolean) => api.setKill(killed).then((o) => (setOv(o), setArmed(false)));
+function Sidebar({ page, repo }: { page: string; repo?: string }) {
+  const [repos, , reloadRepos] = usePoll<RepoRow[]>(api.repos, 30000, []);
+  const [tasks] = usePoll<TaskSummary[]>(() => api.tasks(), 15000, []);
+  const [ov] = usePoll<Overview>(api.overview, 15000, []);
+  const [theme, setTheme] = useState<Theme>(savedTheme);
+  useEffect(() => applyTheme(theme), [theme]);
+  const needs = needsYou(tasks ?? []);
   return (
-    <div className="spend">
-      <span className="mono dim">
-        today {money(ov.spend.today)} · month {money(ov.spend.this_month)}
-      </span>
-      {ov.killed ? (
-        <button className="danger small" onClick={() => toggle(false)} title="Model calls are blocked">
-          Kill switch on · resume
-        </button>
-      ) : armed ? (
-        <>
-          <button className="danger small" onClick={() => toggle(true)}>Block all model calls</button>
-          <button className="ghost small" onClick={() => setArmed(false)}>Cancel</button>
-        </>
-      ) : (
-        <button className="ghost small" onClick={() => setArmed(true)}>Kill switch</button>
-      )}
-    </div>
+    <nav className="side" aria-label="Main">
+      <a className="brand" href="#/"><span className="mark" aria-hidden><i /></span>NightShift</a>
+      <a className={`nav${page === "home" ? " on" : ""}`} href="#/">
+        Overview<span className={`count${needs.length ? " attn" : ""}`}>{needs.length || ""}</span>
+      </a>
+      <a className={`nav${page === "settings" ? " on" : ""}`} href="#/settings">Settings</a>
+      <div className="side-label">Repos</div>
+      {(repos ?? []).map((r) => {
+        const n = needs.filter((t) => t.repo === r.full_name).length;
+        const name = r.full_name.split("/")[1];
+        return (
+          <a key={r.full_name} className={`nav${page === "repo" && repo === r.full_name ? " on" : ""}`} href={`#/r/${r.full_name}/items`} title={r.full_name}>
+            <span className="av" aria-hidden>{name[0].toUpperCase()}</span>
+            <span className="name">{name}</span>
+            <span className={`count${n ? " attn" : ""}`}>{n || ""}</span>
+          </a>
+        );
+      })}
+      <AddRepo onAdded={reloadRepos} />
+      <div className="side-foot">
+        {ov && (
+          <span className={ov.killed ? "danger-text" : "dim"}>
+            {ov.killed ? "Model calls blocked · " : ""}today {money(ov.spend.today)} · month {money(ov.spend.this_month)}
+          </span>
+        )}
+        <div className="seg" role="group" aria-label="Theme">
+          {(["auto", "light", "dark"] as const).map((t) => (
+            <button key={t} className={theme === t ? "on" : ""} onClick={() => setTheme(t)}>{t === "auto" ? "Auto" : t === "light" ? "Light" : "Dark"}</button>
+          ))}
+        </div>
+      </div>
+    </nav>
+  );
+}
+
+function AddRepo({ onAdded }: { onAdded: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    api.addRepo(name.trim(), "contributor").then(
+      () => {
+        const full = name.trim().replace(/^https:\/\/github\.com\//, "").replace(/\/$/, "");
+        setName(""), setOpen(false), setError(null), onAdded();
+        window.location.hash = `#/r/${full}/knowledge`;
+      },
+      (err: Error) => setError(err.message),
+    );
+  };
+  if (!open) return <button className="nav add" onClick={() => setOpen(true)}>+ Add repo</button>;
+  return (
+    <form className="add-repo" onSubmit={submit}>
+      <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="owner/name or URL" aria-label="Repo to add" />
+      <button className="primary small">Add</button>
+      {error && <span className="error">{error}</span>}
+    </form>
   );
 }
