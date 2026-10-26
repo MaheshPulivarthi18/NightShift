@@ -33,6 +33,7 @@ from nightshift import events, outcomes
 from nightshift.catalog import ModelConfigError, ModelInfo
 from nightshift.config import AgentModel, get_settings
 from nightshift.db import AgentVerdict, Control, LLMCall, session_scope
+from nightshift.prompt import Prompt
 from nightshift.router import Route, RouteHint, routes
 
 log = structlog.get_logger()
@@ -307,6 +308,8 @@ TYPICAL_OUTPUT_TOKENS = 3000
 # What the current parse/create call has spent so far, across repairs and fallbacks. Per asyncio
 # context, so concurrent calls on one gateway (the scout runs several at once) never mix their costs.
 _spent: ContextVar[list[float] | None] = ContextVar("_spent", default=None)
+# The layer report of the prompt the current parse call sends (prompt.Prompt.report), kept in the ledger.
+_layers: ContextVar[dict[str, Any] | None] = ContextVar("_layers", default=None)
 
 
 def estimate_cost(info: ModelInfo, cfg: AgentModel, chars: int) -> float:
@@ -384,7 +387,7 @@ class LLMGateway:
         """One request, checked against the controls first and recorded in the ledger after."""
         global _in_flight_usd
         await self._check_controls(estimate)
-        ledger = LLMCall(run_id=self.run_id, agent=agent, model=info.id)
+        ledger = LLMCall(run_id=self.run_id, agent=agent, model=info.id, layers=_layers.get())
         _in_flight_usd += estimate
         started = time.monotonic()
         try:
@@ -408,16 +411,18 @@ class LLMGateway:
         agent: str,
         cfg: AgentModel,
         system: str,
-        user: str,
+        user: str | Prompt,
         schema: type[T],
         cache_key_parts: tuple[Any, ...],
         label: str = "",
         route: RouteHint | None = None,
     ) -> T:
         """One structured answer validated against `schema`, from the first model on the route that
-        gives one. `label` says what the call is about (e.g. "PR #12") for the Jobs page."""
+        gives one. `label` says what the call is about (e.g. "PR #12") for the Jobs page. A `Prompt` user
+        message is sent in its layers, the stable ones marked for the provider's cache."""
         self._last_cost = 0.0
-        key = input_hash(agent, cfg.model, system, user, schema.model_json_schema(), *cache_key_parts)
+        content = user if isinstance(user, str) else user.blocks()
+        key = input_hash(agent, cfg.model, system, content, schema.model_json_schema(), *cache_key_parts)
         if (hit := await self._cached(agent, key, schema)) is not None:
             log.debug("verdict_cache_hit", agent=agent)
             await events.record(self.run_id, "llm_end", f"{agent}: {label} (cached)", agent=agent, cached=True)
@@ -426,10 +431,12 @@ class LLMGateway:
         candidates = await routes(cfg, route, structured=True, agent=agent)
         spent: list[float] = []
         token = _spent.set(spent)
+        layers = _layers.set(None if isinstance(user, str) else user.report())
         try:
-            result, used = await self._first_answer(agent, label, cfg, candidates, system, user, schema)
+            result, used = await self._first_answer(agent, label, cfg, candidates, system, content, schema)
         finally:
             _spent.reset(token)
+            _layers.reset(layers)
             cost = self._last_cost = round(sum(spent), 5)
         self.last_model = used.id
         await events.record(self.run_id, "llm_end", f"{agent}: {label}", agent=agent, model=used.id, cost_usd=cost)
@@ -444,7 +451,14 @@ class LLMGateway:
         return result
 
     async def _first_answer(
-        self, agent: str, label: str, cfg: AgentModel, candidates: list[Route], system: str, user: str, schema: type[T]
+        self,
+        agent: str,
+        label: str,
+        cfg: AgentModel,
+        candidates: list[Route],
+        system: str,
+        user: str | list[dict[str, Any]],
+        schema: type[T],
     ) -> tuple[T, ModelInfo]:
         """The answer of the first model on the route that gives a usable one."""
         for n, r in enumerate(candidates):
@@ -475,17 +489,25 @@ class LLMGateway:
         log.warning("model_fallback", agent=agent, failed=r.info.id, next=after.info.id, error=str(e)[:300])
 
     async def _structured(
-        self, agent: str, cfg: AgentModel, info: ModelInfo, system: str, user: str, schema: type[T]
+        self,
+        agent: str,
+        cfg: AgentModel,
+        info: ModelInfo,
+        system: str,
+        user: str | list[dict[str, Any]],
+        schema: type[T],
     ) -> T:
         """One model's structured answer. Output that does not validate gets one repair turn."""
-        # Only the system prompt repeats across calls; caching the whole (unique) request only adds write cost.
+        # The system prompt repeats across calls, and so do a layered prompt's repo and item layers (marked by
+        # prompt.Prompt); caching a plain, unique user message would only add write cost.
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]},
             {"role": "user", "content": user},
         ]
         shape = strict_schema(schema.model_json_schema())
         fmt = {"type": "json_schema", "json_schema": {"name": schema.__name__, "strict": True, "schema": shape}}
-        estimate = estimate_cost(info, cfg, len(system) + len(user))
+        chars = len(user) if isinstance(user, str) else sum(len(b["text"]) for b in user)
+        estimate = estimate_cost(info, cfg, len(system) + chars)
         for attempt in (1, 2):
             body = {**_request(info, cfg, messages), "response_format": fmt}
             data = await self._send(agent, info, body, estimate)

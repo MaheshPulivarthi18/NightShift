@@ -28,6 +28,7 @@ from nightshift.llm import (
     ModelRefused,
     OpenRouter,
 )
+from nightshift.prompt import Prompt
 
 
 class Answer(BaseModel):
@@ -93,6 +94,19 @@ async def test_records_billed_cost_and_caches_verdict(repo_id: int) -> None:
     await _ask(gw, user)
     await _ask(gw, user)
     assert len(fake.bodies) == 2  # the third call is served from the verdict cache
+
+
+async def test_a_layered_prompt_is_sent_with_cache_points_and_its_layers_are_recorded(repo_id: int) -> None:
+    fake = FakeOpenRouter(GOOD)
+    gw = _gateway(repo_id, fake)
+    p = Prompt().add("repo", "rules", "Small PRs", 100).add("item", "issue", uuid.uuid4().hex, 100)
+    p.add("task", "diff", "d" * 2000, 100)
+    await gw.parse(agent="test_agent", cfg=CFG, system="s", user=p, schema=Answer, cache_key_parts=())
+    parts = fake.bodies[0]["messages"][1]["content"]
+    assert [part.get("cache_control") for part in parts] == [{"type": "ephemeral"}, {"type": "ephemeral"}, None]
+    async with session_scope() as s:
+        row = (await s.execute(select(LLMCall).where(LLMCall.run_id == gw.run_id))).scalar_one()
+    assert row.layers is not None and row.layers["task"]["cut"] == ["diff"] and row.layers["repo"]["cut"] == []
 
 
 async def test_any_vendor_and_no_reasoning_setting(repo_id: int) -> None:

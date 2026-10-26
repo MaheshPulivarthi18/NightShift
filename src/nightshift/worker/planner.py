@@ -11,9 +11,11 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from nightshift import prompt
 from nightshift.config import get_settings
 from nightshift.health.agents import UNTRUSTED_RULE
 from nightshift.llm import LLMGateway
+from nightshift.prompt import Prompt
 
 # What a task of each size is expected to cost on the default models (USD). Set by code, not the model.
 SIZE_COST = {"small": 1.0, "medium": 2.5, "large": 5.0}
@@ -96,12 +98,43 @@ You get the issue with its comments, the repository's contribution rules and com
 {UNTRUSTED_RULE}"""
 
 
-async def make_plan(llm: LLMGateway, *, repo: str, context: str) -> Plan:
+def plan_prompt(
+    *,
+    repo: str,
+    brief: str,
+    architecture_map: str,
+    environment: str,
+    recipe: str,
+    issue: str,
+    relevant_files: str,
+    note: str = "",
+    setup_failed: str = "",
+) -> Prompt:
+    """Repo knowledge first, then the issue, then what this call adds: a plan for another issue in the repo
+    reuses the cached repo layer, and a second plan for the same issue (after a failed setup) the item layer."""
+    p = Prompt()
+    p.add("repo", "repository", repo, 50)
+    p.add("repo", "repo_brief", brief, prompt.BRIEF)
+    p.add("repo", "architecture_map", architecture_map, prompt.MAP)
+    p.add("repo", "sandbox_environment", environment, prompt.ENVIRONMENT)
+    p.add("repo", "commands_that_worked_before", recipe or "none yet", prompt.ENVIRONMENT)
+    p.add("item", "untrusted_github_data", f"<issue>\n{issue}\n</issue>", prompt.ITEM)
+    # Written by the developer in NightShift, not on GitHub: trusted, and it sets the scope.
+    p.add("item", "developer_note", note, prompt.ITEM)
+    p.add("task", "relevant_files", relevant_files, prompt.CODE)
+    if setup_failed:
+        p.add(
+            "task", "setup_failed", f"These setup commands failed in the sandbox:\n{setup_failed}", prompt.ENVIRONMENT
+        )
+    return p
+
+
+async def make_plan(llm: LLMGateway, context: Prompt) -> Plan:
     return await llm.parse(
         agent="planner",
         cfg=get_settings().planner,
         system=PLANNER_SYSTEM,
-        user=f"Repository: {repo}\n\n{context}",
+        user=context,
         schema=Plan,
         cache_key_parts=(),
         label="plan",

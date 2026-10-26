@@ -13,6 +13,7 @@ task_minutes and coder_max_steps.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shlex
 import time
@@ -195,17 +196,12 @@ async def plan_task(
         tracked = set((await box.exec("git ls-files")).stdout.splitlines())
 
         await events.record(task.run_id, "node_start", "plan", node="plan")
-        context = (
-            f"<untrusted_github_data>\n<issue>\n{issue_text(issue)}\n</issue>\n</untrusted_github_data>\n\n"
-            f"<repo_brief>\n{brief_text(brief)}\n</repo_brief>\n\n"
-            f"<architecture_map>\n{archmap.to_markdown(amap)}\n</architecture_map>\n\n"
-            f"<relevant_files>\n{l2}\n</relevant_files>\n\n"
-            f"<sandbox_environment>\n{env.text()}\n</sandbox_environment>\n\n"
-            f"<commands_that_worked_before>\n{recipe or 'none yet'}\n</commands_that_worked_before>"
-        )
-        if note.strip():  # written by the developer in NightShift, not on GitHub: trusted, and it sets the scope
-            context += f"\n\n<developer_note>\n{note.strip()}\n</developer_note>"
-        plan = await planner.make_plan(llm, repo=full_name, context=context)
+        inputs = {
+            "repo": full_name, "brief": brief_text(brief), "architecture_map": archmap.to_markdown(amap),
+            "environment": env.text(), "recipe": json.dumps(recipe, indent=1, sort_keys=True) if recipe else "",
+            "issue": issue_text(issue), "relevant_files": l2, "note": note.strip(),
+        }  # fmt: skip
+        plan = await planner.make_plan(llm, planner.plan_prompt(**inputs))
 
         # Run the setup now, before Gate 1, so a plan whose commands cannot work is caught before any paid run.
         # A failure goes back to the Planner once. Success also saves the repo image the run will start from.
@@ -214,12 +210,8 @@ async def plan_task(
         if setup_error:
             await events.record(task.run_id, "warning", "setup failed; asking the Planner to fix the commands")
             failed = "\n".join(plan.setup_commands)
-            plan = await planner.make_plan(
-                llm,
-                repo=full_name,
-                context=f"{context}\n\n<setup_failed>\nThese setup commands failed in the sandbox:\n{failed}\n\n"
-                f"Output:\n{setup_error}\n</setup_failed>",
-            )
+            again = planner.plan_prompt(**inputs, setup_failed=f"{failed}\n\nOutput:\n{setup_error}")
+            plan = await planner.make_plan(llm, again)
             setup_error, repro = await check_setup(full_name, commit, plan.setup_commands, image, plan.reproduction)
         checks = ["setup commands ran successfully in the sandbox"] if not setup_error else []
         warnings = [f"setup failed in the sandbox: {setup_error[-600:]}"] if setup_error else []

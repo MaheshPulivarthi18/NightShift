@@ -11,12 +11,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from nightshift import prompt
 from nightshift.config import get_settings
 from nightshift.health.agents import UNTRUSTED_RULE
 from nightshift.llm import LLMGateway
+from nightshift.prompt import Prompt
 from nightshift.router import RouteHint
-
-DIFF_CHARS = 60_000
 
 
 class ReviewIssue(BaseModel):
@@ -79,25 +79,50 @@ async def review(
 ) -> Review:
     """`avoid`: the model family that wrote the code; another family reviews it when the ladder allows.
     `prefer`: the model the operator chose at Gate 1."""
-    clipped = diff if len(diff) <= DIFF_CHARS else diff[:DIFF_CHARS] + "\n[diff cut here]"
-    user = (
-        f"Repository: {repo}\n\n<untrusted_github_data>\n<issue>\n{issue}\n</issue>\n</untrusted_github_data>\n\n"
-        f"<approved_plan>\n{plan}\n</approved_plan>\n\n<repo_rules>\n{rules}\n</repo_rules>\n\n"
-        f"<verification>\n{verification}\n</verification>\n\n<diff>\n{clipped}\n</diff>\n\n"
-        f"<change_context>\n{change_context}\n</change_context>"
-    )
-    if sources:
-        user += f"\n\n<code_the_docs_describe>\n{sources}\n</code_the_docs_describe>"
     return await llm.parse(
         agent="reviewer",
         cfg=get_settings().reviewer,
         system=REVIEWER_SYSTEM,
-        user=user,
+        user=review_prompt(
+            repo=repo,
+            issue=issue,
+            plan=plan,
+            rules=rules,
+            verification=verification,
+            diff=diff,
+            change_context=change_context,
+            sources=sources,
+        ),  # fmt: skip
         schema=Review,
         cache_key_parts=(),
         label="review",
         route=RouteHint(avoid=avoid, prefer=prefer),
     )
+
+
+def review_prompt(
+    *,
+    repo: str,
+    issue: str,
+    plan: str,
+    rules: str,
+    verification: str,
+    diff: str,
+    change_context: str,
+    sources: str = "",
+) -> Prompt:
+    """The repo's rules, then the issue and the approved plan, which stay the same across review rounds,
+    then what each round changes: so rounds two and three read the start of the prompt from the cache."""
+    p = Prompt()
+    p.add("repo", "repository", repo, 50)
+    p.add("repo", "repo_rules", rules, prompt.BRIEF)
+    p.add("item", "untrusted_github_data", f"<issue>\n{issue}\n</issue>", prompt.ITEM)
+    p.add("item", "approved_plan", plan, prompt.ITEM)
+    p.add("task", "verification", verification, prompt.ENVIRONMENT * 2)
+    p.add("task", "diff", diff, prompt.DIFF)
+    p.add("task", "change_context", change_context, prompt.ITEM)
+    p.add("task", "code_the_docs_describe", sources, prompt.CODE)
+    return p
 
 
 def blocking(r: Review) -> list[ReviewIssue]:

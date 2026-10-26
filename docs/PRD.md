@@ -290,6 +290,8 @@ Requirements are numbered fresh for v3 and tagged with the release that ships th
 | FR-22 | Update the branch (merge main in, never force) and Fix CI (a revision from the failing log), each re-verified before the push | R1 |
 | FR-23 | Explain the change is available on every item from Ready to publish onward, including closed ones | R1 |
 | FR-24 | Image hygiene, like CI: one image per repo; when a newer one is saved, the older one is deleted once no open item uses it. When an item closes, a separate image it asked for is offered for deletion; when a repo's last open item closes, its image is offered for deletion too, with its size and the rebuild time; when a repo is removed, so is its image. Settings shows disk used per repo, with Delete | R1 |
+| FR-25 | Map tab per repo: the architecture map on a canvas with zoom, pan, fit and search. Clicking a component shows its files, what it uses and what uses it, each with the file that proves it; an item's changed files can be highlighted; a stale map offers Rebuild | R1 |
+| FR-26 | Code graph experiment: a file and symbol graph per commit, built inside the sandbox with no model calls (candidate: the [Graphify](https://github.com/Graphify-Labs/graphify) Python library, package `graphifyy`, Apache-2.0, pinned, base install only so it has no model SDKs; used as a library, not as an assistant skill). Used for relevant files, change context and the map's zoomed-in level; measured 2026-10-26 on 4 past tasks (18 files the fixes needed): replacing today's search, 11 found either way; adding 5 graph files, 13. So it ships as an extra "connected files" layer with its own budget, not a replacement, and is re-measured on every new task | R1 |
 
 ## Non-functional requirements and success metrics
 
