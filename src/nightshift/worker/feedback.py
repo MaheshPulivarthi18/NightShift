@@ -164,6 +164,7 @@ def commit_message(comments: list[ReviewComment], note: str = "") -> str:
     for c in comments:
         first = next((ln for ln in c.body.splitlines() if ln.strip()), "")
         first = re.sub(r"^@[\w.-]+(\[bot\])?:\s*", "", first)  # a thread's lines start with their author
+        first = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", first)  # a commit message is plain text: links as their text
         where = f"{c.path}{f':{c.line}' if c.line else ''}: " if c.path else ""
         lines.append(f"- {where}{first.strip()[:100]}")
     if note.strip():

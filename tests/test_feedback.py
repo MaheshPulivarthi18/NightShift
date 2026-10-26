@@ -284,3 +284,9 @@ async def test_a_claim_is_posted_once(published: dict[str, Any], monkeypatch: py
     assert {type(first), type(second)} == {str, worker.TaskError}
     with pytest.raises(worker.TaskError, match="Already posted"):
         await worker.claim(published["task"], confirm=True)
+
+
+def test_commit_message_lines_are_plain_text() -> None:
+    c = ReviewComment(id="issue:1", kind="issue", author="yl", url="u", issue=765,
+                      body="Also hits forks. On [yl/fork](https://github.com/yl/fork) the CLIs fail.")  # fmt: skip
+    assert feedback.commit_message([c]).endswith("- Also hits forks. On yl/fork the CLIs fail.")
