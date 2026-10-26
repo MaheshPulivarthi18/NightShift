@@ -208,8 +208,9 @@ async def pull_info(repo: Repo, url: str) -> PullInfo:
 
 
 async def pull_diff(repo: Repo, pr: PullInfo) -> str:
-    """What the PR changes now, as a patch: the published fix when NightShift did not record it."""
-    return await _run("gh", "pr", "diff", str(pr.number), "--repo", repo.full_name, "--patch")
+    """What the PR changes now, as one diff against its base (not one patch per commit, which can fail to
+    apply when commits touch the same lines): the published fix when NightShift did not record it."""
+    return await _run("gh", "pr", "diff", str(pr.number), "--repo", repo.full_name)
 
 
 class FollowUp(BaseModel):

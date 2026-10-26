@@ -389,6 +389,19 @@ async def ensure_environment(
     return env
 
 
+async def environment_for(llm: LLMGateway, repo: Repo, commit: str) -> Environment:
+    """The repo's environment at `commit`, opening a sandbox to read the repo's files when it must be found."""
+    previous = await load_environment(repo.id)
+    if previous and previous.status == "ready":
+        return previous
+    async with await Sandbox.start() as box:
+        await box.exec(
+            f"git clone --quiet --filter=blob:none https://github.com/{repo.full_name}.git repo", workdir="/work"
+        )
+        await box.exec(f"git checkout --quiet --force --detach {shlex.quote(commit)}")
+        return await ensure_environment(llm, repo, box, commit)
+
+
 def setup_run_id(repo_id: int) -> str:
     return f"setup-{repo_id}-{uuid.uuid4().hex[:8]}"
 

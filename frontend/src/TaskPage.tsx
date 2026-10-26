@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CommandResult, GateInfo, ModelUse, ModelView, PublishEdits, TaskDetail, api } from "./api";
+import { CommandResult, GateInfo, ModelUse, ModelView, PublishEdits, ReviewComment, TaskDetail, api } from "./api";
 import { Diff, Html, Log, StatusBadge, Title, money } from "./ui";
 
 const TABS = ["Plan", "Log", "Verification", "Review", "Diff", "PR"] as const;
@@ -74,6 +74,7 @@ export function TaskPage({ id }: { id: number }) {
       </header>
 
       <ActionPanel task={task} onChange={load} />
+      {task.pr_url && FEEDBACK.has(task.status) && <FeedbackPanel task={task} onChange={load} />}
       {REVISABLE.has(task.status) && <RevisePanel task={task} onChange={load} />}
       {!task.pr_url && ATTACHABLE.has(task.status) && <AttachPr task={task} onChange={load} />}
 
@@ -133,6 +134,82 @@ function ArchiveButton({ task, onChange }: { task: TaskDetail; onChange: () => v
 }
 
 const REVISABLE = new Set(["ready", "needs_operator", "failed", "published"]);
+const FEEDBACK = new Set(["published", "needs_operator", "failed"]);
+
+// What reviewers asked on the PR: read from GitHub on request; tick what to address, then one run makes
+// the changes on top of the PR, and Gate 2 pushes a follow-up commit with a drafted reply to each.
+function FeedbackPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
+  const [comments, setComments] = useState<ReviewComment[] | null>(null);
+  const [chosen, setChosen] = useState<Set<string>>(new Set());
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const load = () => {
+    setBusy(true);
+    setMsg(null);
+    api.feedback(task.id).then(
+      (cs) => (setComments(cs), setChosen(new Set(cs.filter((c) => c.suggested).map((c) => c.id)))),
+      (e: Error) => setMsg(e.message),
+    ).finally(() => setBusy(false));
+  };
+  const toggle = (id: string) => setChosen((cur) => {
+    const next = new Set(cur);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const address = () => {
+    setBusy(true);
+    api.address(task.id, [...chosen], note.trim()).then(onChange, (e: Error) => setMsg(e.message)).finally(() => setBusy(false));
+  };
+  return (
+    <section className="gate calm feedback">
+      <header>
+        <h2>Review feedback</h2>
+        <p className="muted">What reviewers asked on the pull request. Ticked: people's current requests; bots, approvals and outdated threads are left unticked.</p>
+      </header>
+      {!comments && (
+        <button className="ghost" disabled={busy} onClick={load}>{busy ? "Reading the PR…" : "Read the PR's feedback"}</button>
+      )}
+      {comments && comments.length === 0 && <p className="muted">No open feedback on the PR.</p>}
+      {comments && comments.length > 0 && (
+        <ul className="comments">
+          {comments.map((c) => (
+            <li key={c.id}>
+              <label className="check">
+                <input type="checkbox" checked={chosen.has(c.id)} onChange={() => toggle(c.id)} />
+                <span>
+                  <b>@{c.author}</b> {c.path && <span className="mono dim">{c.path}{c.line ? `:${c.line}` : ""}</span>}{" "}
+                  {c.bot && <span className="tag">bot</span>}
+                  {c.outdated && <span className="tag">outdated</span>}
+                  {c.superseded && <span className="tag">superseded</span>}
+                  {c.state && <span className="tag">{c.state.toLowerCase().replace("_", " ")}</span>}{" "}
+                  <a href={c.url} target="_blank" rel="noreferrer">↗</a>
+                </span>
+              </label>
+              <pre className="comment-body">{c.body.length > 900 ? `${c.body.slice(0, 900)}…` : c.body}</pre>
+            </li>
+          ))}
+        </ul>
+      )}
+      {comments && (
+        <>
+          <label className="full">
+            <span>Your note (optional)</span>
+            <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)}
+              placeholder="e.g. Keep the public function name; only rename the helper." />
+          </label>
+          <div className="actions">
+            <button className="primary" disabled={busy || (!chosen.size && !note.trim())} onClick={address}>
+              Address {chosen.size} selected
+            </button>
+            <button className="ghost small" disabled={busy} onClick={load}>Read again</button>
+          </div>
+        </>
+      )}
+      {msg && <p className="error">{msg}</p>}
+    </section>
+  );
+}
 const ATTACHABLE = new Set(["ready", "needs_operator", "failed"]);
 
 // Opened the PR yourself: link it, and the task counts as published; revisions follow up on that PR.
@@ -358,8 +435,10 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   const [remember, setRemember] = useState(false);
   const followUp = Boolean(task.pr_url);
   const [replaceBody, setReplaceBody] = useState(false); // follow-up: also replace the PR's description
+  const [replies, setReplies] = useState<Record<string, string>>({});
+  const [postReplies, setPostReplies] = useState(false);
   const payload = (): PublishEdits => {
-    const e = { ...(edits ?? {}), remember };
+    const e: PublishEdits = { ...(edits ?? {}), remember, replies, post_replies: postReplies };
     if (followUp && !replaceBody) delete e.body;
     if (followUp) delete e.title;
     return e;
@@ -453,6 +532,24 @@ function Gate2({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
                 <span>Commit message</span>
                 <textarea className="mono" rows={4} value={edits.commit_message ?? ""} onChange={edit("commit_message")} />
               </label>
+              {followUp && info.replies && info.replies.length > 0 && (
+                <div className="replies">
+                  <h3>Replies to the reviewers</h3>
+                  {info.replies.map((r) => (
+                    <label key={r.id} className="full">
+                      <span>
+                        To @{r.author}{r.path ? ` on ${r.path}${r.line ? `:${r.line}` : ""}` : ""}: {r.body.split("\n")[0].slice(0, 120)}
+                      </span>
+                      <textarea rows={2} value={replies[r.id] ?? r.text}
+                        onChange={(e) => setReplies((cur) => ({ ...cur, [r.id]: e.target.value }))} />
+                    </label>
+                  ))}
+                  <label className="check">
+                    <input type="checkbox" checked={postReplies} onChange={(e) => setPostReplies(e.target.checked)} />
+                    <span>Post these replies on the PR after pushing (in each thread; others as one comment)</span>
+                  </label>
+                </div>
+              )}
               {followUp && (
                 <label className="check">
                   <input type="checkbox" checked={replaceBody} onChange={(e) => setReplaceBody(e.target.checked)} />

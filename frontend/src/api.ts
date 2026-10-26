@@ -228,14 +228,33 @@ export interface GateInfo {
   attribution: string;
   template_headings: string[];
   mode?: "follow_up"; // a revised published task: one more commit on its PR
+  replies?: (ReviewComment & { text: string })[]; // follow-up: a drafted reply per addressed comment
   blockers: string[];
   warnings: string[];
   published: boolean;
   url?: string;
 }
 
+// Review feedback on a published PR (written on GitHub: shown as text, never as HTML).
+export interface ReviewComment {
+  id: string;
+  kind: "thread" | "review" | "comment";
+  author: string;
+  body: string;
+  path: string | null;
+  line: number | null;
+  url: string;
+  outdated: boolean;
+  bot: boolean;
+  state: string | null;
+  superseded: boolean;
+  suggested?: boolean;
+}
+
 // What Gate 2 may change before publishing; omitted fields keep the draft.
 export interface PublishEdits {
+  replies?: Record<string, string>;
+  post_replies?: boolean;
   title?: string;
   body?: string;
   commit_message?: string;
@@ -284,6 +303,10 @@ export const api = {
   resumeJob: (id: string) => call<JobDetail>(`/jobs/${id}/resume`, {}),
   chat: (repo: string, n: number) => call<ChatView>(`/chat/${repo}/${n}`),
   tasks: (archived = false) => call<TaskSummary[]>(`/tasks${archived ? "?archived=true" : ""}`),
+  feedback: (id: number) => call<ReviewComment[]>(`/tasks/${id}/feedback`),
+  address: (id: number, comment_ids: string[], note: string) =>
+    call<TaskDetail>(`/tasks/${id}/address`, { comment_ids, note }),
+  fromPr: (url: string) => call<TaskDetail>("/tasks/from-pr", { url }),
   attach: (id: number, url: string) => call<TaskDetail>(`/tasks/${id}/attach`, { url }),
   archive: (id: number, archived: boolean) => call<TaskDetail>(`/tasks/${id}/archive`, { archived }),
   task: (id: number) => call<TaskDetail>(`/tasks/${id}`),

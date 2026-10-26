@@ -38,11 +38,11 @@ from nightshift.memory import follow_rename, get_or_create_repo
 from nightshift.router import check_choice, family
 from nightshift.sandbox.docker import Sandbox, SandboxError, prepare_repo
 from nightshift.sandbox.envimage import ensure_env_image
-from nightshift.worker import planner, prwriter, publish, reviewer
+from nightshift.worker import feedback, planner, prwriter, publish, reviewer
 from nightshift.worker.coder import CoderRun
 from nightshift.worker.issue import IssueView, fetch_issue
 from nightshift.worker.relevant import relevant_files
-from nightshift.worker.setup_agent import RECIPE, ensure_environment, load_recipe
+from nightshift.worker.setup_agent import RECIPE, ensure_environment, environment_for, load_recipe
 from nightshift.worker.verify import CommandResult, FixCheck, diff, run_commands, run_reproduction
 
 log = structlog.get_logger()
@@ -401,6 +401,9 @@ async def _docs_sources(box: Sandbox, plan_markdown: str) -> str:
     return "\n".join(parts)
 
 
+PUBLISHED_PATCH = "/tmp/ns-published.patch"  # outside the repo
+
+
 async def _coder_outcome(task: Task, coder: CoderRun) -> None:
     """What the router learns from a Coder round: did this model's fix pass verification?"""
     passed = bool(coder.check and coder.check.passed)
@@ -517,6 +520,13 @@ async def run_task(task_id: int) -> Task:
         baseline = await run_commands(box, plan["test_commands"])
         result["baseline"] = [b.model_dump() for b in baseline]
         await save_recipe(repo.id, task.base_commit, plan["setup_commands"], baseline)
+        if published := task.result.get("published_diff"):
+            # A revision of a published PR starts from the PR as it is, so the Coder changes only what the
+            # revision asks; verification still compares the whole change with the base commit.
+            await box.write_file(PUBLISHED_PATCH, published)
+            applied = await box.exec(f"git apply --3way --whitespace=nowarn {PUBLISHED_PATCH}")
+            if not applied.ok:
+                raise SandboxError(f"the published PR no longer applies to {task.base_commit[:7]}: {applied.tail(400)}")
 
         amap = await archmap.load_map(repo.id, result.get("map_commit", task.base_commit))
         context = (
@@ -718,7 +728,13 @@ GATE2_EDITS = ("title", "body", "commit_message", "attribution", "branch")
 
 
 async def gate2(
-    task_id: int, *, confirm: bool, edits: dict[str, str] | None = None, remember: bool = False
+    task_id: int,
+    *,
+    confirm: bool,
+    edits: dict[str, str] | None = None,
+    remember: bool = False,
+    replies: dict[str, str] | None = None,
+    post_replies: bool = False,
 ) -> dict[str, Any]:
     """Prepare the PR on the current upstream branch and show exactly what would go out: title, body,
     commit message with its attribution line, branch. `edits` change any of those (kept for next time);
@@ -728,7 +744,7 @@ async def gate2(
         raise TaskError(f"Task {task_id} is {task.status}; only a ready task can be published.")
     edits = {k: v for k, v in (edits or {}).items() if k in GATE2_EDITS and v is not None}
     if task.result.get("pr_url"):  # revised after publishing: the change goes onto that PR, not a new one
-        return await _follow_up(task, repo, confirm=confirm, edits=edits)
+        return await _follow_up(task, repo, confirm=confirm, edits=edits, replies=replies, post_replies=post_replies)
     pr = dict(task.result.get("pr") or await draft_pr(task, repo))
     pr["commit_message"] = publish.strip_attribution(pr["commit_message"])  # drafts before Gate 2 showed it
     pr.update({k: edits[k] for k in ("title", "body", "commit_message") if k in edits})
@@ -769,10 +785,19 @@ async def gate2(
     return info | {"published": True, "url": url}
 
 
-async def _follow_up(task: Task, repo: Repo, *, confirm: bool, edits: dict[str, str]) -> dict[str, Any]:
+async def _follow_up(
+    task: Task,
+    repo: Repo,
+    *,
+    confirm: bool,
+    edits: dict[str, str],
+    replies: dict[str, str] | None = None,
+    post_replies: bool = False,
+) -> dict[str, Any]:
     """Gate 2 for a published task that was revised: one more commit on its PR's branch, holding the
     difference between the published fix and the revised one. With a `body` edit, the PR's description
-    is replaced too."""
+    is replaced too. When the revision addressed review comments, a reply to each is drafted; `replies`
+    holds the operator's edits, and `post_replies` posts them after the push."""
     try:
         pr = await publish.pull_info(repo, task.result["pr_url"])
         published = task.result.get("published_diff") or await publish.pull_diff(repo, pr)
@@ -805,14 +830,28 @@ async def _follow_up(task: Task, repo: Repo, *, confirm: bool, edits: dict[str, 
         return info
     prepared = await publish.prepare_follow_up(repo, task, pr, published, task_dir(repo.full_name, task.id) / "publish")
     info["files"] = prepared.files
+    addressing = [feedback.ReviewComment.model_validate(c) for c in task.result.get("addressing") or []]
+    drafted: dict[str, str] = dict(task.result.get("replies") or {})
+    if addressing and not drafted:
+        change = (await publish._run("git", "diff", "--cached", cwd=Path(prepared.workdir))) or ""
+        llm = LLMGateway(task.run_id, repo.id, run_budget_usd=get_settings().task_budget_usd)
+        drafted = await feedback.draft_replies(llm, addressing, change)
+    if replies:
+        drafted.update({k: v for k, v in replies.items() if k in {c.id for c in addressing}})
+    if drafted != (task.result.get("replies") or {}):
+        await _save(task, result={**task.result, "replies": drafted})
+    info["replies"] = [c.model_dump() | {"text": drafted.get(c.id, "")} for c in addressing]
     if not confirm:
         return info
     await publish.push_follow_up(repo, task, pr, prepared, message=publish.with_attribution(message, attribution))
     if "body" in edits:
         await publish.update_body(repo, pr, edits["body"])
-    result = {**task.result, "published_diff": task.diff, "follow_up_message": None}
+    posted = await feedback.post_replies(repo, pr.number, addressing, drafted) if post_replies else []
+    done = sorted({*task.result.get("addressed", []), *(c.id for c in addressing)})
+    result = {**task.result, "published_diff": task.diff, "follow_up_message": None, "addressed": done,
+              "addressing": [], "replies": {}, "reply_urls": posted}  # fmt: skip
     await _save(task, status="published", result=result)
-    return info | {"published": True}
+    return info | {"published": True, "reply_urls": posted}
 
 
 async def attach_pr(task_id: int, url: str) -> Task:
@@ -822,10 +861,103 @@ async def attach_pr(task_id: int, url: str) -> Task:
     if task.status in ("planning", "working", "planned", "approved"):
         raise TaskError(f"Task {task_id} is {task.status}; attach a PR once it has a fix.")
     try:
-        pr = await publish.pull_info(repo, url)
-        patch = await publish.pull_diff(repo, pr)
-    except publish.PublishError as e:
+        patch, base, pr = await pr_diff_and_base(repo, url)
+    except (publish.PublishError, GitHubError) as e:
         raise TaskError(str(e)) from e
     result = {**task.result, "pr_url": pr.url, "published_diff": patch, "branch": pr.head_branch}
-    await _save(task, status="published", result=result)
+    await _save(task, status="published", base_commit=base, result=result)
+    return task
+
+
+# ---------- review feedback ----------
+
+
+async def pr_diff_and_base(repo: Repo, url: str) -> tuple[str, str, publish.PullInfo]:
+    """The PR's changes as one diff, and the commit that diff is against (where its branch left the base
+    branch). The two belong together: a task that takes the diff from GitHub must also take that base."""
+    pr = await publish.pull_info(repo, url)
+    gh = GitHubClient()
+    try:
+        raw = await gh.rest_get(f"/repos/{repo.full_name}/pulls/{pr.number}")
+        compare = await gh.rest_get(f"/repos/{repo.full_name}/compare/{raw['base']['sha']}...{raw['head']['sha']}")
+    finally:
+        await gh.aclose()
+    return await publish.pull_diff(repo, pr), compare["merge_base_commit"]["sha"], pr
+
+
+async def review_feedback(task_id: int) -> list[feedback.ReviewComment]:
+    """The open feedback on the task's published PR, leaving out what an earlier revision addressed."""
+    task, repo = await load_task(task_id)
+    if not task.result.get("pr_url"):
+        raise TaskError(f"Task {task_id} has no pull request yet.")
+    number = int(str(task.result["pr_url"]).rstrip("/").rsplit("/", 1)[-1])
+    try:
+        return await feedback.pr_feedback(repo.full_name, number, skip=set(task.result.get("addressed", [])))
+    except GitHubError as e:
+        raise TaskError(f"Cannot read the PR's feedback: {e}") from e
+
+
+async def address_review(task_id: int, comment_ids: list[str], note: str = "") -> Task:
+    """Revise the task to address the chosen review comments (and the operator's note). The run starts from
+    the PR as published; Gate 2 then pushes one follow-up commit and drafts a reply to each comment."""
+    chosen = [c for c in await review_feedback(task_id) if c.id in set(comment_ids)]
+    if not chosen and not note.strip():
+        raise TaskError("Choose at least one comment, or write a note.")
+    task, repo = await load_task(task_id)
+    if not task.result.get("published_diff"):  # published before NightShift kept it: take it from the PR
+        try:
+            patch, base, _ = await pr_diff_and_base(repo, task.result["pr_url"])
+        except (publish.PublishError, GitHubError) as e:
+            raise TaskError(str(e)) from e
+        await _save(task, base_commit=base, result={**task.result, "published_diff": patch})
+    task = await revise(task_id, feedback.revision_note(chosen, note))
+    message = feedback.commit_message(chosen, note)
+    await _save(task, result={**task.result, "addressing": [c.model_dump() for c in chosen], "replies": {},
+                              "follow_up_message": message})  # fmt: skip
+    return task
+
+
+async def task_from_pr(url: str) -> Task:
+    """A published task for a PR of yours that NightShift did not open, so its review feedback can be
+    addressed here. The plan is the PR itself; the environment is the repo's (Setup agent)."""
+    from nightshift.worker.prcheck import fetch_pull, linked_issue_number  # the checker imports this module
+
+    pr = await fetch_pull(url)
+    login = get_settings().github_login
+    if not login or pr.author.lower() != login.lower():
+        raise TaskError(f"{pr.url} is by {pr.author}; only your own pull requests can be followed up here.")
+    if pr.state != "open":
+        raise TaskError(f"{pr.url} is {pr.state}.")
+    async with session_scope() as s:
+        repo = await get_or_create_repo(s, pr.repo)
+    try:
+        patch, base, info = await pr_diff_and_base(repo, pr.url)
+    except (publish.PublishError, GitHubError) as e:
+        raise TaskError(str(e)) from e
+    number = linked_issue_number(pr)
+    issue = await fetch_issue(pr.repo, number) if number else None
+    llm = LLMGateway(f"import-{repo.id}-{pr.number}", repo.id, run_budget_usd=get_settings().setup_budget_usd)
+    env = await environment_for(llm, repo, base)
+    if env.status != "ready":
+        raise TaskError(f"The repo's environment is {env.status}: {env.blocker or env.detail}")
+    markdown = (
+        f"# Plan: follow up on {pr.repo}#{pr.number} {pr.title}\n\nImported from the pull request: its "
+        f"changes are the work so far.\n\n{pr.body.strip()}"
+    )
+    plan = {
+        "markdown": markdown, "actionable": True, "kind": "code", "setup_commands": env.setup_commands,
+        "test_commands": env.test_commands, "test_plan": {"file": "", "asserts": "", "targeted_command": ""},
+        "environment": {"system_packages": env.system_packages, "tools": env.tools}, "models": {},
+    }  # fmt: skip
+    issue_data = issue.model_dump(mode="json") if issue else {
+        "number": pr.number, "title": pr.title, "body": pr.body, "state": "open", "author": pr.author,
+        "labels": [], "assignees": [], "comments": [], "linked_prs": [], "url": pr.url,
+    }  # fmt: skip
+    async with session_scope() as s:
+        task = Task(
+            repo_id=repo.id, issue_number=number or pr.number, status="published", base_commit=base,
+            rehearsal=False, issue=issue_data, plan=plan, diff=patch,
+            result={"pr_url": pr.url, "published_diff": patch, "branch": info.head_branch},
+        )  # fmt: skip
+        s.add(task)
     return task

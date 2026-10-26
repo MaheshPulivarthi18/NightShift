@@ -42,7 +42,7 @@ from nightshift.worker import publish, reviewer
 from nightshift.worker.issue import IssueView, fetch_issue
 from nightshift.worker.planner import Reproduction
 from nightshift.worker.prwriter import essential_lines
-from nightshift.worker.setup_agent import Environment, ensure_environment
+from nightshift.worker.setup_agent import Environment, environment_for
 from nightshift.worker.task import brief_text, issue_text, repo_conventions
 from nightshift.worker.verify import (
     CommandResult,
@@ -304,12 +304,7 @@ async def _fetch_pr(box: Sandbox, pr: PullRequest) -> tuple[str, str, str]:
 
 async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Repo, issue: IssueView | None) -> str:
     """Set up, run the base, run the PR, review it. Returns the diff."""
-    async with await Sandbox.start() as hints_box:
-        await hints_box.exec(
-            f"git clone --quiet --filter=blob:none https://github.com/{pr.repo}.git repo", workdir="/work"
-        )
-        await hints_box.exec(f"git checkout --quiet --force --detach {shlex.quote(pr.base_sha)}")
-        env = await ensure_environment(llm, repo, hints_box, pr.base_sha)
+    env = await environment_for(llm, repo, pr.base_sha)
     if env.status != "ready":
         report.should.append(f"Not run: the repo's environment is {env.status} ({env.blocker or env.detail}).")
         return ""

@@ -583,6 +583,65 @@ def task_attach(task_id: int, url: str) -> None:
     typer.echo(f"Task {task_id} is published as {url}.")
 
 
+@task_app.command("feedback")
+def task_feedback(task_id: int) -> None:
+    """The open review feedback on a task's pull request: [x] marks what is worth addressing."""
+    from nightshift.worker.task import TaskError, review_feedback
+
+    try:
+        comments = asyncio.run(review_feedback(task_id))
+    except TaskError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    for c in comments:
+        flags = ", ".join(f for f, on in (("bot", c.bot), ("outdated", c.outdated), ("superseded", c.superseded),
+                                          ((c.state or "").lower(), bool(c.state))) if on)  # fmt: skip
+        where = f" {c.path}:{c.line}" if c.path else ""
+        typer.echo(f"{'[x]' if c.suggested else '[ ]'} {c.id}  @{c.author}{where}{f'  ({flags})' if flags else ''}")
+        typer.echo("    " + c.body.splitlines()[0][:160] if c.body else "")
+    if not comments:
+        typer.echo("No open feedback.")
+
+
+@task_app.command("address")
+def task_address(
+    task_id: int,
+    comment: Annotated[
+        list[str] | None, typer.Option("--comment", help="A comment id from `task feedback`. Repeatable.")
+    ] = None,
+    note: Annotated[str, typer.Option(help="Your own instruction, with or instead of comments.")] = "",
+) -> None:
+    """Address review feedback: the run starts from the PR as published; Gate 2 pushes a follow-up commit."""
+    from nightshift.worker.task import TaskError, address_review, run_task
+
+    async def run() -> None:
+        try:
+            await address_review(task_id, comment or [], note)
+        except TaskError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1) from e
+        task = await run_task(task_id)
+        typer.echo(f"Task {task_id} is {task.status}. Gate 2 pushes the follow-up commit and drafts the replies.")
+
+    _run_sandboxed(run())
+
+
+@task_app.command("from-pr")
+def task_from_pr_cmd(url: str) -> None:
+    """A task for a pull request of yours that NightShift did not open, to address its feedback here."""
+    from nightshift.worker.task import TaskError, task_from_pr
+
+    async def run() -> None:
+        try:
+            task = await task_from_pr(url)
+        except TaskError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1) from e
+        typer.echo(f"Task {task.id} follows {url}. See its feedback: nightshift task feedback {task.id}")
+
+    _run_sandboxed(run())
+
+
 @task_app.command("archive")
 def task_archive(
     task_id: int, undo: Annotated[bool, typer.Option("--undo", help="Put it back on the board.")] = False

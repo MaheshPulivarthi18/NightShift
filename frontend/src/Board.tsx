@@ -117,6 +117,31 @@ function IssueLinks({ text, repo }: { text: string; repo: string }) {
   );
 }
 
+// A PR of yours that NightShift did not open, so its review feedback can be addressed here.
+function FromPr() {
+  const [url, setUrl] = useState("");
+  const [state, setState] = useState<{ busy: boolean; msg: string | null }>({ busy: false, msg: null });
+  const start = () => {
+    setState({ busy: true, msg: null });
+    api.fromPr(url.trim()).then(
+      (t) => (window.location.hash = `#/tasks/${t.id}`),
+      (e: Error) => setState({ busy: false, msg: e.message }),
+    );
+  };
+  return (
+    <div className="from-pr">
+      <span>Or follow up a pull request of yours (to address its review feedback here)</span>
+      <div className="row">
+        <input className="mono" placeholder="https://github.com/owner/repo/pull/123" value={url} onChange={(e) => setUrl(e.target.value)} />
+        <button type="button" className="ghost small" disabled={!url.trim() || state.busy} onClick={start}>
+          {state.busy ? "Importing…" : "Follow up"}
+        </button>
+      </div>
+      {state.msg && <span className="error">{state.msg}</span>}
+    </div>
+  );
+}
+
 function NewTask({ repo0, issue0, onCreated }: { repo0: string; issue0: string; onCreated: () => void }) {
   const [repo, setRepo] = useState(repo0);
   const [issue, setIssue] = useState(issue0);
@@ -161,6 +186,7 @@ function NewTask({ repo0, issue0, onCreated }: { repo0: string; issue0: string; 
           <input type="checkbox" checked={rehearsal} onChange={(e) => setRehearsal(e.target.checked)} />
           <span>Rehearsal (re-solve an issue that already has a fix; never published)</span>
         </label>
+        <FromPr />
         <label className="note">
           <span>Note to the Planner (your instruction; it sets the scope)</span>
           <textarea

@@ -19,6 +19,7 @@ from nightshift.db import LLMCall, Repo, Task, session_scope
 from nightshift.router import CHOOSABLE, agent_routes, choices
 from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker import task as worker
+from nightshift.worker.prcheck import PRCheckError
 from nightshift.worker.publish import PublishError
 
 log = structlog.get_logger()
@@ -242,6 +243,45 @@ async def claim(task_id: int, body: Confirm) -> dict[str, str]:
         raise HTTPException(409, str(e)) from e
 
 
+@router.get("/tasks/{task_id}/feedback")
+async def task_feedback(task_id: int) -> list[dict[str, Any]]:
+    """The open review feedback on the task's PR (read from GitHub on request, not on every poll)."""
+    try:
+        return [c.model_dump() | {"suggested": c.suggested} for c in await worker.review_feedback(task_id)]
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+
+
+class Address(BaseModel):
+    comment_ids: list[str] = []
+    note: str = Field(default="", max_length=4000)
+
+
+@router.post("/tasks/{task_id}/address", dependencies=[Guard])
+async def address(task_id: int, body: Address) -> dict[str, Any]:
+    """Revise the task to address the chosen comments, and start the run."""
+    try:
+        await worker.address_review(task_id, body.comment_ids, body.note)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+    _background(f"task-{task_id}", worker.run_task(task_id))
+    return await get_task(task_id)
+
+
+class FromPR(BaseModel):
+    url: str = Field(max_length=300)
+
+
+@router.post("/tasks/from-pr", dependencies=[Guard])
+async def from_pr(body: FromPR) -> dict[str, Any]:
+    """A task for a PR of yours that NightShift did not open, so its feedback can be addressed here."""
+    try:
+        task = await worker.task_from_pr(body.url)
+    except (worker.TaskError, PRCheckError, PublishError) as e:
+        raise HTTPException(409, str(e)) from e
+    return await get_task(task.id)
+
+
 class Attach(BaseModel):
     url: str = Field(max_length=300)
 
@@ -264,6 +304,8 @@ class Publish(BaseModel):
     attribution: str | None = Field(default=None, max_length=200)  # "" leaves it out
     branch: str | None = Field(default=None, max_length=120)
     remember: bool = False  # keep the attribution and branch prefix for this repo
+    replies: dict[str, str] | None = None  # follow-up: the operator's edits to the drafted replies, by comment id
+    post_replies: bool = False  # follow-up: post the replies after pushing
 
 
 @router.post("/tasks/{task_id}/publish", dependencies=[Guard])
@@ -272,6 +314,9 @@ async def publish(task_id: int, body: Publish) -> dict[str, Any]:
     would be published. Edits to the title, body, commit message, attribution or branch are kept."""
     edits = body.model_dump(include=set(worker.GATE2_EDITS), exclude_none=True)
     try:
-        return await worker.gate2(task_id, confirm=body.confirm, edits=edits, remember=body.remember)
+        return await worker.gate2(
+            task_id, confirm=body.confirm, edits=edits, remember=body.remember, replies=body.replies,
+            post_replies=body.post_replies,
+        )  # fmt: skip
     except (worker.TaskError, PublishError) as e:
         raise HTTPException(409, str(e)) from e

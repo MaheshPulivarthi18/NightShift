@@ -388,3 +388,14 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 .check-bad { color: var(--bad); background: var(--bad-soft); }
 .check-warn { color: var(--lamp); background: var(--lamp-soft); }
 .check-ok { color: var(--ok); background: var(--ok-soft); }
+
+/* Review feedback on a published PR */
+.feedback ul.comments { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 10px; }
+.feedback .comment-body { white-space: pre-wrap; font: 12px/1.5 var(--mono); background: var(--bg-sunk); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 8px 10px; margin: 4px 0 0 24px; max-height: 180px; overflow: auto; }
+.feedback label.check, .replies label.check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; }
+.replies { display: grid; gap: 8px; margin-top: 8px; }
+.replies h3 { margin: 4px 0 0; font-size: 14px; }
+.new-task .from-pr { display: grid; gap: 4px; font-size: 12px; color: var(--ink-3); max-width: 640px; }
+.new-task .from-pr .row { display: flex; gap: 8px; }
+.new-task .from-pr input { flex: 1; }
