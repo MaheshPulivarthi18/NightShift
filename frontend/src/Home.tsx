@@ -7,11 +7,16 @@ import { ago, money, Title, usePoll } from "./ui";
 /** Tasks that wait on the operator: a plan to approve, a fix to publish, a stopped run, or review feedback
  * on a published PR that nobody has answered yet. */
 export function needsYou(tasks: TaskSummary[]): TaskSummary[] {
-  return tasks.filter((t) => !t.archived && !t.busy && (["gate1", "gate2", "stopped"].includes(t.stage) || t.feedback > 0));
+  return tasks.filter((t) => {
+    if (t.archived || t.busy) return false;
+    if (t.asking && t.asked) return t.feedback > 0; // waiting on the maintainers until someone replies
+    return ["gate1", "gate2", "stopped"].includes(t.stage) || t.feedback > 0;
+  });
 }
 
 function ask(t: TaskSummary): [string, string] {
   if (t.stage === "done" && t.feedback) return [`Reply · ${t.feedback}`, "badge yours"];
+  if (t.asking) return t.asked ? [`Answered · ${t.feedback}`, "badge yours"] : ["Ask the maintainers", "badge info"];
   return ({ gate1: ["Approve plan", "badge info"], gate2: ["Publish", "badge info"], stopped: ["Stopped", "badge must"] } as
     Record<string, [string, string]>)[t.stage] ?? [t.stage, "badge"];
 }

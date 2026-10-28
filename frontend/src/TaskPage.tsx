@@ -67,6 +67,7 @@ export function TaskPage({ id, embedded = false }: { id: number; embedded?: bool
               pull request ↗
             </a>
           )}
+          <a href={`#/chat/${task.repo}/${task.issue}`}>Chat about it</a>
           <ArchiveButton task={task} onChange={load} />
         </div>
         {task.error && <p className="stop-reason">Stopped: {task.error}</p>}
@@ -356,7 +357,49 @@ function AskFirst({ task, onChange }: { task: TaskDetail; onChange: () => void }
           Reject
         </button>
       </div>
+      {task.replies.length > 0 && (
+        <div className="replies">
+          <h3>Replies on the issue since the question</h3>
+          {task.replies.map((r, i) => (
+            <p key={i}><b>@{r.author}</b> {r.text} <a href={r.url} target="_blank" rel="noreferrer">↗</a></p>
+          ))}
+        </div>
+      )}
+      <PlanAgain task={task} />
     </section>
+  );
+}
+
+// Once the questions are answered (on GitHub, or by what you found out yourself), plan the issue again.
+function PlanAgain({ task }: { task: TaskDetail }) {
+  const [answer, setAnswer] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const submit = () => {
+    setBusy(true);
+    api.replan(task.id, answer.trim()).then(
+      () => {
+        setMsg("Planning again with your answer; the new plan shows in the list in a minute. This one is hidden.");
+        window.setTimeout(() => (window.location.hash = `#/r/${task.repo}/items`), 2500);
+      },
+      (e: Error) => (setMsg(e.message), setBusy(false)),
+    );
+  };
+  return (
+    <div className="plan-again">
+      <h3>Answered? Plan it again</h3>
+      <textarea
+        rows={3}
+        value={answer}
+        onChange={(e) => setAnswer(e.target.value)}
+        placeholder="Your answer, e.g. litellm#38663 is merged and released in 1.104.2: upgrade now and pin 1.104.2"
+      />
+      <div className="actions">
+        <button className="primary" disabled={busy || !answer.trim()} onClick={submit}>Plan again</button>
+        <span className="dim">The Planner also reads the issue's newest comments.</span>
+      </div>
+      {msg && <p className="dim">{msg}</p>}
+    </div>
   );
 }
 

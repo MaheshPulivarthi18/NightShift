@@ -501,3 +501,7 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 .steps-row li.done { color: var(--ok); background: var(--ok-soft); }
 .steps-row li.now { color: var(--lamp); background: var(--lamp-soft); font-weight: 600; }
 .steps-row li.stopped { color: var(--bad); background: var(--bad-soft); }
+.replies, .plan-again { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.replies p { margin: 4px 0; }
+.plan-again textarea { width: 100%; margin: 6px 0; }
+.plan-again .actions { display: flex; align-items: center; gap: 10px; }

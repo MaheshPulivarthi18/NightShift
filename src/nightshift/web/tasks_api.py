@@ -61,10 +61,15 @@ def _summary(t: Task, r: Repo) -> dict[str, Any]:
         "error": t.error,
         "busy": f"task-{t.id}" in _jobs and not _jobs[f"task-{t.id}"].done(),
         "archived": t.archived_at is not None,
-        # unanswered review feedback found by the background sync on the task's open PR
+        # unanswered review feedback on the task's open PR, or replies to the Planner's question on the issue,
+        # found by the background sync
         "feedback": len(((t.result or {}).get("sync") or {}).get("open") or [])
         if ((t.result or {}).get("sync") or {}).get("pr_state") == "OPEN"
+        or ((t.result or {}).get("sync") or {}).get("kind") == "answers"
         else 0,
+        # a plan that asks the maintainers first, and whether the question is posted
+        "asking": t.status == "planned" and not (t.plan or {}).get("actionable", True),
+        "asked": str((t.result or {}).get("claim_url") or "").startswith("http"),
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
 
@@ -151,6 +156,7 @@ async def get_task(task_id: int) -> dict[str, Any]:
         "claim_comment": t.plan.get("claim_comment", ""),
         "actionable": t.plan.get("actionable") is not False,
         "claim_url": res.get("claim_url"),
+        "replies": ((res.get("sync") or {}).get("open") or []) if (res.get("sync") or {}).get("kind") == "answers" else [],
         "baseline": res.get("baseline", []),
         "check": res.get("check"),
         "context_check": res.get("context_check"),
@@ -232,6 +238,32 @@ async def revise(task_id: int, body: Revision) -> dict[str, Any]:
     if body.run:
         _background(f"task-{task_id}", worker.run_task(task_id))
     return await get_task(task_id)
+
+
+class Replan(BaseModel):
+    answer: str = Field(min_length=1, max_length=4000)  # the developer's answer to the Planner's questions
+
+
+@router.post("/tasks/{task_id}/replan", status_code=202, dependencies=[Guard])
+async def replan(task_id: int, body: Replan) -> dict[str, str]:
+    """Plan the issue again with the developer's answer to the Planner's questions, and the issue's newest
+    comments. The old plan is hidden, so the repo's list keeps one item for the issue."""
+    try:
+        task, repo = await worker.load_task(task_id)
+        if task.status not in ("planned", "rejected", "failed"):
+            raise worker.TaskError(f"Task {task_id} is {task.status}: only a plan can be planned again.")
+        current, _, _, _ = await worker.precheck(repo.full_name, task.issue_number)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+    asked = "\n".join(f"- {q}" for q in task.plan.get("questions") or [])
+    note = "\n\n".join(filter(None, [
+        task.plan.get("planning_note") or "",
+        f"In an earlier plan you asked:\n{asked}" if asked else "",
+        f"The developer answers: {body.answer.strip()}",
+    ]))  # fmt: skip
+    await worker.archive(task_id, True)
+    _background(f"plan-{current}-{task.issue_number}", worker.plan_task(current, task.issue_number, note=note))
+    return {"status": "planning", "repo": current}
 
 
 class Confirm(BaseModel):

@@ -44,7 +44,11 @@ def _task_item(t: Task, state: str | None) -> dict[str, Any]:
         "role": "yours" if pr_url else "issue", "status": t.status, "stage": stage,
         "pr_url": pr_url, "pr_state": state, "open": not closed, "hidden": t.archived_at is not None,
         "updated_at": _iso(t.updated_at),
-        "feedback": len(((res.get("sync") or {}).get("open")) or []) if state == "OPEN" else 0,
+        "feedback": len(((res.get("sync") or {}).get("open")) or [])
+        if state == "OPEN" or (res.get("sync") or {}).get("kind") == "answers"
+        else 0,
+        "asking": t.status == "planned" and not (t.plan or {}).get("actionable", True),
+        "asked": str(res.get("claim_url") or "").startswith("http"),
     }  # fmt: skip
 
 

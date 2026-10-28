@@ -101,7 +101,9 @@ export interface TaskSummary {
   busy: boolean;
   archived: boolean;
   updated_at: string | null;
-  feedback: number; // unanswered review feedback on the task's open PR, found by the background sync
+  feedback: number; // unanswered review feedback on its open PR, or replies to its question, from the sync
+  asking: boolean; // a plan that asks the maintainers before any code
+  asked: boolean; // and the question is posted on the issue
 }
 
 export interface CommandResult {
@@ -149,6 +151,7 @@ export interface TaskDetail extends TaskSummary {
   chosen_models: Record<string, string>;
   // At Gate 1 only: per agent whose model can be chosen, the router's first pick and the options.
   model_choices: Record<string, { default: string; why: string; options: ModelView[] }> | null;
+  replies: { author: string; text: string; url: string }[]; // to the question on the issue, since it was asked
 }
 
 // A model from OpenRouter's catalog. Prices in USD per million tokens; scores from Artificial Analysis.
@@ -288,6 +291,8 @@ export interface RepoItem {
   hidden: boolean;
   updated_at: string | null;
   feedback?: number;
+  asking?: boolean;
+  asked?: boolean;
 }
 
 export interface SyncStatus {
@@ -363,6 +368,7 @@ export const api = {
   repoKnowledge: (repo: string) => call<RepoKnowledge>(`/repos/${repo}/knowledge`),
   repoStats: (repo: string) => call<RepoStats>(`/repos/${repo}/stats`),
   syncStatus: () => call<SyncStatus>("/sync"),
+  replan: (id: number, answer: string) => call<{ status: string; repo: string }>(`/tasks/${id}/replan`, { answer }),
   onboardRepo: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/onboard`, {}),
   syncNow: () => call<SyncStatus>("/sync", {}),
   addRepo: (full_name: string, role: string) => call<RepoRow[]>("/repos", { full_name, role }),

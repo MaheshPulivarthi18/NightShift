@@ -22,11 +22,11 @@ from nightshift.catalog import ModelConfigError
 from nightshift.chat import chat_turn, get_or_create_chat, load_messages
 from nightshift.config import get_settings
 from nightshift.db import Control, Item, LLMCall, PRCheck, Repo, RepoContext, Report, Run, RunEvent, session_scope
-from nightshift.github import GitHubError
+from nightshift.github import GitHubClient, GitHubError
 from nightshift.health.graph import run_health_report
 from nightshift.health.report import is_opportunity
 from nightshift.llm import spend_summary
-from nightshift.memory import get_or_create_repo
+from nightshift.memory import content_hash, get_or_create_repo
 from nightshift.router import AGENTS, agent_routes
 from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker.issue import fetch_issue
@@ -548,13 +548,43 @@ async def resume_job(run_id: str) -> dict[str, Any]:
 # ---------- chat ----------
 
 
+def _when(iso: str) -> datetime:
+    return datetime.fromisoformat(iso.replace("Z", "+00:00"))
+
+
 async def _item(repo: Repo, number: int) -> Item:
+    """The issue or PR as stored by a report, or else fetched from GitHub now and stored, so any item can be
+    chatted about without a report first."""
     async with session_scope() as s:
         item = (
             await s.execute(select(Item).where(Item.repo_id == repo.id, Item.number == number))
         ).scalar_one_or_none()
-    if item is None:
-        raise HTTPException(404, f"#{number} is not stored for {repo.full_name}. Run a report first.")
+    if item is not None:
+        return item
+    gh = GitHubClient()
+    try:
+        raw = await gh.rest_get(f"/repos/{repo.full_name}/issues/{number}")
+        comments = await gh.rest_get(f"/repos/{repo.full_name}/issues/{number}/comments?per_page=100")
+    except GitHubError as e:
+        raise HTTPException(404, f"Cannot read {repo.full_name}#{number}: {e}") from e
+    finally:
+        await gh.aclose()
+    fetched = {
+        "title": raw["title"], "body": raw.get("body") or "", "state": raw["state"].upper(),
+        "state_reason": raw.get("state_reason"), "labels": [lb["name"] for lb in raw.get("labels", [])],
+        "data": {"comments": [
+            {"id": c["id"], "author": (c.get("user") or {}).get("login") or "ghost",
+             "association": c.get("author_association"), "created_at": c["created_at"], "body": c.get("body") or ""}
+            for c in comments
+        ]},
+    }  # fmt: skip
+    item = Item(
+        repo_id=repo.id, number=number, kind="pr" if "pull_request" in raw else "issue",
+        author=(raw.get("user") or {}).get("login") or "ghost", url=raw["html_url"], content_hash=content_hash(fetched),
+        created_at=_when(raw["created_at"]), updated_at=_when(raw["updated_at"]), **fetched,
+    )  # fmt: skip
+    async with session_scope() as s:
+        s.add(item)
     return item
 
 

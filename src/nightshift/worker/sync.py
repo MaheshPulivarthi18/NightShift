@@ -2,8 +2,9 @@
 
 It runs when the app starts and then every `sync_minutes` (0: only when asked, with Sync now). For each
 published task whose PR is still open, it reads the PR's open feedback the way the task page does,
-leaving out what you already answered, here or on GitHub, and keeps a short summary on the task.
-Read-only: nothing is posted.
+leaving out what you already answered, here or on GitHub, and keeps a short summary on the task. For a
+plan that asked the maintainers first, it reads the issue for replies after your question. Read-only:
+nothing is posted.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from sqlalchemy import select, text
 from nightshift.config import get_settings
 from nightshift.db import Repo, Task, session_scope
 from nightshift.github import GitHubClient, GitHubError
+from nightshift.worker.feedback import SERVICE
 
 log = structlog.get_logger()
 
@@ -114,12 +116,49 @@ async def sync_once(repos: list[str] | None = None) -> dict[str, Any]:
                 await _save_sync(t.id, {"at": datetime.now(UTC).isoformat(), "pr_state": state, "open": open_})
                 checked += 1
                 with_feedback += bool(open_)
+        checked_q, answered = await _sync_questions(repos)
+        checked += checked_q
+        with_feedback += answered
     except Exception as e:  # a failed sync must never take the app down; the next one tries again
         log.exception("sync_failed")
         status["error"] = f"{type(e).__name__}: {e}"[:300]
     finally:
         status.update(running=False, at=datetime.now(UTC).isoformat(), checked=checked, with_feedback=with_feedback)
     return status
+
+
+async def _sync_questions(repos: list[str] | None) -> tuple[int, int]:
+    """Plans that asked on the issue first: replies from others since your last comment there."""
+    from nightshift.worker.issue import fetch_issue
+
+    query = select(Task, Repo).join(Repo).where(Task.status == "planned", Task.archived_at.is_(None))
+    if repos is not None:
+        query = query.where(Repo.full_name.in_(repos))
+    async with session_scope() as s:
+        rows = (await s.execute(query)).all()
+    me = (get_settings().github_login or "").lower()
+    checked = answered = 0
+    for t, r in rows:
+        url = (t.result or {}).get("claim_url") or ""
+        if (t.plan or {}).get("actionable", True) or not url.startswith("http"):
+            continue  # nothing was asked, or the question is not posted yet
+        try:
+            issue = await fetch_issue(r.full_name, t.issue_number)
+        except GitHubError as e:
+            log.warning("sync_question_failed", task=t.id, error=str(e)[:200])
+            continue
+        mine = max((c["created_at"] for c in issue.comments if me and c["author"].lower() == me), default="")
+        replies = [
+            {"id": c["created_at"], "kind": "issue", "author": c["author"], "url": issue.url,
+             "text": next((ln for ln in c["body"].splitlines() if ln.strip()), "")[:200]}
+            for c in issue.comments
+            if c["author"].lower() != me and c["created_at"] > mine and not SERVICE.search(c["author"])
+        ]  # fmt: skip
+        await _save_sync(t.id, {"at": datetime.now(UTC).isoformat(), "kind": "answers", "pr_state": None,
+                                "issue_state": issue.state, "open": replies})  # fmt: skip
+        checked += 1
+        answered += bool(replies)
+    return checked, answered
 
 
 async def sync_loop() -> None:

@@ -49,6 +49,9 @@ function itemStatus(i: RepoItem): [string, string] {
     if (i.status !== "done") return ["Check stopped", "bad"];
     return [`Checked · ${i.verdict ?? ""}`, i.must ? "bad" : i.should ? "warn" : "ok"];
   }
+  if (i.asking && !i.asked) return ["Needs answers: ask the maintainers", "info"];
+  if (i.asking && i.feedback) return [`Answered · ${i.feedback}: plan it again`, "info"];
+  if (i.asking) return ["Question posted · waiting for a reply", ""];
   if (i.stage === "done" && i.feedback) return [`In review · ${i.feedback} new comment${i.feedback > 1 ? "s" : ""}`, "info"];
   return ({
     plan: ["Planning", ""], gate1: ["Plan ready: approve it", "info"], work: ["Working", ""],
