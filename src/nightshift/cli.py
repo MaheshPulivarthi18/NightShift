@@ -24,7 +24,7 @@ from nightshift.config import get_settings
 from nightshift.db import Control, Feedback, Repo, Report, session_scope
 from nightshift.github import GitHubError
 from nightshift.llm import BudgetExceeded, KillSwitchActive, ModelAPIError, spend_summary
-from nightshift.memory import get_or_create_repo
+from nightshift.memory import get_or_create_repo, purge_repo
 
 app = typer.Typer(help="NightShift: autonomous repo maintainer agents.", no_args_is_help=True)
 watch_app = typer.Typer(help="Manage the watchlist of public repos.", no_args_is_help=True)
@@ -155,7 +155,7 @@ def watch_remove(
                 typer.echo(f"Not watching {name}")
                 return
             if purge:
-                await s.delete(r)
+                await purge_repo(s, r)
             else:
                 r.watched = False
         typer.echo(f"{'Deleted' if purge else 'Removed from the watchlist (history kept)'}: {name}")

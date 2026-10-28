@@ -9,8 +9,8 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import delete, select
 
-from nightshift.db import Item, Repo, RepoContext, Task, session_scope
-from nightshift.memory import follow_rename
+from nightshift.db import Item, Repo, RepoContext, Run, RunEvent, Task, session_scope
+from nightshift.memory import follow_rename, purge_repo
 
 NOW = datetime(2026, 10, 25, tzinfo=UTC)
 
@@ -76,10 +76,14 @@ async def test_deleting_a_repo_deletes_its_records(names: tuple[str, str]) -> No
         s.add(repo)
         await s.flush()
         s.add(_item(repo.id, 1, "an issue"))
+        run_id = f"setup-test-{uuid.uuid4().hex[:8]}"
+        s.add(Run(run_id=run_id, repo_id=repo.id, status="done"))
+        s.add(RunEvent(run_id=run_id, kind="node_start", node="setup", message="setup", data={}))
         repo_id = repo.id
     async with session_scope() as s:
         stored = await s.get(Repo, repo_id)
         assert stored is not None
-        await s.delete(stored)  # as `nightshift watch remove --purge` does
+        await purge_repo(s, stored)  # as `nightshift watch remove --purge` does
     async with session_scope() as s:
         assert (await s.execute(select(Item).where(Item.repo_id == repo_id))).first() is None
+        assert (await s.execute(select(RunEvent).where(RunEvent.run_id == run_id))).first() is None  # its log too

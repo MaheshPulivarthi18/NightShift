@@ -18,7 +18,7 @@ from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nightshift.config import get_settings
-from nightshift.db import AgentVerdict, Chat, Feedback, Item, PRCheck, Repo, RepoContext, Report, Run, Task
+from nightshift.db import AgentVerdict, Chat, Feedback, Item, PRCheck, Repo, RepoContext, Report, Run, RunEvent, Task
 
 log = structlog.get_logger()
 
@@ -43,6 +43,13 @@ def embed(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
     return [vec.tolist() for vec in _embedder().embed(texts, batch_size=32)]
+
+
+async def purge_repo(s: AsyncSession, repo: Repo) -> None:
+    """Delete a repo and everything stored about it. Its runs' log lines go first: they are kept by run id,
+    not tied to the repo, so deleting the repo alone would leave them behind."""
+    await s.execute(delete(RunEvent).where(RunEvent.run_id.in_(select(Run.run_id).where(Run.repo_id == repo.id))))
+    await s.delete(repo)
 
 
 async def get_or_create_repo(
