@@ -128,6 +128,9 @@ interface Step {
 }
 
 /** Live events of a run (report, map or task), streamed from the server. */
+// Kinds that need a word, not just a colour: caught and handled reads differently from broken.
+const LOG_TAGS: Record<string, string> = { caught: "caught", fixed: "fixed", warning: "warning", error: "error" };
+
 export function Log({ runId, onStatus }: { runId: string; onStatus?: () => void }) {
   const [steps, setSteps] = useState<Step[]>([]);
   const [live, setLive] = useState(true);
@@ -156,7 +159,10 @@ export function Log({ runId, onStatus }: { runId: string; onStatus?: () => void 
       {shown.map((s) => (
         <li key={s.id} className={`step step-${s.kind}`}>
           <span className="mono dim">{s.at}</span>
-          <span>{s.message}</span>
+          <span>
+            {LOG_TAGS[s.kind] && <span className="step-tag">{LOG_TAGS[s.kind]}</span>}
+            {s.message}
+          </span>
           <span className="mono dim">
             {s.data?.cached ? "cached" : s.data?.cost_usd != null ? money(s.data.cost_usd) : ""}
           </span>

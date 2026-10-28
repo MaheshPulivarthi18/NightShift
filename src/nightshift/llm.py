@@ -484,7 +484,7 @@ class LLMGateway:
             await events.record(self.run_id, "warning", f"{agent}: {label} failed on {r.info.id}: {e}", agent=agent)
             raise e
         await events.record(
-            self.run_id, "warning", f"{agent}: {r.info.id} failed ({e}); trying {after.info.id}", agent=agent
+            self.run_id, events.CAUGHT, f"{agent}: {r.info.id} failed ({e}); trying {after.info.id}", agent=agent
         )
         log.warning("model_fallback", agent=agent, failed=r.info.id, next=after.info.id, error=str(e)[:300])
 

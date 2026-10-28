@@ -308,8 +308,16 @@ ol.log { list-style: none; margin: 8px 0 0; padding: 0; border-left: 1px solid v
 .step-live::before { background: var(--lamp); animation: pulse 1.2s ease-in-out infinite; }
 .step-node_start::before { background: var(--lamp); }
 .step-node_start { font-weight: 600; }
-.step-warning::before, .step-error::before { background: var(--bad); }
-.step-warning, .step-error { color: var(--bad); }
+/* caught: a check found a problem and NightShift is handling it; fixed: handled; warning: nothing handles it */
+.step-caught::before, .step-warning::before { background: var(--warn); }
+.step-fixed::before { background: var(--ok); }
+.step-error::before { background: var(--bad); }
+.step-warning { color: var(--warn); }
+.step-error { color: var(--bad); }
+.step-tag { display: inline-block; margin-right: 8px; padding: 0 6px; border-radius: 4px; font: 500 11px/18px var(--mono); vertical-align: 1px; }
+.step-caught .step-tag, .step-warning .step-tag { color: var(--warn); background: var(--warn-soft); }
+.step-fixed .step-tag { color: var(--ok); background: var(--ok-soft); }
+.step-error .step-tag { color: var(--bad); background: var(--bad-soft); }
 
 .run { border: 1px solid var(--line); border-radius: var(--radius); margin: 6px 0; background: var(--bg-raise); }
 .run summary { display: flex; gap: 10px; align-items: center; padding: 8px 12px; cursor: pointer; flex-wrap: wrap; }

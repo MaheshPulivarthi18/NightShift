@@ -17,6 +17,9 @@ from nightshift.db import Run, RunEvent, session_scope
 
 log = structlog.get_logger()
 
+CAUGHT = "caught"  # a check found a problem and NightShift is already handling it (re-plan, retry, fallback)
+FIXED = "fixed"  # the problem a CAUGHT event named was handled
+
 BEAT = timedelta(seconds=30)  # how often a running run says it is alive
 STALE = timedelta(minutes=3)  # no beat for this long: the process running it is gone
 _beats: dict[str, asyncio.Task[None]] = {}  # this process's running runs

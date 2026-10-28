@@ -248,7 +248,9 @@ class RunEvent(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     run_id: Mapped[str] = mapped_column(String(64), index=True)
-    kind: Mapped[str] = mapped_column(String(20))  # node_start | node_end | llm_start | llm_end | warning | error
+    # node_start | node_end | llm_start | llm_end | caught (a check found a problem; NightShift is handling it)
+    # | fixed (it was handled) | warning (a problem nothing handles) | error
+    kind: Mapped[str] = mapped_column(String(20))
     node: Mapped[str | None] = mapped_column(String(40))
     message: Mapped[str] = mapped_column(Text, default="")
     data: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)

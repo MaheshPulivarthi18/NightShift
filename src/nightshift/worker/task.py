@@ -223,22 +223,35 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
             )
         revised = bool(pcheck.must())
         if revised:
+            musts = pcheck.must()
+            what = ", ".join(sorted({f.kind.replace("_", " ") for f in musts}))
             await events.record(
-                task.run_id, "warning", f"plan check: {len(pcheck.must())} must-fix finding(s); re-planning"
-            )
-            inputs["plan_check"] = plancheck.as_note(pcheck.must())
+                task.run_id, events.CAUGHT,
+                f"Plan check caught {len(musts)} must-fix problem{'s' if len(musts) > 1 else ''} ({what}): "
+                "sent back to the Planner",
+            )  # fmt: skip
+            inputs["plan_check"] = plancheck.as_note(musts)
             plan = await planner.make_plan(llm, planner.plan_prompt(**inputs))
+            await events.record(
+                task.run_id, events.FIXED, "Revised plan ready: it addresses the plan check (checked once, not again)"
+            )
 
         # Run the setup now, before Gate 1, so a plan whose commands cannot work is caught before any paid run.
         # A failure goes back to the Planner once. Success also saves the repo image the run will start from.
         await events.record(task.run_id, "node_start", "setup check", node="setup_check")
         setup_error, repro = await check_setup(full_name, commit, plan.setup_commands, image, plan.reproduction)
         if setup_error:
-            await events.record(task.run_id, "warning", "setup failed; asking the Planner to fix the commands")
+            await events.record(
+                task.run_id, events.CAUGHT, "Setup commands failed in the sandbox: sent back to the Planner"
+            )
             failed = "\n".join(plan.setup_commands)
             again = planner.plan_prompt(**inputs, setup_failed=f"{failed}\n\nOutput:\n{setup_error}")
             plan = await planner.make_plan(llm, again)
             setup_error, repro = await check_setup(full_name, commit, plan.setup_commands, image, plan.reproduction)
+            if setup_error:
+                await events.record(task.run_id, "warning", "The revised setup commands still fail: the plan shows why")
+            else:
+                await events.record(task.run_id, events.FIXED, "The revised setup commands work in the sandbox")
         checks = ["setup commands ran successfully in the sandbox"] if not setup_error else []
         warnings = [f"setup failed in the sandbox: {setup_error[-600:]}"] if setup_error else []
         repro_checks, repro_warnings = reproduction_note(repro)
@@ -649,6 +662,7 @@ async def run_task(task_id: int) -> Task:
             checks.append(step("review", approved, round_no, time.monotonic() - started, rv.summary))
             await checkpoint()
             if not approved:
+                await events.record(task.run_id, events.CAUGHT, "Review asked for changes: sent back to the Coder")
                 instruction = reviewer.feedback_for_coder(rv)
                 why = "the review still asks for changes after the last round"
                 continue
@@ -665,6 +679,9 @@ async def run_task(task_id: int) -> Task:
             if ran.passed:
                 status = "ready"
                 break
+            await events.record(
+                task.run_id, events.CAUGHT, f"Full suites found regressions ({detail}): sent back to the Coder"
+            )
             instruction = (
                 "The Reviewer approved the change, but the full suites found regressions: commands that passed "
                 "before the change fail now. Fix them without weakening any test, then call submit again.\n\n"

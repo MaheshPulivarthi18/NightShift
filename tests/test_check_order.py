@@ -8,9 +8,9 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
-from nightshift.db import Repo, Task, session_scope
+from nightshift.db import Repo, RunEvent, Task, session_scope
 from nightshift.worker import reviewer
 from nightshift.worker import task as worker
 from nightshift.worker.coder import CoderRun
@@ -113,3 +113,10 @@ async def test_suites_run_after_approval_and_a_regression_goes_back(
         ("scope", True, 1), ("test", True, 1), ("review", True, 1), ("suites", False, 1),
         ("scope", True, 2), ("test", True, 2), ("review", True, 2), ("suites", True, 2),
     ]  # fmt: skip
+    async with session_scope() as s:
+        logged = (await s.execute(select(RunEvent).where(RunEvent.run_id == done.run_id))).scalars().all()
+        await s.execute(delete(RunEvent).where(RunEvent.run_id == done.run_id))
+    caught = [e.message for e in logged if e.kind == "caught"]
+    assert caught == ["Full suites found regressions (these passed before the change and fail now: pytest): "
+                      "sent back to the Coder"]  # fmt: skip
+    assert not [e for e in logged if e.kind in ("warning", "error")]  # handled, so nothing reads as broken

@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from nightshift import events
 from nightshift.config import get_settings
 from nightshift.context.change import change_context
 from nightshift.context.change import to_markdown as change_markdown
@@ -269,6 +270,9 @@ class CoderRun:
                 )  # fmt: skip
             self._log_checks(self.check, time.monotonic() - started)
             if not self.check.passed:
+                if self.check.scope and self.check.scope.problems:
+                    await events.record(self.llm.run_id, events.CAUGHT, "Scope: " + "; ".join(self.check.scope.problems)
+                                        + " (sent back to the Coder before any test ran)")  # fmt: skip
                 raise ToolError(self.check.report())
             return self.check.report()
         raise ToolError(f"unknown tool {name}")

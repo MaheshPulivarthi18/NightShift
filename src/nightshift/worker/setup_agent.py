@@ -306,7 +306,10 @@ async def find_environment(
             if attempt.passed:
                 result = _environment("ready", commit, attempt, p)
             else:
-                await events.record(llm.run_id, "warning", f"environment attempt {len(attempts)}: {attempt.summary()}")
+                # The Setup agent reads the failure and tries again, until its budget or turns run out
+                await events.record(
+                    llm.run_id, events.CAUGHT, f"environment attempt {len(attempts)}: {attempt.summary()}"
+                )
     if result is None:  # out of budget or turns
         why = f"stopped after {len(attempts)} attempts (${spent:.2f})"
         result = (
