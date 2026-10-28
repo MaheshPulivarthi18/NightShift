@@ -65,6 +65,21 @@ async def test_repos_jobs_and_overview(client: httpx.AsyncClient) -> None:
             await s.execute(delete(Repo).where(Repo.full_name == name))
 
 
+async def test_a_full_watchlist_refuses_a_new_repo(client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nightshift.config import get_settings
+
+    async with session_scope() as s:
+        watched = len((await s.execute(select(Repo.id).where(Repo.watched.is_(True)))).all())
+    monkeypatch.setattr(get_settings(), "watchlist_max", watched)
+    name = f"test/full-{uuid.uuid4().hex[:8]}"
+    try:
+        resp = await client.post("/api/repos", json={"full_name": name})
+        assert resp.status_code == 409 and "watchlist is full" in resp.json()["detail"]
+    finally:
+        async with session_scope() as s:
+            await s.execute(delete(Repo).where(Repo.full_name == name))
+
+
 async def test_writes_need_json(client: httpx.AsyncClient) -> None:
     resp = await client.post("/api/control/kill", data={"killed": "true"})
     assert resp.status_code == 415

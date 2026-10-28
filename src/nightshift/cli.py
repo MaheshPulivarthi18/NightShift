@@ -44,7 +44,6 @@ app.add_typer(task_app, name="task")
 
 log = structlog.get_logger()
 
-WATCHLIST_CAP = 10
 REPO_RE = re.compile(r"(?:https?://github\.com/)?([\w.-]+/[\w.-]+?)(?:\.git)?/?$")
 
 
@@ -96,8 +95,8 @@ def watch_add(
                     count += 1
                     typer.echo(f"Watching {name} again")
                     continue
-                if count >= WATCHLIST_CAP:
-                    typer.echo(f"Watchlist is full ({WATCHLIST_CAP}). Skipping {name}.")
+                if count >= (cap := get_settings().watchlist_max):
+                    typer.echo(f"Watchlist is full ({cap}; NIGHTSHIFT_WATCHLIST_MAX raises it). Skipping {name}.")
                     continue
                 await get_or_create_repo(s, name, role=role)
                 count += 1

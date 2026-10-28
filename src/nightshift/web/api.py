@@ -207,6 +207,11 @@ async def add_repo(body: RepoIn) -> list[dict[str, Any]]:
     if not REPO_RE.match(name):
         raise HTTPException(400, "Give owner/name or a GitHub URL.")
     async with session_scope() as s:
+        watched = (await s.execute(select(Repo.full_name).where(Repo.watched.is_(True)))).scalars().all()
+        if name not in watched and len(watched) >= (cap := get_settings().watchlist_max):
+            raise HTTPException(
+                409, f"The watchlist is full ({cap} repos). Remove one, or raise NIGHTSHIFT_WATCHLIST_MAX."
+            )
         repo = await get_or_create_repo(s, name, role=body.role)
         repo.watched = True  # adding a removed repo again brings it and its history back
         repo_id = repo.id
