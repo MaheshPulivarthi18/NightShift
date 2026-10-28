@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
+from nightshift import events
 from nightshift.config import get_settings
 from nightshift.context import archmap
 from nightshift.db import PRCheck, RepoContext, Run, Task, session_scope
@@ -96,6 +97,7 @@ async def repo_map(owner: str, name: str) -> dict[str, Any]:
 async def repo_knowledge(owner: str, name: str) -> dict[str, Any]:
     """What NightShift has learned about the repo once and reuses: environment, commands, map and brief."""
     repo = await _repo(f"{owner}/{name}")
+    await events.mark_interrupted_runs()  # a setup whose server died shows as interrupted, not running forever
     async with session_scope() as s:
         contexts = list(
             (

@@ -6,10 +6,11 @@ Recording is best-effort: a failure to write an event is logged and never fails 
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
+from sqlalchemy import func, select
 
 from nightshift.db import Run, RunEvent, session_scope
 
@@ -51,3 +52,34 @@ async def finish_run(run_id: str, status: str, error: str | None = None, report_
                 run.report_path = report_path
     except Exception as e:
         log.warning("run_status_not_recorded", run_id=run_id, error=str(e))
+
+
+INTERRUPTED = "Interrupted: NightShift was closed while this was running."
+
+
+async def mark_interrupted_runs(idle: timedelta = timedelta(minutes=15)) -> list[str]:
+    """Runs still marked running with no activity for `idle`: the process that ran them is gone (closed,
+    killed or crashed) without recording it. They become "interrupted", so nothing shows as running forever.
+    Returns their ids."""
+    cutoff = datetime.now(UTC) - idle
+    async with session_scope() as s:
+        last = select(RunEvent.run_id, func.max(RunEvent.created_at).label("at")).group_by(RunEvent.run_id).subquery()
+        rows = (
+            (
+                await s.execute(
+                    select(Run)
+                    .outerjoin(last, last.c.run_id == Run.run_id)
+                    .where(Run.status == "running", func.coalesce(last.c.at, Run.started_at) < cutoff)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for run in rows:
+            run.status, run.error, run.finished_at, run.current_node = (
+                "interrupted",
+                INTERRUPTED,
+                datetime.now(UTC),
+                None,
+            )
+    return [r.run_id for r in rows]

@@ -289,8 +289,9 @@ function SetupProgress({ repo, setup, onStarted }: { repo: string; setup: RepoKn
         <h2>Setup</h2>
         {setup && (
           <span className="status">
-            <span className={`dot ${running ? "info" : setup.status === "done" ? "ok" : "bad"}`} />
-            {running ? "Setting up…" : setup.status === "done" ? `Set up ${ago(setup.at)}` : `Finished with problems, ${ago(setup.at)}`}
+            <span className={`dot ${running ? "info" : setup.status === "done" ? "ok" : setup.status === "interrupted" ? "warn" : "bad"}`} />
+            {running ? "Setting up…" : setup.status === "done" ? `Set up ${ago(setup.at)}`
+              : setup.status === "interrupted" ? "Interrupted: NightShift was closed during setup" : `Finished with problems, ${ago(setup.at)}`}
           </span>
         )}
         <span className="push row-flex">

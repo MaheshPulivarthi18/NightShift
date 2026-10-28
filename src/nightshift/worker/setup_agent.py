@@ -13,6 +13,7 @@ The agent only names packages and tools; envimage writes the image. Nothing here
 
 from __future__ import annotations
 
+import asyncio
 import re
 import shlex
 import uuid
@@ -418,6 +419,9 @@ async def setup_repo(full_name: str, run_id: str | None = None) -> Environment:
         async with box:
             commit = (await box.exec("git rev-parse HEAD")).stdout.strip()
             env = await ensure_environment(llm, repo, box, commit, force=True)
+    except asyncio.CancelledError:  # the server stopped (closed, restarted): say so, not "CancelledError"
+        await asyncio.shield(events.finish_run(run_id, "interrupted", error=events.INTERRUPTED))
+        raise
     except BaseException as e:
         await events.finish_run(run_id, "failed", error=f"{type(e).__name__}: {e}")
         raise

@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from nightshift.config import get_settings
+from nightshift.events import mark_interrupted_runs
 from nightshift.sandbox.docker import remove_orphans
 from nightshift.web.api import router as api_router
 from nightshift.web.tasks_api import router as tasks_router
@@ -37,6 +38,9 @@ async def _tidy_up() -> None:
         stale = await mark_stale_runs()
         if stale:
             log.warning("stale_runs_marked", tasks=stale)
+        interrupted = await mark_interrupted_runs()  # setups and other jobs the last server left running
+        if interrupted:
+            log.warning("interrupted_runs_marked", runs=interrupted)
     with suppress(Exception):
         await remove_orphans(older_than=(get_settings().task_minutes + 15) * 60)
 
