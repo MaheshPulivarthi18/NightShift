@@ -505,3 +505,28 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 .replies p { margin: 4px 0; }
 .plan-again textarea { width: 100%; margin: 6px 0; }
 .plan-again .actions { display: flex; align-items: center; gap: 10px; }
+
+/* Checks: the ladder a change climbs, cheapest check first */
+.checks { list-style: none; margin: 0 0 14px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-raise); }
+.chk-row { display: flex; gap: 12px; padding: 12px 14px; position: relative; }
+.chk-row + .chk-row { border-top: 1px solid var(--line); }
+.chk-mark { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font: 600 11px var(--sans); border: 1.5px solid var(--line-strong); color: var(--ink-3); background: var(--bg-raise); margin-top: 1px; }
+.chk-row.is-pass .chk-mark { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
+.chk-row.is-fail .chk-mark { background: var(--bad-soft); border-color: var(--bad); color: var(--bad); }
+.chk-row.is-run .chk-mark { border-color: var(--lamp); border-top-color: transparent; animation: chk-spin 0.9s linear infinite; }
+.chk-row.is-todo { opacity: 0.6; }
+.chk-main { min-width: 0; flex: 1; }
+.chk-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; font-size: 14px; }
+.chk-head .dim { font: 12px var(--mono); color: var(--ink-3); white-space: nowrap; }
+.chk-row.is-run .chk-head .dim { color: var(--lamp); }
+.chk-what { margin: 2px 0 0; font-size: 13px; color: var(--ink-2); overflow-wrap: anywhere; }
+.chk-row.is-fail .chk-what { color: var(--bad); }
+.chk-saved { margin: -6px 0 14px; font-size: 13px; color: var(--ok); }
+.chk-log { margin: 0 0 18px; font-size: 13px; }
+.chk-log summary { cursor: pointer; color: var(--ink-2); }
+.chk-log ol { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 4px; }
+.chk-log li { display: grid; grid-template-columns: 70px 90px 1fr; gap: 10px; padding: 4px 8px; border-left: 2px solid var(--ok); }
+.chk-log li.fail { border-left-color: var(--bad); }
+@keyframes chk-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .chk-row.is-run .chk-mark { animation: none; } }
+@media (max-width: 600px) { .chk-log li { grid-template-columns: 1fr; gap: 0; } .chk-head { flex-wrap: wrap; } }

@@ -21,7 +21,7 @@ from nightshift.context.change import to_markdown as change_markdown
 from nightshift.llm import INVALID_ARGS, LLMGateway, MessageParam, TextBlockParam, ToolParam
 from nightshift.router import RouteHint
 from nightshift.sandbox.docker import OUTPUT_LIMIT, REPO_DIR, Sandbox
-from nightshift.worker.verify import CommandResult, FixCheck, check_docs, check_fix
+from nightshift.worker.verify import CommandResult, FixCheck, Scope, check_docs, check_fix, step
 
 READ_WINDOW = 400
 RUN_OUTPUT = 8000
@@ -36,7 +36,7 @@ Work like a careful contributor:
 2. Write the test first: one that reproduces the issue, placed and written like the repo's existing tests. It must fail on the current code.
 3. Write the smallest fix that makes it pass, following the code's existing style and patterns.
 4. Check every other code path the change affects: call change_context to see the callers of what you changed and code elsewhere that builds the same data. Fix the ones that need it, or be sure they do not.
-5. Call submit with a summary and the targeted test command. Code then proves the test fails without your source changes, passes with them, and that the full suites still pass. If it reports problems, fix them and submit again.
+5. Call submit with a summary and the targeted test command. Code then checks the change stays inside the plan (no lock or generated files it does not name, no change far bigger than planned), and proves the test fails without your source changes and passes with them. If it reports problems, fix them and submit again. The full suites run once the Reviewer approves; a regression comes back to you.
 
 Rules:
 - Change only what the issue needs. No unrelated refactors, formatting changes, renames or new dependencies.
@@ -196,6 +196,9 @@ class CoderRun:
     prefer: str | None = None  # the model the operator chose at Gate 1
     kind: str = "code"  # "docs": submit checks a docs-only change (verify.check_docs)
     reproduction: dict[str, str] | None = None  # the plan's, when it failed before any change: must pass after
+    scope: Scope = field(default_factory=Scope)  # the plan's files and size: what submit's scope check allows
+    checks: list[dict[str, Any]] = field(default_factory=list)  # every check that ran, for the task's Checks
+    round: int = 1  # the review round this work belongs to
     model: str = ""  # the model that took the last step
     max_steps: int = 0  # 0: settings.coder_max_steps; an escalation adds steps
 
@@ -256,17 +259,31 @@ class CoderRun:
             return text
         if name == "submit":
             self.summary = str(args.get("summary", ""))
+            started = time.monotonic()
             if self.kind == "docs":
-                self.check = await check_docs(box, self.base, self.suite, self.baseline)
+                self.check = await check_docs(box, self.base)
             else:
                 self.check = await check_fix(
-                    box, self.base, str(args.get("targeted_test_command", "")), self.suite, self.baseline,
+                    box, self.base, str(args.get("targeted_test_command", "")), self.scope,
                     reproduction=self.reproduction,
                 )  # fmt: skip
+            self._log_checks(self.check, time.monotonic() - started)
             if not self.check.passed:
                 raise ToolError(self.check.report())
             return self.check.report()
         raise ToolError(f"unknown tool {name}")
+
+    def _log_checks(self, c: FixCheck, seconds: float) -> None:
+        """What one submit checked: scope first; the test only when the scope held."""
+        if sc := c.scope:
+            detail = "; ".join(sc.problems) or f"{sc.lines} of {sc.limit} lines"
+            if sc.unplanned and not sc.problems:
+                detail += "; not in the plan: " + ", ".join(sc.unplanned)
+            self.checks.append(step("scope", not sc.problems, self.round, 0, detail))
+            if sc.problems:
+                return
+        done = "only documentation changed" if c.kind == "docs" else "fails without the fix, passes with it"
+        self.checks.append(step("test", c.passed, self.round, seconds, "; ".join(c.problems) or done))
 
     def _request_messages(self) -> list[MessageParam]:
         """History with one moving cache breakpoint on the newest block, so each turn re-reads the rest cheaply."""

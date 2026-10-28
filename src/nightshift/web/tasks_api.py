@@ -161,6 +161,7 @@ async def get_task(task_id: int) -> dict[str, Any]:
         else [],
         "baseline": res.get("baseline", []),
         "check": res.get("check"),
+        "checks": res.get("checks", []),
         "context_check": res.get("context_check"),
         "reviews": [
             {"round": rv["round"], "verdict": rv["verdict"], "html": _md(rv["markdown"])}

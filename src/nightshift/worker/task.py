@@ -1,10 +1,14 @@
 """A contribution task from issue to reviewed fix: plan, Gate 1, then Coder and Reviewer in a sandbox.
 
     plan_task:  fresh issue -> sandbox -> brief (L0), map (L1), relevant files (L2), environment (Setup
-                agent, once per repo) -> Planner -> "planned"
+                agent, once per repo) -> Planner -> plan check -> "planned"
     approve / reject:  Gate 1, the operator's decision
-    run_task:   setup -> baseline tests -> Coder -> verification -> Reviewer (-> Coder again, up to the
+    run_task:   setup -> baseline tests -> Coder (submit: scope, then fail before / pass after) -> Reviewer
+                -> full suites, once approved (a regression or a review's changes -> Coder again, up to the
                 review-round limit) -> "ready" with a diff, or "needs_operator" with the work saved
+
+Checks run cheapest first, so a wrong change is caught before the slow ones run (verify.py); each one is
+kept on result["checks"], the task's Checks.
 
 Nothing here writes to GitHub. Limits per task: settings.task_budget_usd (planning included),
 task_minutes and coder_max_steps.
@@ -45,7 +49,16 @@ from nightshift.worker.coder import CoderRun
 from nightshift.worker.issue import IssueView, fetch_issue
 from nightshift.worker.relevant import coverage, relevant_files
 from nightshift.worker.setup_agent import RECIPE, ensure_environment, environment_for, load_recipe
-from nightshift.worker.verify import CommandResult, FixCheck, diff, run_commands, run_reproduction
+from nightshift.worker.verify import (
+    CommandResult,
+    FixCheck,
+    Scope,
+    check_suites,
+    diff,
+    run_commands,
+    run_reproduction,
+    step,
+)
 
 log = structlog.get_logger()
 
@@ -574,9 +587,24 @@ async def run_task(task_id: int) -> Task:
                     " The plan's reproduction script fails on the current code; verification runs it again "
                     f"(`{coder.reproduction['command']}`) and it must pass with your fix."
                 )
+        coder.scope = Scope(
+            planned=[f["path"] for f in plan.get("files_to_change", [])], size=plan.get("size", "medium")
+        )
+        # The Checks: each gate as it runs, cheapest first (verify.py), saved as it goes so the page shows it live.
+        checks = coder.checks
+        if pc := plan.get("plan_check"):
+            musts = [f for f in pc.get("findings", []) if f.get("severity") == "must"]
+            replanned = " Re-planned once for its must-fix findings." if pc.get("revised") else ""
+            checks.append(step("plan", not musts or bool(pc.get("revised")), 0, 0, pc.get("summary", "") + replanned))
+        result["checks"] = checks
+
+        async def checkpoint() -> None:
+            await _save(task, result={**result, "checks": checks})
+
         reviews: list[dict[str, Any]] = []
         status, why = "needs_operator", ""
         for round_no in range(1, settings.review_rounds + 2):
+            coder.round = round_no
             await events.record(task.run_id, "node_start", f"coder round {round_no}", node="coder")
             await coder.work(instruction, deadline)
             await _coder_outcome(task, coder)
@@ -592,10 +620,12 @@ async def run_task(task_id: int) -> Task:
                     deadline,
                 )
                 await _coder_outcome(task, coder)
+            await checkpoint()
             if coder.check is None or not coder.check.passed:
                 why = coder.stopped or "verification did not pass"
                 break
             await events.record(task.run_id, "node_start", f"review round {round_no}", node="review")
+            started = time.monotonic()
             pack, _ = change_markdown(await change_context(box, task.base_commit), budget_tokens=6000)
             rv = await reviewer.review(
                 llm,
@@ -613,11 +643,34 @@ async def run_task(task_id: int) -> Task:
             reviews.append(
                 {"round": round_no, **rv.model_dump(mode="json"), "markdown": reviewer.to_markdown(rv, round_no)}
             )
-            if rv.verdict == "approve" and not reviewer.blocking(rv) and not any(c.needs_change for c in rv.related):
+            approved = (
+                rv.verdict == "approve" and not reviewer.blocking(rv) and not any(c.needs_change for c in rv.related)
+            )
+            checks.append(step("review", approved, round_no, time.monotonic() - started, rv.summary))
+            await checkpoint()
+            if not approved:
+                instruction = reviewer.feedback_for_coder(rv)
+                why = "the review still asks for changes after the last round"
+                continue
+            # The slowest check runs last, once: only on a change that is in scope, proven and approved.
+            await events.record(task.run_id, "node_start", f"full suites round {round_no}", node="suites")
+            started = time.monotonic()
+            await check_suites(coder.check, box, plan["test_commands"], baseline)
+            ran = coder.check
+            detail = "; ".join(ran.problems) or f"{len(ran.suite)} commands, no regression"
+            if ran.already_failing:
+                detail += f" ({len(ran.already_failing)} already failing before the change)"
+            checks.append(step("suites", ran.passed, round_no, time.monotonic() - started, detail))
+            await checkpoint()
+            if ran.passed:
                 status = "ready"
                 break
-            instruction = reviewer.feedback_for_coder(rv)
-            why = "the review still asks for changes after the last round"
+            instruction = (
+                "The Reviewer approved the change, but the full suites found regressions: commands that passed "
+                "before the change fail now. Fix them without weakening any test, then call submit again.\n\n"
+                + ran.report()
+            )
+            why = "the full suites still found regressions after the last round"
 
         final_diff = await diff(box, task.base_commit)
         if "relevant_files" in plan:  # plans made before the list was kept cannot be checked

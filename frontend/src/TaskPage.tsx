@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CommandResult, GateInfo, ModelUse, ModelView, PublishEdits, ReviewComment, TaskDetail, api } from "./api";
+import { CheckStep, CommandResult, GateInfo, ModelUse, ModelView, PublishEdits, ReviewComment, TaskDetail, api } from "./api";
 import { Diff, Html, Log, StatusBadge, Title, money } from "./ui";
 
-const TABS = ["Plan", "Log", "Verification", "Review", "Diff", "PR"] as const;
+const TABS = ["Plan", "Log", "Checks", "Review", "Diff", "PR"] as const;
 type Tab = (typeof TABS)[number];
 
 export function TaskPage({ id, embedded = false }: { id: number; embedded?: boolean }) {
@@ -25,9 +25,10 @@ export function TaskPage({ id, embedded = false }: { id: number; embedded?: bool
   useEffect(() => {
     if (!task || opened.current) return;
     opened.current = true;
-    if (task.status === "working" || task.status === "planning") setTab("Log");
+    if (task.status === "planning") setTab("Log");
+    else if (task.status === "working") setTab("Checks");
     else if (task.status === "ready" || task.status === "published") setTab("PR");
-    else if (task.status === "needs_operator") setTab(task.check ? "Verification" : "Log");
+    else if (task.status === "needs_operator") setTab(task.check || task.checks.length ? "Checks" : "Log");
   }, [task]);
 
   useEffect(() => {
@@ -88,7 +89,7 @@ export function TaskPage({ id, embedded = false }: { id: number; embedded?: bool
       <section className="tab-body">
         {tab === "Plan" && <Html html={task.plan_html} />}
         {tab === "Log" && <Log runId={task.run_id} onStatus={load} />}
-        {tab === "Verification" && <Verification task={task} />}
+        {tab === "Checks" && <Checks task={task} />}
         {tab === "Review" &&
           (task.reviews.length ? task.reviews.map((r) => <Html key={r.round} html={r.html} />) : <p className="muted">No review yet.</p>)}
         {tab === "Diff" && <Diff text={task.diff} />}
@@ -518,7 +519,10 @@ function RunPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }
     <section className="gate calm">
       <header>
         <h2>Plan approved</h2>
-        <p className="muted">Runs setup, a baseline, the Coder, verification and the Reviewer. Limits: $5, 30 minutes.</p>
+        <p className="muted">
+          Runs setup and a baseline, then the Coder. Its change passes the checks cheapest first: scope, the test, the
+          Reviewer, then the full suites once. Limits: $5, 30 minutes.
+        </p>
         {Object.keys(task.chosen_models).length > 0 && (
           <p className="mono dim">
             Chosen models:{" "}
@@ -791,14 +795,102 @@ function ContextCheck({ cc }: { cc: NonNullable<TaskDetail["context_check"]> }) 
   );
 }
 
-function Verification({ task }: { task: TaskDetail }) {
-  const c = task.check;
+// The checks a change passes, cheapest first: a wrong change is caught before the slow checks run.
+const CHECKS: { key: CheckStep["check"]; name: string; proves: string }[] = [
+  { key: "plan", name: "Plan check", proves: "A second model read the code and the plan before any code was written" },
+  { key: "scope", name: "Scope", proves: "The change stays inside the plan: no stray lock or built files, no oversized diff" },
+  { key: "test", name: "Test", proves: "The new test fails without the fix and passes with it" },
+  { key: "review", name: "Review", proves: "A reviewer from another model family approves the diff" },
+  { key: "suites", name: "Full suites", proves: "Everything that passed before still passes (runs once, last)" },
+];
+
+function Checks({ task }: { task: TaskDetail }) {
+  const checks = task.checks;
+  const last = checks[checks.length - 1];
+  const rounds = Math.max(0, ...checks.map((e) => e.round));
+  // While the task runs: a passed check hands over to the next one; anything else means the Coder is working.
+  let next: CheckStep["check"] | undefined;
+  if (task.status === "working") {
+    const after = last?.ok ? CHECKS[CHECKS.findIndex((g) => g.key === last.check) + 1] : undefined;
+    next = after?.key ?? "scope";
+  }
+  const caught = checks.filter((e) => e.check === "scope" && !e.ok).length;
   return (
     <div className="verify">
+      {checks.length > 0 || next ? (
+        <ol className="checks">
+          {CHECKS.map((g) => {
+            const tries = checks.filter((e) => e.check === g.key);
+            const now = tries[tries.length - 1];
+            const state = g.key === next ? "run" : now ? (now.ok ? "pass" : "fail") : "todo";
+            const when =
+              state === "run"
+                ? g.key === "scope" ? "Coder working…" : "running…"
+                : now
+                  ? [rounds > 1 && now.round ? `round ${now.round}` : "", now.seconds ? fmtSeconds(now.seconds) : ""].filter(Boolean).join(" · ")
+                  : "not reached";
+            return (
+              <li key={g.key} className={`chk-row is-${state}`}>
+                <span className="chk-mark" aria-hidden>{state === "pass" ? "✓" : state === "fail" ? "✕" : ""}</span>
+                <div className="chk-main">
+                  <div className="chk-head">
+                    <b>{g.name}</b>
+                    <span className="dim">
+                      {when}
+                      {tries.length > 1 && ` · ${tries.length} tries`}
+                    </span>
+                  </div>
+                  <p className="chk-what">{now?.detail || g.proves}</p>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      ) : (
+        <p className="muted">No checks have run yet.</p>
+      )}
+      {caught > 0 && (
+        <p className="chk-saved">
+          Scope sent {caught === 1 ? "one change" : `${caught} changes`} back before any test ran.
+        </p>
+      )}
+      {checks.length > 1 && (
+        <details className="chk-log">
+          <summary>Every check, in order ({checks.length})</summary>
+          <ol>
+            {checks.map((e, i) => (
+              <li key={i} className={e.ok ? "pass" : "fail"}>
+                <span className="mono dim">{e.round ? `round ${e.round}` : "plan"}</span>
+                <b>{CHECKS.find((g) => g.key === e.check)?.name ?? e.check}</b>
+                <span>{e.detail}</span>
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
+      <Verification task={task} />
+    </div>
+  );
+}
+
+function fmtSeconds(s: number): string {
+  return s < 60 ? `${Math.round(s)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+}
+
+function Verification({ task }: { task: TaskDetail }) {
+  const c = task.check;
+  const suitesRan = c ? (c.suites_run ?? c.suite.length > 0) : false;
+  return (
+    <div className="verify">
+      <h3>Evidence</h3>
       {c ? (
         <>
           <p className={c.passed ? "ok" : "blocked"}>
-            {c.passed ? "Verified by code: the test fails without the fix, passes with it, and no suite regressed." : "Verification did not pass."}
+            {!c.passed
+              ? "Verification did not pass."
+              : suitesRan
+                ? "Verified by code: the test fails without the fix, passes with it, and no suite regressed."
+                : "Verified by code: the test fails without the fix and passes with it. The full suites run once the Reviewer approves."}
           </p>
           {c.problems.map((p) => (
             <p key={p} className="blocked">{p}</p>
@@ -808,8 +900,12 @@ function Verification({ task }: { task: TaskDetail }) {
           </p>
           {c.fails_without_fix && <Run r={c.fails_without_fix} label="Without the fix" />}
           {c.passes_with_fix && <Run r={c.passes_with_fix} label="With the fix" />}
-          <h3>Suites after the change</h3>
-          {c.suite.map((r) => <Run key={r.command} r={r} />)}
+          {suitesRan && (
+            <>
+              <h3>Suites after the change</h3>
+              {c.suite.map((r) => <Run key={r.command} r={r} />)}
+            </>
+          )}
         </>
       ) : (
         <p className="muted">No verification has run yet.</p>

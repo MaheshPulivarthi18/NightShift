@@ -48,6 +48,17 @@ flowchart LR
     C -->|incoming PR| P[Check guidelines and evidence] --> R[Run on merge preview] --> V[Review: must and should findings]
 ```
 
+- **Checks, cheapest first:** a fix passes five checks in order, so a wrong change is caught before the
+  slow ones run. The task's Checks tab shows each one as it runs:
+
+  | Check | Cost | Catches |
+  |---|---|---|
+  | Plan check | ~$0.01, before any code | a plan that misreads the code (a second model reads it) |
+  | Scope | free, instant | lock or built files the plan does not name, a change far bigger than planned |
+  | Test | seconds | a test that passes without the fix, a fix that does not pass it |
+  | Review | cents | an incomplete fix, missed code paths, unrelated changes (another model family) |
+  | Full suites | minutes, once | regressions; they run after the Reviewer approves, and one goes back to the Coder |
+
 - **Sandbox:** all repo code, including every PR under check, runs only in a Docker container: non-root,
   no capabilities, CPU, memory and process limits, a timeout on every command, and no keys or tokens
   inside. One image per repo, reused by every issue and PR in it.

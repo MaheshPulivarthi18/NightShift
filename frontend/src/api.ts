@@ -117,6 +117,7 @@ export interface CommandResult {
 
 export interface FixCheck {
   passed: boolean;
+  suites_run?: boolean; // false until the Reviewer approves; older tasks ran the suites on every submit
   test_files: string[];
   source_files: string[];
   fails_without_fix: CommandResult | null;
@@ -125,6 +126,15 @@ export interface FixCheck {
   regressions: string[];
   already_failing: string[];
   problems: string[];
+}
+
+// One check a task's change passed or failed, in the order they ran (cheapest first; round 0 is the plan).
+export interface CheckStep {
+  check: "plan" | "scope" | "test" | "review" | "suites";
+  ok: boolean;
+  round: number;
+  seconds: number;
+  detail: string;
 }
 
 export interface TaskDetail extends TaskSummary {
@@ -140,6 +150,7 @@ export interface TaskDetail extends TaskSummary {
   claim_url: string | null;
   baseline: CommandResult[];
   check: FixCheck | null;
+  checks: CheckStep[];
   // Did the planning context hold the files the fix changed? Null for tasks planned before it was kept.
   context_check: { changed: string[]; relevant: string[]; planned: string[]; missed: string[]; new: string[] } | null;
   reviews: { round: number; verdict: string; html: string }[];

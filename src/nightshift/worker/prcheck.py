@@ -47,9 +47,9 @@ from nightshift.worker.task import brief_text, issue_text, repo_conventions
 from nightshift.worker.verify import (
     CommandResult,
     FixCheck,
-    _suites,
     check_docs,
     check_fix,
+    check_suites,
     is_doc_path,
     is_test_path,
     run_commands,
@@ -370,13 +370,14 @@ async def _verify(
 ) -> FixCheck:
     names = [f for f in (await box.exec(f"git diff --name-only {shlex.quote(base)}")).stdout.splitlines() if f]
     if names and all(is_doc_path(f) for f in names):
-        return await check_docs(box, base, env.test_commands, baseline)
-    if plan.targeted_command.strip():
-        return await check_fix(box, base, plan.targeted_command, env.test_commands, baseline, reproduction=repro)
-    check = FixCheck(passed=False, test_files=[f for f in names if is_test_path(f)],
-                     source_files=[f for f in names if not is_test_path(f)])  # fmt: skip
-    await _suites(check, box, env.test_commands, baseline)
-    if repro:
+        check = await check_docs(box, base)
+    elif plan.targeted_command.strip():
+        check = await check_fix(box, base, plan.targeted_command, reproduction=repro)
+    else:
+        check = FixCheck(passed=False, test_files=[f for f in names if is_test_path(f)],
+                         source_files=[f for f in names if not is_test_path(f)])  # fmt: skip
+    await check_suites(check, box, env.test_commands, baseline)  # a PR check reports everything at once
+    if repro and check.reproduction is None:
         check.reproduction = await run_reproduction(box, repro)
         if not check.reproduction.ok:
             check.problems.append("the issue's reproduction still fails with the PR, so the issue is not fixed")
