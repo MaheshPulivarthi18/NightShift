@@ -134,9 +134,7 @@ async def _save(task: Task, **values: Any) -> None:
 # ---------- plan and Gate 1 ----------
 
 
-async def precheck(
-    full_name: str, number: int, rehearsal: bool = False
-) -> tuple[str, IssueView, list[str], str | None]:
+async def precheck(full_name: str, number: int) -> tuple[str, IssueView, list[str], str | None]:
     """The fast checks before planning: the repo's current name, the issue, and whether it is still free.
 
     Returns (current repo name, issue, blockers, note if the repo moved). Raises TaskError when the issue
@@ -157,23 +155,21 @@ async def precheck(
     except GitHubError as e:
         raise TaskError(f"Cannot read {current}#{number}: {e}") from e
     blockers = issue.blockers(get_settings().github_login or None)
-    if blockers and not rehearsal:
+    if blockers:
         raise TaskError(f"#{number} is not free: " + "; ".join(blockers))
     return current, issue, blockers, moved
 
 
-async def plan_task(
-    full_name: str, number: int, *, base: str | None = None, rehearsal: bool = False, note: str = ""
-) -> Task:
-    """Plan a fix for an issue and stop at Gate 1. A rehearsal may plan an issue someone already fixed.
+async def plan_task(full_name: str, number: int, *, base: str | None = None, note: str = "") -> Task:
+    """Plan a fix for an issue and stop at Gate 1, if the issue is still free.
     `note` is the developer's own instruction to the Planner, e.g. "treat this as a docs task"."""
     settings = get_settings()
-    full_name, issue, blockers, moved = await precheck(full_name, number, rehearsal)
+    full_name, issue, _, moved = await precheck(full_name, number)
 
     async with session_scope() as s:
         repo = await get_or_create_repo(s, full_name)
         task = Task(
-            repo_id=repo.id, issue_number=number, status="planning", base_commit="", rehearsal=rehearsal,
+            repo_id=repo.id, issue_number=number, status="planning", base_commit="",
             issue=issue.model_dump(mode="json"), plan={},
         )  # fmt: skip
         s.add(task)
@@ -242,7 +238,6 @@ async def plan_task(
             why = ": ".join(filter(None, [env.blocker, env.detail]))
             warnings.append(f"Setup agent: environment {env.status}: {why}")
         warnings += [f"`{p}` does not exist in the repo" for p in planner.unknown_paths(plan, tracked)]
-        warnings += [f"rehearsal: {b}" for b in blockers]
         warnings += [moved] if moved else []
         markdown = planner.to_markdown(
             plan, title=f"{full_name}#{number} {issue.title}", warnings=warnings, checks=checks, note=note.strip(),
@@ -1060,7 +1055,7 @@ async def task_from_pr(url: str) -> Task:
     async with session_scope() as s:
         task = Task(
             repo_id=repo.id, issue_number=number or pr.number, status="published", base_commit=base,
-            rehearsal=False, issue=issue_data, plan=plan, diff=patch,
+            issue=issue_data, plan=plan, diff=patch,
             result={"pr_url": pr.url, "published_diff": patch, "branch": info.head_branch},
         )  # fmt: skip
         s.add(task)

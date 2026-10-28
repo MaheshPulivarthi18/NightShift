@@ -57,7 +57,6 @@ def _summary(t: Task, r: Repo) -> dict[str, Any]:
         "title": t.issue.get("title", ""),
         "status": t.status,
         "stage": STAGES.get(t.status, "stopped"),
-        "rehearsal": t.rehearsal,
         "cost_usd": round(t.cost_usd, 4),
         "error": t.error,
         "busy": f"task-{t.id}" in _jobs and not _jobs[f"task-{t.id}"].done(),
@@ -172,7 +171,6 @@ class NewTask(BaseModel):
     repo: str = Field(pattern=r"^[\w.-]+/[\w.-]+$")
     issue: int = Field(gt=0)
     base: str | None = None
-    rehearsal: bool = False
     note: str = Field(default="", max_length=4000)  # the developer's instruction to the Planner
 
 
@@ -180,11 +178,11 @@ class NewTask(BaseModel):
 async def new_task(body: NewTask) -> dict[str, str]:
     """Checks the issue at once (exists, still free), then plans in the background."""
     try:
-        current, _, _, moved = await worker.precheck(body.repo, body.issue, body.rehearsal)
+        current, _, _, moved = await worker.precheck(body.repo, body.issue)
     except worker.TaskError as e:
         raise HTTPException(409, str(e)) from e
     body.repo = current
-    planning = worker.plan_task(body.repo, body.issue, base=body.base or None, rehearsal=body.rehearsal, note=body.note)
+    planning = worker.plan_task(body.repo, body.issue, base=body.base or None, note=body.note)
     _background(f"plan-{body.repo}-{body.issue}", planning)
     return {"status": "planning", "repo": current, "note": moved or ""}
 

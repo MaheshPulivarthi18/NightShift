@@ -17,12 +17,13 @@ from sqlalchemy import select
 
 from nightshift.config import get_settings
 from nightshift.context import archmap
-from nightshift.db import PRCheck, RepoContext, Task, session_scope
+from nightshift.db import PRCheck, RepoContext, Run, Task, session_scope
 from nightshift.github import GitHubClient, GitHubError
 from nightshift.web.api import _environment_view, _iso, _repo
 from nightshift.web.common import Guard
 from nightshift.web.tasks_api import STAGES
 from nightshift.worker import sync
+from nightshift.worker.onboard import BRIEF
 from nightshift.worker.setup_agent import ENVIRONMENT, Environment, load_recipe
 
 router = APIRouter(prefix="/api")
@@ -38,9 +39,10 @@ def _task_item(t: Task, state: str | None) -> dict[str, Any]:
     closed = state in ("MERGED", "CLOSED") or stage == "closed"
     return {
         "kind": "task", "id": t.id, "number": t.issue_number, "title": (t.issue or {}).get("title", ""),
+        "pr_number": sync.pr_number(pr_url),
         "role": "yours" if pr_url else "issue", "status": t.status, "stage": stage,
         "pr_url": pr_url, "pr_state": state, "open": not closed, "hidden": t.archived_at is not None,
-        "rehearsal": t.rehearsal, "updated_at": _iso(t.updated_at),
+        "updated_at": _iso(t.updated_at),
         "feedback": len(((res.get("sync") or {}).get("open")) or []) if state == "OPEN" else 0,
     }  # fmt: skip
 
@@ -110,15 +112,23 @@ async def repo_knowledge(owner: str, name: str) -> dict[str, Any]:
                 .limit(1)
             )
         ).scalar_one_or_none()
+        setup = (
+            await s.execute(
+                select(Run).where(Run.run_id.like(f"setup-{repo.id}-%")).order_by(Run.started_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
     env = next((c for c in contexts if c.kind == ENVIRONMENT), None)
     amap = next((c for c in contexts if c.kind == archmap.KIND), None)
+    stored_brief = next((c for c in contexts if c.kind == BRIEF), None)
     return {
         "environment": _environment_view(Environment.model_validate(env.data), env.created_at) if env else None,
         "recipe": await load_recipe(repo.id),
         "map": {"commit": amap.commit, "built_at": _iso(amap.created_at),
                 "components": len(amap.data.get("components", [])),
                 "relationships": len(amap.data.get("relationships", []))} if amap else None,
-        "brief": (brief or {}).get("brief"),
+        "brief": stored_brief.data.get("text") if stored_brief else (brief or {}).get("brief"),
+        "setup": {"run_id": setup.run_id, "status": setup.status, "step": setup.current_node, "error": setup.error,
+                  "at": _iso(setup.started_at)} if setup else None,
     }  # fmt: skip
 
 

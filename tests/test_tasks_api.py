@@ -64,7 +64,7 @@ async def test_an_issue_that_is_not_free_is_refused_with_the_reason(
 ) -> None:
     from nightshift.worker import task as worker
 
-    async def taken(repo: str, number: int, rehearsal: bool = False) -> None:
+    async def taken(repo: str, number: int) -> None:
         raise worker.TaskError(f"#{number} is not free: open PR #713 by someone references it")
 
     monkeypatch.setattr(worker, "precheck", taken)

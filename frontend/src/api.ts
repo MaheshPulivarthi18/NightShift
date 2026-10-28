@@ -96,7 +96,6 @@ export interface TaskSummary {
   title: string;
   status: string;
   stage: Stage;
-  rehearsal: boolean;
   cost_usd: number;
   error: string | null;
   busy: boolean;
@@ -283,10 +282,10 @@ export interface RepoItem {
   must?: number;
   should?: number;
   pr_url: string | null;
+  pr_number?: number | null; // a task's PR, once published; `number` stays the issue it fixes
   pr_state: "OPEN" | "MERGED" | "CLOSED" | null;
   open: boolean;
   hidden: boolean;
-  rehearsal?: boolean;
   updated_at: string | null;
   feedback?: number;
 }
@@ -321,6 +320,8 @@ export interface RepoKnowledge {
   recipe: { setup: string[]; tests: string[]; passing: string[] } | null;
   map: { commit: string; built_at: string; components: number; relationships: number } | null;
   brief: string | null;
+  // The latest run that set the repo up: environment, then map, then brief.
+  setup: { run_id: string; status: string; step: string | null; error: string | null; at: string } | null;
 }
 
 export interface RepoStats {
@@ -362,6 +363,7 @@ export const api = {
   repoKnowledge: (repo: string) => call<RepoKnowledge>(`/repos/${repo}/knowledge`),
   repoStats: (repo: string) => call<RepoStats>(`/repos/${repo}/stats`),
   syncStatus: () => call<SyncStatus>("/sync"),
+  onboardRepo: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/onboard`, {}),
   syncNow: () => call<SyncStatus>("/sync", {}),
   addRepo: (full_name: string, role: string) => call<RepoRow[]>("/repos", { full_name, role }),
   setRole: (repo: string, role: string) => call<RepoRow[]>(`/repos/${repo}/role`, { role }),
@@ -387,8 +389,8 @@ export const api = {
   attach: (id: number, url: string) => call<TaskDetail>(`/tasks/${id}/attach`, { url }),
   archive: (id: number, archived: boolean) => call<TaskDetail>(`/tasks/${id}/archive`, { archived }),
   task: (id: number) => call<TaskDetail>(`/tasks/${id}`),
-  create: (repo: string, issue: number, base: string, rehearsal: boolean, note = "") =>
-    call<{ status: string; repo: string; note: string }>("/tasks", { repo, issue, base: base || null, rehearsal, note }),
+  create: (repo: string, issue: number, base: string, note = "") =>
+    call<{ status: string; repo: string; note: string }>("/tasks", { repo, issue, base: base || null, note }),
   decide: (id: number, approve: boolean, note: string, setup: string[], test: string[], models: Record<string, string> = {}) =>
     call<TaskDetail>(`/tasks/${id}/decision`, {
       approve,

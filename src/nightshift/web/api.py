@@ -30,6 +30,7 @@ from nightshift.memory import get_or_create_repo
 from nightshift.router import AGENTS, agent_routes
 from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker.issue import fetch_issue
+from nightshift.worker.onboard import onboard
 from nightshift.worker.prcheck import PRCheckError, check_pr, fetch_pull, prcheck_run_id
 from nightshift.worker.setup_agent import ENVIRONMENT, Environment, setup_repo, setup_run_id
 
@@ -72,6 +73,20 @@ def _start(repo: str, run_id: str, resume: bool = False) -> None:
             await run_health_report(repo, run_id=run_id, resume=resume)
         except Exception as e:  # recorded on the run by run_health_report; keep the server alive
             log.warning("web_run_failed", repo=repo, run_id=run_id, error=str(e))
+        finally:
+            _runs.pop(run_id, None)
+
+    _runs[run_id] = asyncio.create_task(job())
+
+
+def _start_onboard(repo: str, run_id: str) -> None:
+    """Set a repo up in the background: environment, map and brief (worker/onboard.py)."""
+
+    async def job() -> None:
+        try:
+            await onboard(repo, run_id)
+        except Exception as e:  # recorded on the run by onboard
+            log.warning("web_onboard_failed", repo=repo, run_id=run_id, error=str(e))
         finally:
             _runs.pop(run_id, None)
 
@@ -194,7 +209,21 @@ async def add_repo(body: RepoIn) -> list[dict[str, Any]]:
     async with session_scope() as s:
         repo = await get_or_create_repo(s, name, role=body.role)
         repo.watched = True  # adding a removed repo again brings it and its history back
+        repo_id = repo.id
+    if not any(r.startswith(f"setup-{repo_id}-") for r in _runs):
+        _start_onboard(name, setup_run_id(repo_id))  # learn the repo once: environment, map and brief
     return await list_repos()
+
+
+@router.post("/repos/{owner}/{name}/onboard", dependencies=[Guard])
+async def start_onboard(owner: str, name: str) -> dict[str, str]:
+    """Set the repo up again: environment, map and brief, at the head of its default branch."""
+    repo = await _repo(f"{owner}/{name}")
+    if any(r.startswith(f"setup-{repo.id}-") for r in _runs):
+        raise HTTPException(409, "This repo is already being set up.")
+    run_id = setup_run_id(repo.id)
+    _start_onboard(repo.full_name, run_id)
+    return {"run_id": run_id}
 
 
 @router.post("/repos/{owner}/{name}/remove", dependencies=[Guard])

@@ -69,6 +69,9 @@ export function Home() {
           <table className="grid">
             <thead><tr><th>Repo</th><th>View</th><th>Environment</th><th>Worth contributing?</th><th className="right">Need you</th></tr></thead>
             <tbody>
+              {repos?.length === 0 && (
+                <tr><td colSpan={5} className="dim">No repos yet. Add one with “+ Add repo” in the sidebar: NightShift sets it up for you.</td></tr>
+              )}
               {(repos ?? []).map((r) => (
                 <tr key={r.full_name} className="clickable" onClick={() => (window.location.hash = `#/r/${r.full_name}/items`)}>
                   <td><b>{r.full_name.split("/")[1]}</b> <span className="dim">{r.full_name.split("/")[0]}</span></td>

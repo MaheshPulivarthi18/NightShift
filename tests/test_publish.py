@@ -71,7 +71,7 @@ def upstream(tmp_path: Path) -> tuple[Path, str]:
 
 def _task(base: str, diff: str) -> Task:
     return Task(id=7, issue_number=3, base_commit=base, diff=diff, issue={"title": "Fix the Thing!"}, plan={},
-                result={}, rehearsal=False)  # fmt: skip
+                result={})  # fmt: skip
 
 
 async def test_prepare_blocks_a_fix_whose_files_changed_upstream(upstream: tuple[Path, str], tmp_path: Path) -> None:

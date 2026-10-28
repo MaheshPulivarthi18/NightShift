@@ -49,7 +49,6 @@ function itemStatus(i: RepoItem): [string, string] {
     if (i.status !== "done") return ["Check stopped", "bad"];
     return [`Checked · ${i.verdict ?? ""}`, i.must ? "bad" : i.should ? "warn" : "ok"];
   }
-  if (i.rehearsal) return ["Practice run", ""];
   if (i.stage === "done" && i.feedback) return [`In review · ${i.feedback} new comment${i.feedback > 1 ? "s" : ""}`, "info"];
   return ({
     plan: ["Planning", ""], gate1: ["Plan ready: approve it", "info"], work: ["Working", ""],
@@ -89,8 +88,9 @@ function Items({ repo, sel }: { repo: string; sel: string | null }) {
             return (
               <a key={key(i)} className={`li${sel === key(i) ? " on" : ""}`} href={`#/r/${repo}/items/${key(i)}`}>
                 <span className="l1">
-                  <span className="mono dim">#{i.number}</span>
+                  <span className="mono dim">{i.pr_number ? `PR #${i.pr_number}` : `#${i.number}`}</span>
                   <span className={`badge ${i.role}`}>{ROLE[i.role]}</span>
+                  {i.pr_number && <span className="dim small-print">fixes #{i.number}</span>}
                   {i.hidden && <span className="badge">Hidden</span>}
                   <span className="dim when">{ago(i.updated_at)}</span>
                 </span>
@@ -122,7 +122,7 @@ function Start({ repo, onStarted }: { repo: string; onStarted: () => void }) {
         placeholder="Issue number, e.g. 123"
         note
         submit="Plan it"
-        run={(v, note) => api.create(repo, Number(v.replace("#", "")), "", false, note).then(() => "Planning started; it shows on the left in a moment.")}
+        run={(v, note) => api.create(repo, Number(v.replace("#", "")), "", note).then(() => "Planning started; it shows on the left in a moment.")}
         onDone={onStarted}
       />
       <StartForm
@@ -229,13 +229,14 @@ function RepoMapTab({ repo }: { repo: string }) {
 }
 
 function Knowledge({ repo }: { repo: string }) {
-  const [k, error] = usePoll<RepoKnowledge>(() => api.repoKnowledge(repo), 60000, [repo]);
+  const [k, error, reload] = usePoll<RepoKnowledge>(() => api.repoKnowledge(repo), 5000, [repo]);
   if (error) return <p className="error pane-pad">{error}</p>;
   if (!k) return <p className="dim pane-pad">Loading…</p>;
   const env = k.environment;
   return (
     <div className="pane-pad knowledge">
-      <p className="dim">Built once and reused by every issue and PR in this repo.</p>
+      <p className="dim">Learned once when the repo is added, and reused by every issue and PR in it.</p>
+      <SetupProgress repo={repo} setup={k.setup} onStarted={reload} />
       <section className="panel">
         <div className="panel-h"><h2>Environment</h2>{env ? <span className={`badge ${env.status === "ready" ? "ok" : "must"}`}>{env.status}</span> : <span className="badge">not set up</span>}</div>
         <div className="panel-b">
@@ -248,7 +249,6 @@ function Knowledge({ repo }: { repo: string }) {
           ) : (
             <>
               <p className="dim">Not set up yet. The Setup agent works out how to install and test the repo in the sandbox.</p>
-              <button className="ghost small" onClick={() => api.setupRepo(repo)}>Set it up</button>
             </>
           )}
         </div>
@@ -269,9 +269,50 @@ function Knowledge({ repo }: { repo: string }) {
       </section>
       <section className="panel">
         <div className="panel-h"><h2>Repo brief and PR rules</h2></div>
-        <div className="panel-b">{k.brief ? <pre className="brief">{k.brief}</pre> : <p className="dim">Written when NightShift first plans a fix here.</p>}</div>
+        <div className="panel-b">{k.brief ? <pre className="brief">{k.brief}</pre> : <p className="dim">Written during setup, from the repo's README and contributing guide.</p>}</div>
       </section>
     </div>
+  );
+}
+
+const STEPS = [["environment", "Environment"], ["map", "Code map"], ["brief", "Brief and PR rules"]] as const;
+
+/** The run that sets the repo up, step by step, with its log and a way to run it again. */
+function SetupProgress({ repo, setup, onStarted }: { repo: string; setup: RepoKnowledge["setup"]; onStarted: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const start = () => api.onboardRepo(repo).then(() => (setError(null), onStarted()), (e: Error) => setError(e.message));
+  const running = setup?.status === "running";
+  const at = STEPS.findIndex(([key]) => key === setup?.step);
+  return (
+    <section className="panel">
+      <div className="panel-h">
+        <h2>Setup</h2>
+        {setup && (
+          <span className="status">
+            <span className={`dot ${running ? "info" : setup.status === "done" ? "ok" : "bad"}`} />
+            {running ? "Setting up…" : setup.status === "done" ? `Set up ${ago(setup.at)}` : `Finished with problems, ${ago(setup.at)}`}
+          </span>
+        )}
+        <span className="push row-flex">
+          {setup && <a className="small-print" href={`#/jobs/${setup.run_id}`}>Live log</a>}
+          <button className="ghost small" onClick={start} disabled={running}>{setup ? "Set up again" : "Set it up"}</button>
+        </span>
+      </div>
+      <div className="panel-b">
+        {setup ? (
+          <ol className="steps-row">
+            {STEPS.map(([key, label], i) => {
+              const state = !running && setup.status === "done" ? "done" : i < at ? "done" : i === at ? (running ? "now" : "stopped") : "";
+              return <li key={key} className={state}>{state === "done" ? "✓ " : ""}{label}</li>;
+            })}
+          </ol>
+        ) : (
+          <p className="dim">Not set up yet: environment, code map and brief are learned in one run.</p>
+        )}
+        {setup?.error && !running && <p className="dim">{setup.error}</p>}
+        {error && <p className="error">{error}</p>}
+      </div>
+    </section>
   );
 }
 

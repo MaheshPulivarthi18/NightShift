@@ -85,7 +85,6 @@ export function Board({ prefillRepo, prefillIssue }: { prefillRepo: string; pref
                 <div className="card-title"><Title text={t.title} /></div>
                 <div className="card-foot mono dim">
                   <span>task {t.id}</span>
-                  {t.rehearsal && <span className="tag">rehearsal</span>}
                   <span className="spacer" />
                   <span>{money(t.cost_usd)}</span>
                 </div>
@@ -146,14 +145,13 @@ function NewTask({ repo0, issue0, onCreated }: { repo0: string; issue0: string; 
   const [repo, setRepo] = useState(repo0);
   const [issue, setIssue] = useState(issue0);
   const [base, setBase] = useState("");
-  const [rehearsal, setRehearsal] = useState(false);
   const [note, setNote] = useState("");
   const [state, setState] = useState<{ busy: boolean; msg: string | null; error?: boolean }>({ busy: false, msg: null });
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     setState({ busy: true, msg: null });
-    api.create(repo.trim(), Number(issue), base.trim(), rehearsal, note.trim()).then(
+    api.create(repo.trim(), Number(issue), base.trim(), note.trim()).then(
       (r) => {
         const moved = r.note ? ` ${r.note}.` : "";
         setState({ busy: false, msg: `Planning started.${moved} The plan appears under “Waiting on you” in about a minute.` });
@@ -181,10 +179,6 @@ function NewTask({ repo0, issue0, onCreated }: { repo0: string; issue0: string; 
         <label>
           <span>Base commit</span>
           <input className="mono" placeholder="default branch" value={base} onChange={(e) => setBase(e.target.value)} />
-        </label>
-        <label className="check">
-          <input type="checkbox" checked={rehearsal} onChange={(e) => setRehearsal(e.target.checked)} />
-          <span>Rehearsal (re-solve an issue that already has a fix; never published)</span>
         </label>
         <FromPr />
         <label className="note">

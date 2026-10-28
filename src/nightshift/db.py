@@ -306,8 +306,6 @@ class Task(Base):
     issue_number: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="planned")
     base_commit: Mapped[str] = mapped_column(String(40))
-    # A rehearsal re-solves an issue that already has a fix, to test the worker; it is never published.
-    rehearsal: Mapped[bool] = mapped_column(Boolean, default=False)
     issue: Mapped[dict[str, Any]] = mapped_column(JsonType)  # the issue as fetched when planning
     plan: Mapped[dict[str, Any]] = mapped_column(JsonType)
     result: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)  # baseline, checks, reviews

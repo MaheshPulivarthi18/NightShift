@@ -7,13 +7,21 @@ from typing import Any
 
 import pytest
 from fake_openrouter import FakeOpenRouter, reply
+from sqlalchemy import delete
 from test_llm_gateway import _gateway, repo_id  # noqa: F401  (fixture)
 
+from nightshift.db import LLMCall, session_scope
 from nightshift.sandbox.docker import ExecResult
 from nightshift.worker import plancheck
 
 ISSUE = "start_server cannot be entered twice"
 PLAN = "## Files\n- `src/base.py`: reset the readiness events in start_server"
+
+
+async def _forget(run_id: str) -> None:
+    """Remove the test's calls from the spend ledger, which is the real one in the dev database."""
+    async with session_scope() as s:
+        await s.execute(delete(LLMCall).where(LLMCall.run_id == run_id))
 
 
 class Box:
@@ -44,8 +52,9 @@ async def test_the_checker_reads_the_code_then_reports(repo_id: int) -> None:  #
         reply(tool_calls=[("c1", "search", {"pattern": "(LanguageServer)"})], finish="tool_calls"),
         reply(tool_calls=[("c2", "report", FINDINGS)], finish="tool_calls"),
     )
-    box = Box()
-    check = await plancheck.check_plan(_gateway(repo_id, fake), box, issue=ISSUE, plan=PLAN, avoid="anthropic")  # type: ignore[arg-type]
+    box, gw = Box(), _gateway(repo_id, fake)
+    check = await plancheck.check_plan(gw, box, issue=ISSUE, plan=PLAN, avoid="anthropic")  # type: ignore[arg-type]
+    await _forget(gw.run_id)
     assert [f.severity for f in check.findings] == ["must", "should"] and len(check.must()) == 1
     assert box.commands and "git grep" in box.commands[0]
     first = fake.bodies[0]
@@ -61,7 +70,9 @@ async def test_a_checker_that_never_reports_ends_with_no_findings(
 ) -> None:
     monkeypatch.setattr(plancheck, "MAX_STEPS", 2)
     fake = FakeOpenRouter(reply(tool_calls=[("c1", "search", {"pattern": uuid.uuid4().hex})], finish="tool_calls"))
-    check = await plancheck.check_plan(_gateway(repo_id, fake), Box(), issue=ISSUE, plan=PLAN, avoid=None)  # type: ignore[arg-type]
+    gw = _gateway(repo_id, fake)
+    check = await plancheck.check_plan(gw, Box(), issue=ISSUE, plan=PLAN, avoid=None)  # type: ignore[arg-type]
+    await _forget(gw.run_id)
     assert check.findings == [] and "did not finish" in check.summary
     assert [t["function"]["name"] for t in fake.bodies[-1]["tools"]] == ["report"]  # the last step may only report
 

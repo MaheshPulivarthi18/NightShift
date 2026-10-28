@@ -54,3 +54,11 @@ def no_learning(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest)
 
     monkeypatch.setattr(outcomes, "record", record)
     monkeypatch.setattr(outcomes, "stats", stats)
+
+
+@pytest.fixture(autouse=True)
+def reports_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """Task folders and reports a test writes go to its own temporary folder, never the real reports/."""
+    from nightshift.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "reports_dir", str(tmp_path / "reports"))

@@ -106,8 +106,6 @@ def missing_sections(body: str, headings: list[str]) -> list[str]:
 
 async def freshness(full_name: str, task: Task) -> list[str]:
     """Reasons it is no longer safe to publish; empty when the issue is still ours to fix."""
-    if task.rehearsal:
-        return ["this is a rehearsal: it re-solved an issue that already has a fix"]
     issue = await fetch_issue(full_name, task.issue_number)
     return issue.blockers(get_settings().github_login or None)
 

@@ -9,10 +9,10 @@ from typing import Any
 
 import pytest
 from fake_openrouter import FakeOpenRouter
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from nightshift import chat as chat_mod
-from nightshift.db import ChatMessage, Item, Repo, session_scope
+from nightshift.db import Chat, ChatMessage, Item, LLMCall, Repo, session_scope
 
 
 def _msg(role: str, content: list[dict[str, Any]]) -> ChatMessage:
@@ -94,6 +94,8 @@ async def repo_and_item() -> AsyncIterator[tuple[Repo, Item]]:
         pytest.skip(f"Postgres not available: {e}")
     yield repo, item
     async with session_scope() as s:
+        chats = (await s.execute(select(Chat.id).where(Chat.repo_id == repo.id))).scalars().all()
+        await s.execute(delete(LLMCall).where(LLMCall.run_id.in_([f"chat:{c}" for c in chats])))  # the chat's spend
         await s.execute(delete(Repo).where(Repo.full_name == name))
 
 

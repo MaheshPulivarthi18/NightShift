@@ -496,3 +496,8 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 @media (max-width: 900px) { .item-list { width: 260px; } .map-side { display: none; } }
 .sync { display: inline-flex; align-items: center; gap: 10px; }
 .page-head .sync { margin-left: auto; }
+.steps-row { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0 0 8px; padding: 0; font-size: 12.5px; }
+.steps-row li { padding: 3px 9px; border-radius: 4px; background: var(--hover); color: var(--ink-3); }
+.steps-row li.done { color: var(--ok); background: var(--ok-soft); }
+.steps-row li.now { color: var(--lamp); background: var(--lamp-soft); font-weight: 600; }
+.steps-row li.stopped { color: var(--bad); background: var(--bad-soft); }

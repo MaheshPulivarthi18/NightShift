@@ -50,7 +50,6 @@ export function TaskPage({ id, embedded = false }: { id: number; embedded?: bool
       <header className="task-head">
         <div className="mono dim">
           {task.repo}#{task.issue} · task {task.id} · base {task.base_commit.slice(0, 7) || "—"}
-          {task.rehearsal && <span className="tag">rehearsal</span>}
         </div>
         <h1><Title text={task.title} /></h1>
         <div className="facts">
