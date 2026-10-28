@@ -13,7 +13,7 @@ import re
 import shlex
 
 from nightshift.config import get_settings
-from nightshift.sandbox.docker import NETWORK_ERROR, SandboxError, _docker, image_exists
+from nightshift.sandbox.docker import NETWORK_ERROR, SandboxError, docker_shown, image_exists
 
 APT_NAME = re.compile(r"^[a-z0-9][a-z0-9+.-]{0,62}$")  # Debian package names (no version pins or options)
 MAX_PACKAGES = 40
@@ -74,9 +74,11 @@ async def ensure_env_image(packages: list[str], tools: list[str]) -> str:
     if await image_exists(tag):
         return tag
     content = dockerfile(get_settings().sandbox_image, packages, tools).encode()
-    res = await _docker("build", "--tag", tag, "-", stdin=content, timeout=1200)
+    what = "build the environment image: " + ", ".join([*packages, *tools])
+    args = ("build", "--progress=plain", "--tag", tag, "-")
+    res = await docker_shown(*args, stdin=content, timeout=1200, command=what, note="environment image")
     if not res.ok and NETWORK_ERROR.search(res.tail(4000)):
-        res = await _docker("build", "--tag", tag, "-", stdin=content, timeout=1200)
+        res = await docker_shown(*args, stdin=content, timeout=1200, command=what, note="again after a network error")
     if not res.ok:
         raise SandboxError(f"building the environment image failed (exit {res.code}):\n{res.tail()}")
     return tag

@@ -61,7 +61,9 @@ async def test_suites_run_after_approval_and_a_regression_goes_back(
     async def prepare_repo(*args: Any, **kwargs: Any) -> tuple[Box, bool]:
         return Box(), True
 
-    async def run_commands(box: Any, commands: list[str], timeout: float | None = None) -> list[CommandResult]:
+    async def run_commands(
+        box: Any, commands: list[str], timeout: float | None = None, note: str = ""
+    ) -> list[CommandResult]:
         order.append("baseline")
         return [OK]
 

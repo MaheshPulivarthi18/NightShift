@@ -154,11 +154,14 @@ async def read_tool(box: Sandbox, name: str, args: dict[str, Any]) -> str:
         if not res.ok:
             raise ToolError(f"{path}: no such file")
         total, _, body = res.stdout.partition("\n")
-        return f"{path} lines {start}-{min(end, int(total or 0) + 1)} of about {total.strip()}\n{body}"
+        shown = f"{start}-{min(end, int(total or 0) + 1)}"
+        await events.action("read", f"read {path}", path=path, lines=shown)
+        return f"{path} lines {shown} of about {total.strip()}\n{body}"
     if name == "list_files":
         prefix = str(args.get("prefix") or "").strip("/")
         target = shlex.quote(safe_path(prefix)) if prefix else "."
         res = await box.exec(f"git ls-files -- {target} | head -300")
+        await events.action("list", f"listed {prefix or 'the repo'}", path=prefix)
         return res.stdout or "No tracked files there."
     if name == "search":
         flag = "-E" if args.get("regex") else "-F"
@@ -166,6 +169,8 @@ async def read_tool(box: Sandbox, name: str, args: dict[str, Any]) -> str:
         res = await box.exec(
             f"git grep -n -I {flag} -e {shlex.quote(str(args.get('pattern', '')))} -- {where} | head -200"
         )
+        hits = len(res.stdout.splitlines())
+        await events.action("search", f"searched for {str(args.get('pattern', ''))[:120]!r}", matches=hits)
         return res.stdout or "No matches."
     raise ToolError(f"unknown tool {name}")
 
@@ -234,7 +239,9 @@ class CoderRun:
         if name == "write_file":
             path = safe_path(args.get("path", ""))
             await box.exec(f"mkdir -p -- {shlex.quote(posixpath.dirname(path) or '.')}")
-            await box.write_file(f"{REPO_DIR}/{path}", str(args.get("content", "")))
+            content = str(args.get("content", ""))
+            await box.write_file(f"{REPO_DIR}/{path}", content)
+            await events.action("write", f"wrote {path}", path=path, added=len(content.splitlines()))
             return f"Wrote {path}."
         if name == "edit_file":
             path = safe_path(args.get("path", ""))
@@ -249,10 +256,13 @@ class CoderRun:
             if count != 1:
                 raise ToolError(f"old_string found {count} times in {path}; it must match exactly once")
             await box.write_file(f"{REPO_DIR}/{path}", text.replace(old, new, 1))
+            await events.action("edit", f"edited {path}", path=path, added=len(new.splitlines()),
+                                removed=len(old.splitlines()))  # fmt: skip
             return f"Edited {path}."
         if name == "run":
             timeout = min(int(args.get("timeout_seconds") or 300), MAX_RUN_SECONDS)
-            res = await box.exec(str(args.get("command", "")), timeout=timeout)
+            command = str(args.get("command", ""))
+            res = await box.exec(command, timeout=timeout, show=command, note="Coder")
             status = "timed out" if res.timed_out else f"exit {res.code}"
             return f"[{status}, {res.seconds:.0f}s]\n{res.tail(RUN_OUTPUT)}"
         if name == "change_context":

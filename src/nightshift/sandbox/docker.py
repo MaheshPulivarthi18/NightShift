@@ -12,12 +12,14 @@ repo's dependency files and setup commands, so the next task in that repo skips 
 from __future__ import annotations
 
 import asyncio
+import codecs
 import hashlib
 import json
 import re
 import shlex
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +27,7 @@ from typing import Any
 
 import structlog
 
+from nightshift import events
 from nightshift.config import get_settings
 
 log = structlog.get_logger()
@@ -37,6 +40,12 @@ RESULT_MARKER = "@@NIGHTSHIFT_RESULT@@"
 BASE_LABEL = "nightshift.base"  # on a repo image: the environment image it was built on
 REPO_TOOLS_PATH = f'export PATH="{REPO_DIR}/.venv/bin:{REPO_DIR}/node_modules/.bin:$PATH";'
 OUTPUT_LIMIT = 200_000  # characters kept from each end of a command's output
+# A shown command's output reaches the log while it runs: new output every FLUSH_SECONDS, each piece cut to
+# its last LIVE_CHARS, at most LIVE_PIECES pieces per command (an install can print for many minutes).
+FLUSH_SECONDS = 2.0
+LIVE_CHARS = 4000
+LIVE_PIECES = 150
+TAIL_CHARS = 4000  # kept with the finished command
 
 # Files whose contents decide what a repo's setup installs. A change to any of them means a new image.
 DEP_FILES = {
@@ -105,6 +114,93 @@ async def _docker(*args: str, timeout: float = 120, stdin: bytes | None = None) 
     )
 
 
+async def _docker_streamed(
+    *args: str, timeout: float, on_output: Callable[[str], Awaitable[None]], stdin: bytes | None = None
+) -> ExecResult:
+    """Like _docker, but hands new output to `on_output` every FLUSH_SECONDS while the command runs."""
+    started = time.monotonic()
+    proc = await asyncio.create_subprocess_exec(
+        "docker", *args, stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )  # fmt: skip
+    out, err, pending = bytearray(), bytearray(), []
+
+    async def feed_stdin() -> None:
+        if stdin is not None and proc.stdin is not None:
+            proc.stdin.write(stdin)
+            await proc.stdin.drain()
+            proc.stdin.close()
+
+    async def pump(stream: asyncio.StreamReader | None, buf: bytearray) -> None:
+        decode = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        while stream is not None and (chunk := await stream.read(65536)):
+            buf += chunk
+            pending.append(decode.decode(chunk))
+
+    async def flush() -> None:
+        if pending:
+            text = "".join(pending)
+            pending.clear()
+            await on_output(text)
+
+    async def flusher() -> None:
+        while True:
+            await asyncio.sleep(FLUSH_SECONDS)
+            await flush()
+
+    feeder = asyncio.create_task(flusher())
+    timed_out = False
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(feed_stdin(), pump(proc.stdout, out), pump(proc.stderr, err), proc.wait()), timeout
+        )
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        timed_out = True
+    finally:
+        feeder.cancel()
+    await flush()
+    if timed_out:
+        return ExecResult(-1, "", f"docker {args[0]} timed out after {timeout:.0f}s", time.monotonic() - started, True)
+    return ExecResult(
+        proc.returncode or 0,
+        _clip(out.decode(errors="replace")),
+        _clip(err.decode(errors="replace")),
+        time.monotonic() - started,
+        False,
+    )
+
+
+async def docker_shown(*args: str, timeout: float, command: str, note: str, stdin: bytes | None = None) -> ExecResult:
+    """Run docker; with a run under way, `command` (what the log calls it), its output as it comes and its
+    result go to that run's log. Without one it is a plain _docker call."""
+    run_id = events.current_run()
+    if run_id is None:
+        return await _docker(*args, timeout=timeout, stdin=stdin)
+    cmd = uuid.uuid4().hex[:12]
+    pieces = 0
+    await events.record(run_id, events.CMD_START, command, cmd=cmd, note=note, timeout=int(timeout))
+
+    async def live(text: str) -> None:
+        nonlocal pieces
+        pieces += 1
+        if pieces > LIVE_PIECES:
+            return
+        if pieces == LIVE_PIECES:
+            text = "[live output stops here; the end of the output shows when the command finishes]\n"
+        elif len(text) > LIVE_CHARS:
+            text = "[...]\n" + text[-LIVE_CHARS:]
+        await events.record(run_id, events.CMD_OUTPUT, events.redact(text), cmd=cmd)
+
+    res = await _docker_streamed(*args, timeout=timeout, on_output=live, stdin=stdin)
+    await events.record(
+        run_id, events.CMD_END, command, cmd=cmd, exit=res.code, seconds=round(res.seconds, 1),
+        timed_out=res.timed_out or res.code == 124, tail=events.redact(res.tail(TAIL_CHARS)),
+    )  # fmt: skip
+    return res
+
+
 def repo_image_name(full_name: str) -> str:
     return "nightshift-repo/" + full_name.lower().replace("/", "__")
 
@@ -142,15 +238,31 @@ class Sandbox:
     async def __aexit__(self, *exc: object) -> None:
         await self.remove()
 
-    async def exec(self, command: str, *, workdir: str = REPO_DIR, timeout: float | None = None) -> ExecResult:
+    async def exec(
+        self,
+        command: str,
+        *,
+        workdir: str = REPO_DIR,
+        timeout: float | None = None,
+        show: str | None = None,
+        note: str = "",
+    ) -> ExecResult:
         """Run a shell command inside the container. The timeout is enforced inside too, so a
-        command that outlives it is killed rather than left running in the background."""
+        command that outlives it is killed rather than left running in the background.
+
+        `show`: the command as the log shows it (without NightShift's own wrapping); with a run under way,
+        the command, its output as it comes and its result go to that run's log. `note` says why it ran
+        ("baseline", "targeted test, without the fix"). Housekeeping (git, file reads) is not shown."""
         limit = timeout or get_settings().sandbox_command_timeout
         # pipefail: `pytest | tail` must fail when pytest does. The repo's own virtualenv and node tools come
         # first on PATH (set after the login shell, which resets it), so `pytest` or `jest` is the repo's.
         script = f"{REPO_TOOLS_PATH} set -o pipefail; {command}"
         inner = f"timeout --kill-after=10 {int(limit)} bash -lc {shlex.quote(script)}"
-        res = await _docker("exec", "--workdir", workdir, self.name, "bash", "-c", inner, timeout=limit + 30)
+        args = ("exec", "--workdir", workdir, self.name, "bash", "-c", inner)
+        if show is None:
+            res = await _docker(*args, timeout=limit + 30)
+        else:
+            res = await docker_shown(*args, timeout=limit + 30, command=show or command, note=note)
         if res.code == 124:
             res.timed_out = True
         return res
@@ -303,10 +415,11 @@ async def prepare_repo(
 
         for command in setup:
             log.info("sandbox_setup", repo=full_name, command=command)
-            res = await box.exec(command)
+            res = await box.exec(command, show=command, note="setup")
             if not res.ok and not res.timed_out and NETWORK_ERROR.search(res.tail(4000)):
                 log.warning("sandbox_setup_network_retry", repo=full_name, command=command)
-                res = await box.exec(command)  # a download that timed out usually works the second time
+                # a download that timed out usually works the second time
+                res = await box.exec(command, show=command, note="setup, again after a network error")
             if not res.ok:
                 raise SandboxError(f"setup command `{command}` failed (exit {res.code}):\n{res.tail()}")
         await box.commit(tag, base)

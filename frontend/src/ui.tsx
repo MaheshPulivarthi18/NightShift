@@ -1,6 +1,6 @@
 // Shared pieces used by every page: status badge, money and time, the live log, the diff viewer, sanitized HTML.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const LABELS: Record<string, string> = {
   planning: "planning",
@@ -124,16 +124,71 @@ interface Step {
   node: string | null;
   message: string;
   at: string;
-  data: { cost_usd?: number; cached?: boolean };
+  ts?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data: Record<string, any>;
 }
 
-/** Live events of a run (report, map or task), streamed from the server. */
 // Kinds that need a word, not just a colour: caught and handled reads differently from broken.
 const LOG_TAGS: Record<string, string> = { caught: "caught", fixed: "fixed", warning: "warning", error: "error" };
+const SANDBOX = new Set(["cmd_start", "cmd_output", "cmd_end", "action"]);
+const QUIET_TOOLS = new Set(["read", "list", "search"]); // folded together: there are many, and they change nothing
+const VIEWS = ["All", "Steps", "Sandbox"] as const;
+type View = (typeof VIEWS)[number];
 
+/** One line of the log: a step, a sandbox command (with its output), or a run of quiet file reads. */
+type Line =
+  | { type: "step"; step: Step }
+  | { type: "cmd"; start: Step; output: string[]; end?: Step }
+  | { type: "reads"; steps: Step[] };
+
+function lines(steps: Step[], view: View, live: boolean): Line[] {
+  const out: Line[] = [];
+  const cmds = new Map<string, Extract<Line, { type: "cmd" }>>();
+  steps.forEach((s, i) => {
+    const sandbox = SANDBOX.has(s.kind);
+    if (view === "Steps" && sandbox) return;
+    if (view === "Sandbox" && !sandbox && !["node_start", "caught", "fixed", "warning", "error"].includes(s.kind)) return;
+    // A model call's start line is only useful while it runs; its end line carries the cost.
+    if (s.kind === "llm_start" && !(live && i === steps.length - 1)) return;
+    if (s.kind === "cmd_start") {
+      const line = { type: "cmd" as const, start: s, output: [] as string[] };
+      cmds.set(s.data.cmd, line);
+      out.push(line);
+    } else if (s.kind === "cmd_output") cmds.get(s.data.cmd)?.output.push(s.message);
+    else if (s.kind === "cmd_end") {
+      const line = cmds.get(s.data.cmd);
+      if (line) line.end = s;
+    } else if (s.kind === "action" && QUIET_TOOLS.has(s.data.tool)) {
+      const last = out[out.length - 1];
+      if (last?.type === "reads") last.steps.push(s);
+      else out.push({ type: "reads", steps: [s] });
+    } else out.push({ type: "step", step: s });
+  });
+  return out;
+}
+
+function clock(s: Step): string {
+  return s.ts ? new Date(s.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : s.at;
+}
+
+function elapsed(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
+/** Live events of a run (report, map or task), streamed from the server: its steps, and what ran in the sandbox. */
 export function Log({ runId, onStatus }: { runId: string; onStatus?: () => void }) {
   const [steps, setSteps] = useState<Step[]>([]);
   const [live, setLive] = useState(true);
+  const [view, setView] = useState<View>(() => {
+    try {
+      return (localStorage.getItem("ns-log-view") as View) || "All";
+    } catch {
+      return "All";
+    }
+  });
+  const [now, setNow] = useState(Date.now());
   useEffect(() => {
     setSteps([]);
     setLive(true);
@@ -151,24 +206,137 @@ export function Log({ runId, onStatus }: { runId: string; onStatus?: () => void 
     return () => source.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
+  const shown = lines(steps, view, live);
+  const running = live && shown.some((l) => l.type === "cmd" && !l.end);
+  useEffect(() => {
+    if (!running) return;
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [running]);
+  const pick = (v: View) => {
+    setView(v);
+    try {
+      localStorage.setItem("ns-log-view", v);
+    } catch {
+      /* the choice just is not remembered */
+    }
+  };
   if (!steps.length) return <p className="muted">{live ? "Waiting for the first step…" : "No steps recorded."}</p>;
-  // A model call's start line is only useful while it runs; its end line carries the cost.
-  const shown = steps.filter((s, i) => s.kind !== "llm_start" || (live && i === steps.length - 1));
+  const sandboxCount = steps.filter((s) => s.kind === "cmd_start" || s.kind === "action").length;
   return (
-    <ol className="log">
-      {shown.map((s) => (
-        <li key={s.id} className={`step step-${s.kind}`}>
-          <span className="mono dim">{s.at}</span>
-          <span>
-            {LOG_TAGS[s.kind] && <span className="step-tag">{LOG_TAGS[s.kind]}</span>}
-            {s.message}
+    <>
+      <div className="log-bar">
+        <div className="seg" role="tablist" aria-label="What the log shows">
+          {VIEWS.map((v) => (
+            <button key={v} className={v === view ? "on" : ""} onClick={() => pick(v)} aria-pressed={v === view}>
+              {v}
+            </button>
+          ))}
+        </div>
+        <span className="dim">
+          {view === "Steps" ? "agents and checks only" : view === "Sandbox" ? "what ran in the sandbox" : "steps and sandbox"}
+          {sandboxCount > 0 && ` · ${sandboxCount} sandbox actions`}
+        </span>
+      </div>
+      <ol className="log">
+        {shown.map((l) =>
+          l.type === "cmd" ? (
+            <CommandLine key={l.start.id} line={l} now={now} live={live} />
+          ) : l.type === "reads" ? (
+            <Reads key={l.steps[0].id} steps={l.steps} />
+          ) : (
+            <StepLine key={l.step.id} s={l.step} />
+          ),
+        )}
+        {live && <li className="step step-live"><span /><span className="muted">live</span><span /></li>}
+      </ol>
+    </>
+  );
+}
+
+function StepLine({ s }: { s: Step }) {
+  const edit = s.kind === "action";
+  return (
+    <li className={`step step-${s.kind} ${edit ? "sb" : ""}`}>
+      <span className="mono dim">{clock(s)}</span>
+      <span>
+        {LOG_TAGS[s.kind] && <span className="step-tag">{LOG_TAGS[s.kind]}</span>}
+        {edit && <span className="sb-verb">{s.data.tool === "edit" ? "edited" : "wrote"}</span>}
+        {edit ? <span className="mono">{s.data.path}</span> : s.message}
+        {edit && (
+          <span className="sb-diff mono">
+            {s.data.added != null && <span className="plus"> +{s.data.added}</span>}
+            {s.data.removed != null && <span className="minus"> −{s.data.removed}</span>}
           </span>
-          <span className="mono dim">
-            {s.data?.cached ? "cached" : s.data?.cost_usd != null ? money(s.data.cost_usd) : ""}
-          </span>
-        </li>
-      ))}
-      {live && <li className="step step-live"><span /><span className="muted">live</span><span /></li>}
-    </ol>
+        )}
+      </span>
+      <span className="mono dim">{s.data?.cached ? "cached" : s.data?.cost_usd != null ? money(s.data.cost_usd) : ""}</span>
+    </li>
+  );
+}
+
+function Reads({ steps }: { steps: Step[] }) {
+  const reads = steps.filter((s) => s.data.tool === "read").length;
+  const searches = steps.filter((s) => s.data.tool === "search").length;
+  const lists = steps.length - reads - searches;
+  const what = [
+    reads && `read ${reads} file${reads > 1 ? "s" : ""}`,
+    searches && `searched ${searches} time${searches > 1 ? "s" : ""}`,
+    lists && `listed ${lists} folder${lists > 1 ? "s" : ""}`,
+  ].filter(Boolean).join(", ");
+  return (
+    <li className="step step-action sb">
+      <span className="mono dim">{clock(steps[0])}</span>
+      <details className="sb-reads">
+        <summary>
+          <span className="sb-verb">looked</span>
+          {what}
+        </summary>
+        <ul>
+          {steps.map((s) => (
+            <li key={s.id} className="mono">
+              {s.message}
+              {s.data.lines && <span className="dim"> · lines {s.data.lines}</span>}
+              {s.data.matches != null && <span className="dim"> · {s.data.matches} matches</span>}
+            </li>
+          ))}
+        </ul>
+      </details>
+      <span />
+    </li>
+  );
+}
+
+function CommandLine({ line, now, live }: { line: Extract<Line, { type: "cmd" }>; now: number; live: boolean }) {
+  const { start, end, output } = line;
+  const running = !end;
+  const failed = end && (end.data.exit !== 0 || end.data.timed_out);
+  const startedAt = start.ts ? Date.parse(start.ts) : now;
+  const status = end
+    ? end.data.timed_out
+      ? `timed out · ${elapsed(end.data.seconds)}`
+      : `exit ${end.data.exit} · ${elapsed(end.data.seconds)}`
+    : live
+      ? `running ${elapsed((now - startedAt) / 1000)}…`
+      : "stopped";
+  // While it runs, the output so far; once it ends, the end of its output.
+  const text = end ? end.data.tail || "(no output)" : output.join("").slice(-8000) || "(no output yet)";
+  const pre = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    if (running && pre.current) pre.current.scrollTop = pre.current.scrollHeight;
+  }, [text, running]);
+  return (
+    <li className={`step sb cmd ${running ? (live ? "is-running" : "is-stopped") : failed ? "is-failed" : "is-ok"}`}>
+      <span className="mono dim">{clock(start)}</span>
+      <details className="sb-cmd" open={(running && live) || !!failed}>
+        <summary>
+          <span className="sb-verb">ran</span>
+          <span className="mono sb-command">{start.message}</span>
+          {start.data.note && <span className="sb-note">{start.data.note}</span>}
+        </summary>
+        <pre ref={pre} className="sb-out">{text}</pre>
+      </details>
+      <span className="mono sb-status">{status}</span>
+    </li>
   );
 }

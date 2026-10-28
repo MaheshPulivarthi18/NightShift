@@ -538,3 +538,29 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 @keyframes chk-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .chk-row.is-run .chk-mark { animation: none; } }
 @media (max-width: 600px) { .chk-log li { grid-template-columns: 1fr; gap: 0; } .chk-head { flex-wrap: wrap; } }
+
+/* The log's sandbox lines: commands with their output, file edits, folded reads */
+.log-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 6px; font-size: 12.5px; }
+.log-bar .dim { color: var(--ink-3); }
+.step.sb { font-size: 13px; }
+.step.sb::before { width: 5px; height: 5px; left: -3px; top: 13px; background: var(--ink-3); }
+.sb-verb { display: inline-block; min-width: 58px; margin-right: 6px; font: 500 11px/18px var(--mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.04em; }
+.sb-diff .plus { color: var(--ok); } .sb-diff .minus { color: var(--bad); }
+.sb-cmd, .sb-reads { min-width: 0; }
+.sb-cmd > summary, .sb-reads > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.sb-cmd > summary::-webkit-details-marker, .sb-reads > summary::-webkit-details-marker { display: none; }
+.sb-command { overflow-wrap: anywhere; color: var(--ink); }
+.sb-note { font-size: 12px; color: var(--ink-3); }
+.sb-note::before { content: "· "; }
+.sb-status { font-size: 12px; white-space: nowrap; color: var(--ink-3); }
+.sb-out { margin: 6px 0 4px; max-height: 320px; overflow: auto; padding: 8px 10px; font: 12px/1.45 var(--mono); background: var(--bg-sunk); border: 1px solid var(--line); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink-2); }
+.sb-reads ul { margin: 4px 0 2px; padding-left: 16px; font-size: 12px; color: var(--ink-2); }
+.cmd.is-ok::before { background: var(--ok); }
+.cmd.is-ok .sb-status { color: var(--ok); }
+.cmd.is-failed::before { background: var(--bad); }
+.cmd.is-failed .sb-status { color: var(--bad); }
+.cmd.is-running::before { background: var(--lamp); animation: pulse 1.2s ease-in-out infinite; }
+.cmd.is-running .sb-status { color: var(--lamp); }
+.cmd.is-stopped .sb-status { color: var(--warn); }
+@media (max-width: 600px) { .step { grid-template-columns: 60px 1fr; } .step .sb-status, .step > span:last-child { grid-column: 2; } }
+.log-bar .seg button { flex: none; padding: 0 12px; }

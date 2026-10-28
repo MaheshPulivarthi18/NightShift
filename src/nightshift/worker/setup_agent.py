@@ -226,7 +226,9 @@ async def try_environment(full_name: str, commit: str, p: Proposal) -> Attempt:
         return attempt
     async with box:
         attempt.stage = "tests"
-        attempt.tests = await run_commands(box, p.test_commands, timeout=get_settings().setup_test_seconds)
+        attempt.tests = await run_commands(
+            box, p.test_commands, timeout=get_settings().setup_test_seconds, note="test, proving the environment"
+        )
     return attempt
 
 

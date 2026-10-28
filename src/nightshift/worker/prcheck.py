@@ -314,7 +314,7 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
         base_commit, target, how = await _fetch_pr(box, pr)
         await box.exec(f"git checkout --quiet --force --detach {shlex.quote(base_commit)}")
         report.environment = f"Environment: {', '.join(env.setup_commands) or 'none'}. Ran {how}."
-        baseline = await run_commands(box, env.test_commands)
+        baseline = await run_commands(box, env.test_commands, note="baseline, without the PR")
         patch = (await box.exec(f"git diff {shlex.quote(base_commit)} {target}")).stdout
         try:
             plan = await plan_check(llm, pr, issue, env, patch)
@@ -330,7 +330,7 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
         await box.exec(f"git checkout --quiet --force --detach {target}")
         if any(f.rsplit("/", 1)[-1] in DEP_FILES for f in pr.files):  # the PR changes dependencies
             for command in env.setup_commands:
-                if not (res := await box.exec(command)).ok:
+                if not (res := await box.exec(command, show=command, note="setup, with the PR")).ok:
                     report.must.append(f"Setup fails with this PR: `{command}`: {res.tail(300).strip()}")
                     return patch
         check = await _verify(box, base_commit, plan, env, baseline, repro)

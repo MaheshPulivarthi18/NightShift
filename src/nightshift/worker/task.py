@@ -551,7 +551,7 @@ async def run_task(task_id: int) -> Task:
         image = await ensure_env_image(env.get("system_packages", []), env.get("tools", []))
         box, cached = await prepare_repo(repo.full_name, task.base_commit, plan["setup_commands"], image=image)
         await events.record(task.run_id, "node_start", "baseline", node="baseline")
-        baseline = await run_commands(box, plan["test_commands"])
+        baseline = await run_commands(box, plan["test_commands"], note="baseline, before any change")
         result["baseline"] = [b.model_dump() for b in baseline]
         await save_recipe(repo.id, task.base_commit, plan["setup_commands"], baseline)
         if published := task.result.get("published_diff"):

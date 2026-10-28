@@ -489,6 +489,7 @@ def _event_json(ev: RunEvent) -> dict[str, Any]:
         "message": ev.message,
         "data": ev.data,
         "at": ev.created_at.astimezone(UTC).strftime("%H:%M:%S"),
+        "ts": _iso(ev.created_at),  # the page shows it in the viewer's own time zone
     }
 
 

@@ -61,8 +61,9 @@ FRESH = (
 )
 
 
-async def run_fresh(box: Sandbox, command: str, timeout: float | None = None) -> CommandResult:
-    return CommandResult.of(command, await box.exec(FRESH + command, timeout=timeout))
+async def run_fresh(box: Sandbox, command: str, timeout: float | None = None, note: str = "") -> CommandResult:
+    """Run a check's command on fresh bytecode; it shows on the run's log with `note` (why it ran)."""
+    return CommandResult.of(command, await box.exec(FRESH + command, timeout=timeout, show=command, note=note))
 
 
 def is_test_path(path: str) -> bool:
@@ -101,8 +102,10 @@ class CommandResult(BaseModel):
         return f"`{self.command}` {status} in {self.seconds:.0f}s"
 
 
-async def run_commands(box: Sandbox, commands: list[str], timeout: float | None = None) -> list[CommandResult]:
-    return [await run_fresh(box, c, timeout) for c in commands]
+async def run_commands(
+    box: Sandbox, commands: list[str], timeout: float | None = None, note: str = ""
+) -> list[CommandResult]:
+    return [await run_fresh(box, c, timeout, note) for c in commands]
 
 
 async def mark_new_files(box: Sandbox) -> None:
@@ -232,7 +235,7 @@ async def run_reproduction(box: Sandbox, reproduction: dict[str, str]) -> Comman
     name = re.sub(r"[^\w.-]", "_", reproduction.get("script_name") or "")[:60] or "repro.py"
     await box.exec(f"mkdir -p {REPRO_DIR}")
     await box.write_file(f"{REPRO_DIR}/{name}", reproduction.get("script", ""))
-    return await run_fresh(box, reproduction.get("command", ""))
+    return await run_fresh(box, reproduction.get("command", ""), note="the issue's reproduction")
 
 
 async def check_fix(
@@ -275,7 +278,7 @@ async def check_fix(
                 f"then git checkout {shlex.quote(base)} -- {shlex.quote(p)}; "
                 f"else git rm --cached --quiet --ignore-unmatch -- {shlex.quote(p)}; rm -f -- {shlex.quote(p)}; fi"
             )
-        check.fails_without_fix = await run_fresh(box, targeted)
+        check.fails_without_fix = await run_fresh(box, targeted, note="targeted test, without the fix")
     finally:
         restored = await box.exec(f"git apply --binary {PATCH}")
         await mark_new_files(box)
@@ -289,7 +292,7 @@ async def check_fix(
     elif check.fails_without_fix.timed_out:
         check.problems.append("the targeted test timed out without the fix; that proves nothing")
 
-    check.passes_with_fix = await run_fresh(box, targeted)
+    check.passes_with_fix = await run_fresh(box, targeted, note="targeted test, with the fix")
     if not check.passes_with_fix.ok:
         check.problems.append("the targeted test FAILS with the fix")
     if reproduction:
@@ -320,7 +323,7 @@ async def check_suites(check: FixCheck, box: Sandbox, suite: list[str], baseline
     """The last and slowest check, once the Reviewer approves: run the suites and compare with the baseline.
     A command that passed before must pass now; a regression fails the check."""
     check.suites_run, check.regressions, check.already_failing = True, [], []
-    check.suite = await run_commands(box, suite)
+    check.suite = await run_commands(box, suite, note="full suites")
     was_ok = {r.command: r.ok for r in baseline}
     for r in check.suite:
         if not r.ok and was_ok.get(r.command, True):
