@@ -156,7 +156,9 @@ async def get_task(task_id: int) -> dict[str, Any]:
         "claim_comment": t.plan.get("claim_comment", ""),
         "actionable": t.plan.get("actionable") is not False,
         "claim_url": res.get("claim_url"),
-        "replies": ((res.get("sync") or {}).get("open") or []) if (res.get("sync") or {}).get("kind") == "answers" else [],
+        "replies": ((res.get("sync") or {}).get("open") or [])
+        if (res.get("sync") or {}).get("kind") == "answers"
+        else [],
         "baseline": res.get("baseline", []),
         "check": res.get("check"),
         "context_check": res.get("context_check"),

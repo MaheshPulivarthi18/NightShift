@@ -62,3 +62,30 @@ def reports_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     from nightshift.config import get_settings
 
     monkeypatch.setattr(get_settings(), "reports_dir", str(tmp_path / "reports"))
+
+
+@pytest.fixture(autouse=True)
+def no_onboarding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Adding a repo through the API starts its setup in a real sandbox; tests that add repos must not."""
+    from nightshift.web import api
+
+    monkeypatch.setattr(api, "_start_onboard", lambda repo, run_id: None)
+
+
+@pytest.fixture(autouse=True)
+async def no_stray_run_events() -> Any:
+    """Run events a test wrote for runs it has since deleted stay behind (they do not cascade). Remove those,
+    and only those: events of real runs, even ones running while the tests run, keep their run row."""
+    from sqlalchemy import delete, func, select
+
+    from nightshift.db import Run, RunEvent, session_scope
+
+    try:
+        async with session_scope() as s:
+            start = (await s.execute(select(func.coalesce(func.max(RunEvent.id), 0)))).scalar_one()
+    except Exception:  # no database: nothing to clean
+        yield
+        return
+    yield
+    async with session_scope() as s:
+        await s.execute(delete(RunEvent).where(RunEvent.id > start, RunEvent.run_id.not_in(select(Run.run_id))))

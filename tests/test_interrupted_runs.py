@@ -3,6 +3,7 @@ Uses the local Postgres (docker compose up); skipped when it is not running."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -38,6 +39,57 @@ async def test_a_run_with_no_activity_is_marked_interrupted() -> None:
             run = await s.get(Run, old)
             assert run is not None and run.status == "interrupted" and run.error == events.INTERRUPTED
             assert (await s.get(Run, busy)).status == "running"  # type: ignore[union-attr]
+    finally:
+        async with session_scope() as s:
+            await s.execute(delete(Repo).where(Repo.full_name == name))
+
+
+async def test_the_heartbeat_decides_not_how_quiet_the_run_is() -> None:
+    """A 30-minute install logs nothing but its process is alive; a run whose process died stops beating."""
+    name = f"test-int/{uuid.uuid4().hex[:8]}"
+    quiet, dead = (f"setup-test-{uuid.uuid4().hex[:8]}" for _ in range(2))
+    now = datetime.now(UTC)
+    try:
+        async with session_scope() as s:
+            repo = Repo(full_name=name)
+            s.add(repo)
+            await s.flush()
+            s.add_all([
+                Run(run_id=quiet, repo_id=repo.id, status="running", started_at=now - timedelta(hours=1),
+                    heartbeat_at=now - timedelta(seconds=20)),
+                Run(run_id=dead, repo_id=repo.id, status="running", started_at=now - timedelta(minutes=10),
+                    heartbeat_at=now - timedelta(minutes=5)),
+            ])  # fmt: skip
+    except Exception as e:  # pragma: no cover - environment dependent
+        pytest.skip(f"Postgres not available: {e}")
+    try:
+        marked = await events.mark_interrupted_runs()
+        assert dead in marked and quiet not in marked
+    finally:
+        async with session_scope() as s:
+            await s.execute(delete(Repo).where(Repo.full_name == name))
+
+
+async def test_a_run_beats_until_it_finishes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(events, "BEAT", timedelta(milliseconds=50))
+    name = f"test-int/{uuid.uuid4().hex[:8]}"
+    run_id = f"setup-test-{uuid.uuid4().hex[:8]}"
+    try:
+        async with session_scope() as s:
+            repo = Repo(full_name=name)
+            s.add(repo)
+    except Exception as e:  # pragma: no cover - environment dependent
+        pytest.skip(f"Postgres not available: {e}")
+    try:
+        await events.start_run(run_id, repo.id)
+        async with session_scope() as s:
+            first = (await s.get(Run, run_id)).heartbeat_at  # type: ignore[union-attr]
+        await asyncio.sleep(0.3)
+        async with session_scope() as s:
+            beat = (await s.get(Run, run_id)).heartbeat_at  # type: ignore[union-attr]
+        assert first is not None and beat is not None and beat > first
+        await events.finish_run(run_id, "done")
+        assert run_id not in events._beats
     finally:
         async with session_scope() as s:
             await s.execute(delete(Repo).where(Repo.full_name == name))

@@ -237,6 +237,8 @@ class Run(Base):
     report_path: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Written every events.BEAT by the process running it: when it stops, that process is gone
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class RunEvent(Base):
