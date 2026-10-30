@@ -225,6 +225,9 @@ class Sandbox:
             # Package downloads: patient timeouts and retries (no secrets; these are plain tool settings).
             "--env", "UV_HTTP_TIMEOUT=120", "--env", "UV_HTTP_RETRIES=6",
             "--env", "PIP_DEFAULT_TIMEOUT=120", "--env", "npm_config_fetch_retries=5",
+            # A repo image from an earlier run already has a .venv, and `uv venv` refuses to overwrite one
+            # without this; the packages come back from uv's cache in the image.
+            "--env", "UV_VENV_CLEAR=1",
             image, "sleep", "infinity",
         )  # fmt: skip
         if not res.ok:
