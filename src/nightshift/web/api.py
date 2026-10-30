@@ -14,7 +14,7 @@ from typing import Any, Literal
 import structlog
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from nightshift import outcomes
@@ -31,7 +31,16 @@ from nightshift.router import AGENTS, agent_routes
 from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker.issue import fetch_issue
 from nightshift.worker.onboard import onboard
-from nightshift.worker.prcheck import PRCheckError, check_pr, fetch_pull, prcheck_run_id
+from nightshift.worker.prcheck import (
+    REVIEW_EVENTS,
+    PRCheckError,
+    check_pr,
+    fetch_pull,
+    post_review,
+    prcheck_run_id,
+    review_body,
+)
+from nightshift.worker.publish import PublishError
 from nightshift.worker.setup_agent import ENVIRONMENT, Environment, setup_repo, setup_run_id
 
 log = structlog.get_logger()
@@ -353,6 +362,7 @@ def _check_view(c: PRCheck, repo: Repo, run: Run | None) -> dict[str, Any]:
         "id": c.id, "repo": repo.full_name, "number": c.number, "url": c.url, "title": c.title,
         "author": c.author, "status": status, "verdict": c.verdict, "must": c.must, "should": c.should,
         "cost_usd": round(c.cost_usd, 4), "run_id": c.run_id, "created_at": _iso(c.created_at), "error": c.error,
+        "review_url": c.review_url,
     }  # fmt: skip
 
 
@@ -414,6 +424,62 @@ async def start_pr_check(body: CheckIn) -> dict[str, str]:
 
     _runs[run_id] = asyncio.create_task(job())
     return {"run_id": run_id}
+
+
+class ReviewIn(BaseModel):
+    confirm: bool = False
+    body: str | None = Field(default=None, max_length=60_000)  # None: drafted from the report
+    event: Literal["COMMENT", "REQUEST_CHANGES", "APPROVE"] = "COMMENT"
+    attribution: bool = False  # end the review with the attribution line
+
+
+@router.post("/pr-checks/{check_id}/review", dependencies=[Guard])
+async def review_pr_check(check_id: int, body: ReviewIn) -> dict[str, Any]:
+    """The check as a review on its PR. Without `confirm`, the draft to read and edit, and what to know
+    first; with it, post it with the operator's gh login on the commit that was checked."""
+    async with session_scope() as s:
+        row = (
+            await s.execute(select(PRCheck, Repo).join(Repo, Repo.id == PRCheck.repo_id).where(PRCheck.id == check_id))
+        ).first()
+    if row is None:
+        raise HTTPException(404, "No such PR check")
+    c, repo = row
+    if c.status != "done":
+        raise HTTPException(409, "Only a finished check can be posted.")
+    text = (body.body if body.body is not None else review_body(c.markdown)).strip()
+    line = get_settings().commit_attribution.strip()
+    warnings = []
+    try:
+        pr = await fetch_pull(c.url)
+    except PRCheckError as e:
+        raise HTTPException(400, str(e)) from e
+    if pr.state != "open":
+        warnings.append(f"The PR is {pr.state}.")
+    if pr.head_sha != c.head_sha:
+        warnings.append(
+            f"The PR has new commits since this check ({c.head_sha[:7]} → {pr.head_sha[:7]}). The review goes "
+            "on the commit that was checked; check it again to review the latest."
+        )
+    if c.review_url:
+        warnings.append(f"A review from this check was already posted: {c.review_url}")
+    if pr.author.lower() == get_settings().github_login.lower() and body.event != "COMMENT":
+        warnings.append("This is your own PR: GitHub only allows a comment, not approve or request changes.")
+    out: dict[str, Any] = {"body": text, "event": body.event, "events": list(REVIEW_EVENTS),
+                           "attribution_line": line, "warnings": warnings, "review_url": c.review_url}  # fmt: skip
+    if not body.confirm:
+        return out
+    if not text and body.event != "APPROVE":
+        raise HTTPException(400, "The review is empty.")
+    posted = f"{text}\n\n{line}" if body.attribution and line else text
+    try:
+        url = await post_review(repo.full_name, c.number, c.head_sha, posted, body.event)
+    except (PublishError, PRCheckError) as e:
+        raise HTTPException(502, f"GitHub refused the review: {e}") from e
+    async with session_scope() as s:
+        if (saved := await s.get(PRCheck, check_id)) is not None:
+            saved.review_url = url
+    log.info("pr_check_review_posted", url=url, kind=body.event)
+    return out | {"review_url": url, "posted": True}
 
 
 # ---------- models ----------

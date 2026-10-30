@@ -127,3 +127,10 @@ def test_tests_that_could_not_run_are_not_blamed_on_the_pr() -> None:
 def test_a_referenced_issue_is_not_a_closed_one() -> None:
     pr = _pr(body="Refs #4417. Partial fix.")
     assert prcheck.linked_issue_number(pr) is None and prcheck.referenced_issue_number(pr) == 4417
+
+
+def test_the_review_drops_the_title_link_and_cost() -> None:
+    body = prcheck.review_body(Report(pr=_pr(), must=["Fix X."], cost_usd=0.43).markdown())
+    assert body.startswith("**Needs work before review.**\n\n## Must fix")
+    assert "https://github.com/o/r/pull/5" not in body and "$" not in body
+    assert body.endswith(f"at {'h' * 7}._")

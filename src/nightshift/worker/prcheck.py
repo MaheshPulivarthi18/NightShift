@@ -10,12 +10,14 @@
    its source changes and pass with them; the linked issue's reproduction fails before and passes after.
 4. Review: the Reviewer reads the diff, the verification and the change context and names exact problems.
 
-The result is one Markdown report, split into what must be fixed and what should be. Nothing is posted.
+The result is one Markdown report, split into what must be fixed and what should be. Nothing is posted
+unless the operator posts it as a review on the PR (post_review), after reading and editing it.
 The PR's code is untrusted: it only ever runs inside the sandbox.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 import uuid
@@ -434,6 +436,27 @@ def _findings(check: FixCheck, report: Report, repro: dict[str, str] | None) -> 
     if check.suite and not check.regressions:
         report.passed.append(f"No regressions: {sum(r.ok for r in check.suite)} of {len(check.suite)} suites pass "
                              f"({len(check.already_failing)} already failing on the base).")  # fmt: skip
+
+
+REVIEW_EVENTS = ("COMMENT", "REQUEST_CHANGES", "APPROVE")
+
+
+def review_body(markdown: str) -> str:
+    """The report as a review on the PR: without the title line and the PR's link (GitHub shows both),
+    and without what the check cost."""
+    text = re.sub(r"\A# PR check:[^\n]*\n+(\*\*[^*\n]+\*\*)[^\n]*", r"\1", markdown.strip())
+    return re.sub(r"_Checked (.+?) for \$[\d.]+\._\Z", r"_Checked \1._", text)
+
+
+async def post_review(repo: str, number: int, commit: str, body: str, event: str) -> str:
+    """Post `body` as a review on the PR with the operator's gh login, on the commit that was checked.
+    Returns the review's URL."""
+    if event not in REVIEW_EVENTS:
+        raise PRCheckError(f"Unknown review event {event!r}")
+    payload = json.dumps({"commit_id": commit, "body": body, "event": event})
+    out = await publish._run("gh", "api", "-X", "POST", f"repos/{repo}/pulls/{number}/reviews", "--input", "-",
+                             stdin=payload)  # fmt: skip
+    return str(json.loads(out).get("html_url", ""))
 
 
 def prcheck_run_id(repo_id: int, number: int) -> str:
