@@ -171,6 +171,7 @@ class WorkStatus:
     status: str  # taken | claimed | stalled | free
     active_prs: list[int] = field(default_factory=list)
     stalled_prs: list[int] = field(default_factory=list)
+    open_stalled: list[int] = field(default_factory=list)  # open PRs among stalled_prs: someone still has one
     claimed_by: str | None = None  # someone linked a fix from their fork or said they are taking it
 
 
@@ -199,6 +200,7 @@ def work_status(
     now = now or datetime.now(UTC)
     active: list[int] = []
     stalled: list[int] = []
+    open_stalled: list[int] = []
     for pr in prs_for_issue:
         if pr.state == "MERGED":
             continue  # merged but issue still open: partial fix, not someone "on it"
@@ -206,18 +208,27 @@ def work_status(
             stalled.append(pr.number)
             continue
         sig = pr_signals(pr, by_number, STALLED_AFTER_DAYS, now=now)
-        (stalled if sig.looks_abandoned or sig.idle_days >= STALLED_AFTER_DAYS else active).append(pr.number)
+        if sig.looks_abandoned or sig.idle_days >= STALLED_AFTER_DAYS:
+            stalled.append(pr.number)
+            open_stalled.append(pr.number)
+        else:
+            active.append(pr.number)
     claimant = None if active else claimed_by(issue, now)
     status = "taken" if active else "claimed" if claimant else "stalled" if stalled else "free"
-    return WorkStatus(issue.number, status, sorted(active), sorted(stalled), claimant)
+    return WorkStatus(issue.number, status, sorted(active), sorted(stalled), sorted(open_stalled), claimant)
+
+
+ISSUE_MENTION = re.compile(r"(?<![\w/])#(\d+)\b")
 
 
 def prs_by_issue(items: list[Item]) -> dict[int, list[Item]]:
-    """Map issue number -> PRs that close it or cross-reference it (in either direction)."""
+    """Map issue number -> PRs that close it, cross-reference it (in either direction), or name it as `#N` in
+    their title or description (redis-py #4166 names #4026 without closing or cross-referencing it)."""
     by_number = {it.number: it for it in items}
     out: dict[int, dict[int, Item]] = {}
     for pr in (it for it in items if it.kind == "pr"):
         refs = {c["number"] for c in pr.data.get("closing_issues", [])} | set(pr.data.get("cross_refs", []))
+        refs |= {int(n) for n in ISSUE_MENTION.findall(f"{pr.title}\n{pr.body}")}
         for n in refs:
             if (target := by_number.get(n)) is not None and target.kind == "issue":
                 out.setdefault(n, {})[pr.number] = pr

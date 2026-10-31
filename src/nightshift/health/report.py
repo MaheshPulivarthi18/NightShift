@@ -320,10 +320,15 @@ def is_opportunity(o: dict[str, Any]) -> bool:
     )
 
 
+def asks_first(o: dict[str, Any]) -> bool:
+    """Ask before starting: a maintainer must agree, or someone has an open PR on it, even an abandoned one."""
+    return bool(o["needs_maintainer_ok"] or o.get("open_prs"))
+
+
 def starters(opportunities: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The report's "Good places to start": issues an outsider can take without asking first, smallest first."""
     return sorted(
-        (o for o in opportunities if is_opportunity(o) and not o["needs_maintainer_ok"]),
+        (o for o in opportunities if is_opportunity(o) and not asks_first(o)),
         key=lambda o: (SIZE_ORDER[o["size"]], KIND_ORDER[o["kind"]], -o["number"]),
     )
 
@@ -363,6 +368,12 @@ async def render_contributor_report(
     if stats.get("truncated"):
         out += ["> **Partial data:** the fetch hit its item cap.", ""]
     out += _gaps_note(stats)
+    if stats.get("starters_not_rechecked"):
+        out += [
+            f"> {stats['starters_not_rechecked']} starter issues could not be re-checked on GitHub: check they are "
+            "still free before you start.",
+            "",
+        ]
     if stats.get("issues_not_scouted"):
         out += [
             f"> The {stats['issues_not_scouted']} least recently active free issues were not analysed (cap).",
@@ -416,10 +427,13 @@ async def render_contributor_report(
         return (SIZE_ORDER[o["size"]], KIND_ORDER[o["kind"]], -o["number"])
 
     def stalled_note(o: dict[str, Any]) -> str:
+        if open_prs := o.get("open_prs"):
+            prs = ", ".join(f"#{n}" for n in open_prs)
+            return f" Open PR {prs} looks abandoned: ask its author or a maintainer before taking it over."
         if o.get("status") != "stalled":
             return ""
         prs = ", ".join(f"#{n}" for n in o.get("stalled_prs", []))
-        return f" Earlier attempt {prs} stalled: you could pick it up."
+        return f" Earlier attempt {prs} was closed: you could pick it up."
 
     def unverified_note(o: dict[str, Any]) -> str:
         missing = o.get("unverified_paths") or []
@@ -438,7 +452,7 @@ async def render_contributor_report(
         out.append("None found.")
     out.append("")
 
-    ask = sorted((o for o in actionable if o["needs_maintainer_ok"]), key=order)
+    ask = sorted((o for o in actionable if asks_first(o)), key=order)
     out += ["## Ask the maintainers first", ""]
     out += [
         f"- {L(o['number'])} {_title(o['number'], by_number)} ({o['size']}): {o['summary']}{stalled_note(o)}"
@@ -451,6 +465,8 @@ async def render_contributor_report(
     def on_it(w: dict[str, Any]) -> str:
         if w["source"] == "claimed":
             return f"claimed by @{w.get('by') or 'someone'} (fix linked or said they are taking it, no PR yet)"
+        if w["source"] == "checked":  # found when the starter issues were re-checked on GitHub
+            return w.get("why") or "taken"
         return ", ".join(L(n) for n in w["prs"])
 
     out += [
