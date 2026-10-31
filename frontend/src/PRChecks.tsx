@@ -1,10 +1,11 @@
 import { FormEvent, useState } from "react";
-import { api, PRCheckRow, PRCheckView, ReviewDraft, ReviewEvent } from "./api";
+import { api, Finding, PRCheckRow, PRCheckView, ReviewDraft, ReviewEvent } from "./api";
 import { Html, Log, StatusBadge, Title, ago, money, usePoll } from "./ui";
 
 // Check any pull request as a careful maintainer would: guidelines, evidence, run it, review it.
 export function PRChecks() {
   const [rows, error, reload] = usePoll(api.prChecks, 4000, []);
+  const [acc] = usePoll(api.findingAccuracy, 30000, []);
   return (
     <div className="page">
       <section className="page-head">
@@ -14,6 +15,9 @@ export function PRChecks() {
             Checks a pull request's guidelines and evidence, runs it in the sandbox (its tests must fail without its change and
             pass with it; the linked issue's case too), and reviews it. Nothing is posted unless you post the review yourself.
           </p>
+          {acc && acc.marked > 0 && (
+            <p className="dim">Findings you marked right: {acc.right} of {acc.marked} ({Math.round((acc.share ?? 0) * 100)}%).</p>
+          )}
         </div>
         <NewCheck onStarted={reload} />
       </section>
@@ -105,8 +109,32 @@ export function PRCheckPage({ id, embedded = false }: { id: number; embedded?: b
           <Html html={c.html} />
         </article>
       )}
+      {c.status === "done" && c.findings.length > 0 && <Marks c={c} onChange={reload} />}
       {c.status === "done" && <PostReview c={c} onPosted={reload} />}
     </div>
+  );
+}
+
+/** Was each finding right? Your marks measure the checker (PR checks page) and stay with the check. */
+function Marks({ c, onChange }: { c: PRCheckView; onChange: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const mark = (f: Finding, m: "right" | "wrong") =>
+    api.markFinding(c.id, f.id, f.mark === m ? null : m).then(onChange, (e: Error) => setError(e.message));
+  return (
+    <section className="panel">
+      <div className="panel-h"><h2>Was it right?</h2><span className="dim">{c.findings.filter((f) => f.mark).length} of {c.findings.length} marked</span></div>
+      <div className="panel-b marks">
+        {c.findings.map((f) => (
+          <div key={f.id} className="row-flex mark-row">
+            <span className={`badge ${f.kind === "must" ? "must" : ""}`}>{f.kind === "must" ? "must" : "should"}</span>
+            <span className="grow">{f.text}</span>
+            <button className={`small ${f.mark === "right" ? "primary" : "ghost"}`} onClick={() => mark(f, "right")} aria-pressed={f.mark === "right"}>Right</button>
+            <button className={`small ${f.mark === "wrong" ? "danger" : "ghost"}`} onClick={() => mark(f, "wrong")} aria-pressed={f.mark === "wrong"}>Wrong</button>
+          </div>
+        ))}
+        {error && <p className="error">{error}</p>}
+      </div>
+    </section>
   );
 }
 
