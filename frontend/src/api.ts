@@ -465,6 +465,7 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
 
 export const api = {
   overview: () => call<Overview>("/overview"),
+  version: () => call<{ running: string | null; latest: string | null; old: boolean }>("/version"),
   setKill: (killed: boolean) => call<Overview>("/control/kill", { killed }),
   repos: () => call<RepoRow[]>("/repos"),
   repoItems: (repo: string) => call<RepoItem[]>(`/repos/${repo}/items`),

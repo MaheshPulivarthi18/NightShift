@@ -145,3 +145,17 @@ async def test_a_check_posts_as_a_review_only_on_confirm(
     finally:
         async with session_scope() as s:
             await s.execute(delete(Repo).where(Repo.full_name == name))
+
+
+async def test_the_page_is_told_when_the_server_runs_old_code(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nightshift.web import app as web
+
+    monkeypatch.setattr(web, "RUNNING", "a" * 40)
+    monkeypatch.setattr(web, "_latest", (0.0, None))
+    monkeypatch.setattr(web, "checkout_commit", lambda: "b" * 40)  # pulled since the server started
+    assert (await client.get("/api/version")).json() == {"running": "a" * 40, "latest": "b" * 40, "old": True}
+    monkeypatch.setattr(web, "_latest", (0.0, None))
+    monkeypatch.setattr(web, "checkout_commit", lambda: None)  # not a git checkout: nothing to say
+    assert (await client.get("/api/version")).json()["old"] is False

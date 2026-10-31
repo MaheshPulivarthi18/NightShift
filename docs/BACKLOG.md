@@ -241,9 +241,11 @@ once, L4 sidebar search, L5 a banner when the server runs old code.
       continues from where it stopped: the change applied, the baseline reused on the same commit, and the
       Coder given only what failed (the review's comments, the regressions, the check's problems). "Start over"
       begins from the plan.
-- [ ] **L4. A long sidebar.** With 24 repos the sidebar needs search, pinning, or grouping by "has work".
-- [ ] **L5. Say when the server runs old code.** Changes need a restart of `nightshift serve`, and nothing on the
-      page shows it; show the running version next to the latest.
+- [x] **L4. A long sidebar.** With 24 repos the sidebar needs search, pinning, or grouping by "has work". Fixed: a
+      search box from 8 repos on (Esc clears), and repos that need you listed first.
+- [x] **L5. Say when the server runs old code.** Changes need a restart of `nightshift serve`, and nothing on the
+      page shows it; show the running version next to the latest. Fixed: `/api/version` compares the commit the
+      server loaded with the checkout's; every page shows a banner asking for a restart when they differ.
 - [ ] **L6. CI status of published PRs** on the task and in "Needs you" (the rest of enhancement 2).
 - [ ] **L7. Check the live log on screen:** the running timer, auto-scrolling output and open-while-running
       states of the new sandbox log were tested through the event stream only.
