@@ -34,7 +34,7 @@ from nightshift.config import get_settings
 from nightshift.context.change import change_context
 from nightshift.context.change import to_markdown as change_markdown
 from nightshift.db import PRCheck, Repo, session_scope
-from nightshift.github import GitHubClient, GitHubError, ci_status
+from nightshift.github import ADVISORY_JOB, GitHubClient, GitHubError, ci_status
 from nightshift.health.agents import UNTRUSTED_RULE
 from nightshift.health.graph import repo_brief
 from nightshift.llm import AgentOutputError, BudgetExceeded, LLMGateway, ModelAPIError, ModelRefused
@@ -495,11 +495,6 @@ async def post_review(repo: str, number: int, commit: str, body: str, event: str
 
 def prcheck_run_id(repo_id: int, number: int) -> str:
     return f"prcheck-{repo_id}-{number}-{uuid.uuid4().hex[:6]}"
-
-
-# Jobs that judge rather than test: a benchmark slowing or coverage dropping is the maintainers' call, not broken
-# code (pydantic #14104 failed only CodSpeed). Their failures are advice.
-ADVISORY_JOB = re.compile(r"codspeed|codecov|coverage|coveralls|benchmark|performance|perf\b|bundle ?size", re.I)
 
 
 async def check_ci(pr: PullRequest, report: Report) -> None:
