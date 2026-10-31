@@ -96,10 +96,14 @@ export interface JobDetail {
   stoppable: boolean;
 }
 
+export type ChatAction = "plan" | "approve_and_run" | "continue" | "start_over" | "plan_again" | "review_and_publish" | "archive";
+export interface ChatCard { action: ChatAction; note: string; why: string }
+
 export type ChatTurn =
   | { role: "user"; text: string }
   | { role: "assistant"; html: string }
-  | { role: "tools"; tools: string[] };
+  | { role: "tools"; tools: string[] }
+  | ({ role: "action" } & ChatCard);
 
 export interface ChatView {
   repo: string;
@@ -107,6 +111,9 @@ export interface ChatView {
   body_html: string;
   history: ChatTurn[];
   cost_usd: number;
+  // The task the chat's cards act on, and what its state allows now
+  task: { id: number; status: string; stopped_at: string | null; error: string | null; pr_url: string | null } | null;
+  allowed: ChatAction[];
 }
 
 export type Stage = "plan" | "gate1" | "work" | "gate2" | "done" | "stopped" | "closed";

@@ -170,8 +170,11 @@ strictness from the pydantic benchmark.
       above Gate 2: three questions about the diff (the cause, why the fix works, what the test proves), your
       answers graded against the code with feedback, the repo's AI rules shown, every attempt kept; Gate 2 warns
       until it is passed. About $0.002 a check (Luna).
-- [ ] **L2. A chat thread through the whole life of an issue** (proposed: explain, diagnose a failure, gather
-      evidence, revise, raise and post the PR from one thread with action cards). Not started; a mock-up first.
+- [x] **L2. A chat thread through the whole life of an issue** (proposed: explain, diagnose a failure, gather
+      evidence, revise, raise and post the PR from one thread with action cards). Done: the chat knows the task's
+      state (stage, why it stopped, the review's comments) and proposes its next step as a card (plan, approve and
+      run, continue from where it stopped, start over, plan again, Gate 2, archive); a card runs only on a click,
+      through the task page's own endpoints, and only if the task's state still allows it.
 - [x] **L3. Revising keeps no history.** Revising task 72 cleared its diff and results from the database (the last
       attempt survives only in `reports/…/diff.patch`). Keep each attempt: its diff, checks, review and cost.
       Fixed with resume: revising keeps every attempt (summary on the task, diff in its folder) and, by default,

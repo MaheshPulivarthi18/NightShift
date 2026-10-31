@@ -1,12 +1,16 @@
-"""Chat about one issue or PR, with read-only access to the repo's code.
+"""Chat about one issue or PR, with read-only access to the repo's code, and the task's controls.
 
 The model gets the item, its linked and similar items, what NightShift's agents concluded
-about it, and the repo brief, then can read files and search code through the GitHub API.
-It drafts comments and plans but never posts: NightShift has no write access.
+about it, the repo brief, and the state of NightShift's task for it (stage, why it stopped, the
+review's comments), then can read files and search code through the GitHub API. It drafts comments
+and plans but never posts. It can propose the task's next step (plan, approve and run, continue from
+where it stopped, start over, plan again, publish through Gate 2, archive) as a card: the developer
+runs it with a click, through the same endpoints as the task page, so nothing happens on its own.
 
 `chat_turn` is an async generator of UI events, so the web app can stream it:
   {"type": "text", "text": ...}            a piece of the answer
   {"type": "tool", "name": ..., "input": ...}  the model is reading code
+  {"type": "action", "action": ..., "note": ..., "why": ...}  a proposed step, shown as a card
   {"type": "done", "cost_usd": ...}        the turn is finished
   {"type": "error", "message": ...}        the turn stopped
 """
@@ -22,7 +26,7 @@ from sqlalchemy import select
 
 from nightshift.catalog import ModelConfigError
 from nightshift.config import get_settings
-from nightshift.db import Chat, ChatMessage, Item, Repo, Report, session_scope
+from nightshift.db import Chat, ChatMessage, Item, Repo, Report, Task, session_scope
 from nightshift.github import GitHubClient, GitHubError
 from nightshift.health.agents import UNTRUSTED_RULE, item_view
 from nightshift.llm import (
@@ -49,11 +53,41 @@ CHAT_SYSTEM = f"""You are NightShift's issue assistant. You help one developer u
 
 You have the item, its linked and similar items, what NightShift's agents concluded about it, and a brief of the repository's contribution rules. Use the tools to read the repository's code (default branch) when a question needs it: list_files to find paths, search_code to locate symbols, read_file to read them. Read before you claim how code works, and cite files as `path:line`.
 
-You cannot post, comment, label, push or open PRs: NightShift is read-only. When asked, draft text (issue replies, PR descriptions, review comments, commit messages) for the developer to post themselves, following the repo's rules.
+You cannot post, comment, label, push or open PRs yourself. When asked, draft text (issue replies, PR descriptions, review comments, commit messages) for the developer to post themselves, following the repo's rules.
+
+You can move NightShift's task for this issue forward with propose_action, when the developer asks you to act or the next step is clear from the conversation. It shows a card with a button; nothing runs until the developer clicks it. The task's current state is in <nightshift_task>. Propose one step at a time, only one that state allows, and put what the Coder or Planner should do in `note`, in your own words: for "continue", say exactly what to fix (from the review's comments or the failure), so the run picks up where it stopped instead of starting over. Publishing always goes through Gate 2, where the developer sees exactly what will be published.
 
 Be concise and concrete. Say when something is uncertain or when you did not check it.
 
 {UNTRUSTED_RULE}"""
+
+# The task's next steps the chat can propose, and the task states that allow each. A card runs it on a click.
+ACTIONS: dict[str, str] = {
+    "plan": "Plan a fix for this issue (no task yet, or only archived ones). `note`: an instruction to the Planner.",
+    "approve_and_run": "Approve the plan (state: planned) and start the run. `note`: the developer's word at Gate 1.",
+    "continue": "Run again from where it stopped (needs_operator, failed, ready or published, with a change): "
+    "keeps the change; `note` says exactly what to fix.",
+    "start_over": "Run again from the plan (needs_operator, failed, ready or published). `note`: what to do differently.",
+    "plan_again": "Plan again (state: planned, not actionable) with the maintainers' answer or the developer's in `note`.",
+    "review_and_publish": "Open Gate 2 (state: ready) to see exactly what will be published, and publish there.",
+    "archive": "Archive the task (any state but working or planning).",
+}
+REVISABLE = ("needs_operator", "failed", "ready", "published")
+
+PROPOSE: ToolParam = {
+    "name": "propose_action",
+    "description": "Propose the task's next step to the developer as a card with a button. It runs only if they "
+    "click it. Allowed steps:\n" + "\n".join(f"- {k}: {v}" for k, v in ACTIONS.items()),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": list(ACTIONS)},
+            "note": {"type": "string", "description": "What the Planner or Coder should do; empty if none"},
+            "why": {"type": "string", "description": "One sentence for the developer: why this step now"},
+        },
+        "required": ["action", "why"],
+    },
+}
 
 TOOLS: list[ToolParam] = [
     {
@@ -98,10 +132,65 @@ TOOLS: list[ToolParam] = [
             "required": ["number"],
         },
     },
+    PROPOSE,
 ]
 
 
 # ---------- context ----------
+
+
+async def task_for(repo_id: int, number: int) -> Task | None:
+    """NightShift's current task for this issue: the newest one not archived."""
+    async with session_scope() as s:
+        return (
+            await s.execute(
+                select(Task)
+                .where(Task.repo_id == repo_id, Task.issue_number == number, Task.archived_at.is_(None))
+                .order_by(Task.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+
+def task_state(task: Task | None) -> dict[str, Any]:
+    """What the chat model knows about the task: enough to pick the next step and say what to fix."""
+    if task is None:
+        return {"task": None, "allowed": ["plan"]}
+    res = task.result or {}
+    failed = [c for c in res.get("checks", []) if not c.get("ok")]
+    reviews = res.get("reviews") or []
+    state: dict[str, Any] = {
+        "id": task.id,
+        "status": task.status,
+        "error": task.error,
+        "stopped_at": failed[-1]["check"] if failed else None,
+        "failed_check": failed[-1].get("detail") if failed else None,
+        "last_review": {k: reviews[-1].get(k) for k in ("verdict", "summary", "issues")} if reviews else None,
+        "has_change": bool(task.diff or res.get("partial_diff")),
+        "pr_url": res.get("pr_url"),
+        "plan_actionable": (task.plan or {}).get("actionable") is not False,
+        "plan_questions": (task.plan or {}).get("questions") or [],
+        "understanding_passed": bool(((res.get("understanding") or {}).get("attempts") or [{}])[-1].get("passed")),
+    }
+    return {"task": state, "allowed": allowed_actions(task)}
+
+
+def allowed_actions(task: Task | None) -> list[str]:
+    if task is None:
+        return ["plan"]
+    status, res = task.status, task.result or {}
+    out = []
+    if status == "planned":
+        out.append("approve_and_run" if (task.plan or {}).get("actionable") is not False else "plan_again")
+    if status in REVISABLE:
+        if task.diff or res.get("partial_diff"):
+            out.append("continue")
+        out.append("start_over")
+    if status == "ready":
+        out.append("review_and_publish")
+    if status not in ("working", "planning"):
+        out.append("archive")
+    return out
 
 
 async def _latest_report(repo_id: int) -> dict[str, Any]:
@@ -218,6 +307,24 @@ class RepoTools:
             await gh.aclose()
 
 
+def proposal(task: Task | None, args: dict[str, Any]) -> tuple[str, bool]:
+    """Check a proposed step against the task's state, so a card the developer sees can run."""
+    action = str(args.get("action", ""))
+    allowed = allowed_actions(task)
+    if action not in ACTIONS:
+        return f"Unknown action {action!r}. Allowed now: {', '.join(allowed)}.", True
+    if action not in allowed:
+        status = task.status if task else "no task"
+        return f"{action} is not possible now (the task is {status}). Allowed now: {', '.join(allowed)}.", True
+    if action in ("continue", "start_over", "plan_again") and not str(args.get("note", "")).strip():
+        return f"{action} needs a note saying what to do.", True
+    return "Shown to the developer as a card. It runs only if they click it; do not say it has run.", False
+
+
+def card(args: dict[str, Any]) -> dict[str, Any]:
+    return {"action": args["action"], "note": str(args.get("note") or ""), "why": str(args.get("why") or "")}
+
+
 # ---------- history ----------
 
 
@@ -308,6 +415,10 @@ async def chat_turn(
         {"type": "text", "text": await build_context(repo, item), "cache_control": {"type": "ephemeral"}},
     ]
     gateway = LLMGateway(run_id=f"chat:{chat.id}", repo_id=repo.id, client=client)
+    task = await task_for(repo.id, item.number)
+    # The task changes between turns, so it is not part of the cached context
+    system.append({"type": "text", "text": "<nightshift_task>\n" + json.dumps(task_state(task), default=str)
+                   + "\n</nightshift_task>"})  # fmt: skip
     tools = RepoTools(repo)
     total = 0.0
     try:
@@ -344,6 +455,10 @@ async def chat_turn(
                 yield {"type": "tool", "name": block.name, "input": args}
                 if INVALID_ARGS in args:
                     text, is_error = f"The arguments were not a valid JSON object: {args[INVALID_ARGS][:300]}", True
+                elif block.name == "propose_action":
+                    text, is_error = proposal(task, args)
+                    if not is_error:
+                        yield {"type": "action", **card(args)}
                 else:
                     text, is_error = await tools.run(str(block.name), args)
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": text, "is_error": is_error})
