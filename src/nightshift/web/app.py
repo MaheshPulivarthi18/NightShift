@@ -88,7 +88,8 @@ async def index() -> HTMLResponse | PlainTextResponse:
     page = APP_DIR / "index.html"
     if not page.exists():
         return PlainTextResponse(NOT_BUILT, status_code=503)
-    return HTMLResponse(page.read_text())
+    # always asked for again: an updated build names new asset files, and a cached page would load the old ones
+    return HTMLResponse(page.read_text(), headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/version")

@@ -82,7 +82,7 @@ export function Diff({ text, locks = {} }: { text: string; locks?: Record<string
           <details key={name + i} open={files.length <= 8}>
             <summary>
               <span className="mono">{name}</span>
-              {locks[name] && <span className="dim"> regenerated lock file · {locks[name].length} package{locks[name].length === 1 ? "" : "s"}</span>}
+              {locks[name] && <span className="dim lock-label">regenerated lock file · {locks[name].length} package{locks[name].length === 1 ? "" : "s"}</span>}
               <span className="diffstat">
                 <span className="add">+{added}</span> <span className="del">−{removed}</span>
               </span>
