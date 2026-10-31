@@ -25,8 +25,10 @@ maintainers rejected, partly because the sandbox runs 3 of pydantic's 257 test f
       environment's narrow set. Done: up to 15 test files (name match, then the same folder, then tests importing
       the module) or the changed Go packages, with the environment's own runner, on the base and with the PR.
       Live on pydantic #14153: 3 related files, 280 tests, beside the suite.
-- [ ] M5. Incoming PRs for repos you maintain: checked automatically (opt-in per repo), listed in "Needs you",
-      the review posted only on your click.
+- [x] M5. Incoming PRs for repos you maintain: checked automatically (opt-in per repo), listed in "Needs you",
+      the review posted only on your click. Done: "check new PRs" on the Repos page (maintainer view); each sync
+      checks up to `NIGHTSHIFT_AUTO_CHECK_PER_SYNC` new PRs or new pushes per repo (no drafts, bots or your own);
+      Needs you lists each finished check until its review is posted or it is dismissed.
 - [ ] M6. A third benchmark (a Go repo) after M3 and M4. Target: 8 of 10 merged PRs ready, 5 of 10 rejected blocked.
 - [ ] M7. The GitHub App, once M5 shows maintainers use the checks.
 
@@ -246,19 +248,22 @@ once, L4 sidebar search, L5 a banner when the server runs old code.
 - [x] **L5. Say when the server runs old code.** Changes need a restart of `nightshift serve`, and nothing on the
       page shows it; show the running version next to the latest. Fixed: `/api/version` compares the commit the
       server loaded with the checkout's; every page shows a banner asking for a restart when they differ.
-- [ ] **L6. CI status of published PRs** on the task and in "Needs you" (the rest of enhancement 2).
+- [x] **L6. CI status of published PRs** on the task and in "Needs you" (the rest of enhancement 2). Done with C3.
 - [ ] **L7. Check the live log on screen:** the running timer, auto-scrolling output and open-while-running
       states of the new sandbox log were tested through the event stream only.
 
 ### Reliability and data
 
-- [ ] **R1. Tests share the development database.** They no longer leave rows or containers behind, but a separate
-      test database (or schema) would make that impossible rather than cleaned up.
-- [ ] **R2. A backup before destructive actions.** `watch remove --purge` and data wipes have no undo; take a
-      `pg_dump` first (the last one is from 2026-10-27).
-- [ ] **R3. Network trouble is reported as each command's own failure.** One flaky connection failed five reports
+- [x] **R1. Tests share the development database.** They no longer leave rows or containers behind, but a separate
+      test database (or schema) would make that impossible rather than cleaned up. Fixed: tests use
+      `nightshift_test` (or `NIGHTSHIFT_TEST_DATABASE_URL`), created and migrated when the run starts.
+- [x] **R2. A backup before destructive actions.** `watch remove --purge` and data wipes have no undo; take a
+      `pg_dump` first (the last one is from 2026-10-27). Fixed: `nightshift backup` dumps to backups/ (the
+      container's pg_dump when none is installed); `--purge` backs up first and stops if that fails.
+- [x] **R3. Network trouble is reported as each command's own failure.** One flaky connection failed five reports
       and a GitHub check in a row; detect it once ("GitHub is not reachable"), pause and retry, instead of failing
-      every job.
+      every job. Fixed: no connection to GitHub is logged once; requests check every 5-30 s for up to
+      `NIGHTSHIFT_GITHUB_OUTAGE_SECONDS` (300) and go on when it answers; the sync bar says "GitHub unreachable".
 
 ### Done in this stretch
 

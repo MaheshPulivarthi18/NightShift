@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from nightshift import events
+from nightshift import events, github
 from nightshift.config import get_settings
 from nightshift.context import archmap
 from nightshift.db import PRCheck, RepoContext, Run, Task, session_scope
@@ -174,7 +174,7 @@ async def repo_stats(owner: str, name: str) -> dict[str, Any]:
 @router.get("/sync")
 async def sync_status() -> dict[str, Any]:
     """When GitHub was last checked for feedback on your published PRs, and what was found."""
-    return {**sync.status, "minutes": get_settings().sync_minutes}
+    return {**sync.status, "minutes": get_settings().sync_minutes, "github_down_since": github.outage["since"]}
 
 
 @router.post("/sync", dependencies=[Guard])

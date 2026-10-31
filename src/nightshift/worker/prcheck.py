@@ -524,7 +524,7 @@ async def check_ci(pr: PullRequest, report: Report) -> None:
         report.passed.append(f"CI passes on this PR ({head['passed']} checks).")
 
 
-async def check_pr(url: str, run_id: str | None = None) -> Report:
+async def check_pr(url: str, run_id: str | None = None, *, auto: bool = False) -> Report:
     """Check one pull request. The result is saved as a PRCheck row (the dashboard's PR checks page) and as
     Markdown next to the repo's other reports."""
     pr = await fetch_pull(url)
@@ -532,7 +532,7 @@ async def check_pr(url: str, run_id: str | None = None) -> Report:
         repo = await get_or_create_repo(s, pr.repo)
         run_id = run_id or prcheck_run_id(repo.id, pr.number)
         row = PRCheck(repo_id=repo.id, number=pr.number, url=pr.url, title=pr.title, author=pr.author,
-                      head_sha=pr.head_sha, run_id=run_id)  # fmt: skip
+                      head_sha=pr.head_sha, run_id=run_id, auto=auto)  # fmt: skip
         s.add(row)
         await s.flush()
         row_id = row.id
