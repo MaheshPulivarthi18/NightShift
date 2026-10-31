@@ -406,6 +406,21 @@ export interface RepoItem {
   asked?: boolean;
 }
 
+// How well each repo fits you, from your GitHub languages and contributions.
+export interface Fit {
+  score: number; // 0..1
+  label: "strong" | "some" | "little";
+  why: string;
+  prs_here: number;
+}
+
+export interface FitView {
+  login: string | null;
+  languages: Record<string, number>; // your top languages, share of your code
+  repos: Record<string, Fit>;
+  error?: string;
+}
+
 export interface SyncStatus {
   at: string | null;
   running: boolean;
@@ -494,6 +509,7 @@ export const api = {
     call<Understanding>(`/tasks/${id}/understanding/answers`, { answers }),
   trackRecord: () => call<TrackRecord>("/track-record"),
   addToRecord: (url: string) => call<TrackRecord>("/track-record", { url }),
+  compareFit: () => call<FitView>("/compare/fit"),
   compare: () => call<CompareRow[]>("/compare"),
   refreshCompare: (staleDays = 7) => call<{ queued: string[]; already: boolean }>("/compare/refresh", { stale_days: staleDays }),
   reportLive: (repo: string, runId: string) => call<LiveCheck>(`/repos/${repo}/report/live?run_id=${runId}`),

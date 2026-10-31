@@ -48,7 +48,7 @@ maintainers rejected, partly because the sandbox runs 3 of pydantic's 257 test f
       in "Needs you" and on the board: the sync reads the CI on each open PR's latest commit (benchmark and
       coverage jobs are advice, not a failure). (tortoise-orm #2390 shows no CI: a first-time contributor's workflows wait for a
       maintainer's approval.)
-- [ ] C4. Fit with you (D5); C5. a drafted "fixed by #N" comment (D7); C6. lock-file churn as a package summary
+- [x] C4. Fit with you (D5): repos ranked by your GitHub languages and the repos you already send PRs to (Where to contribute, "Fit with you").
       (P3) and setup time apart from the Coder's (P4).
 
 **Reliability:** R1 a separate test database, R2 a backup before a purge, R3 "GitHub is unreachable" detected
