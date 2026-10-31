@@ -173,6 +173,9 @@ export interface TaskDetail extends TaskSummary {
   baseline: CommandResult[];
   check: FixCheck | null;
   checks: CheckStep[];
+  attempts: { n: number; status: string; stopped_at: string | null; error: string | null; cost_usd: number; lines: number; at: string }[];
+  resume: { stopped_at: string; todo: string } | null; // where the queued run picks up
+  can_continue: boolean; // the last attempt left a change to continue from
   // Did the planning context hold the files the fix changed? Null for tasks planned before it was kept.
   context_check: { changed: string[]; relevant: string[]; planned: string[]; missed: string[]; new: string[] } | null;
   reviews: { round: number; verdict: string; html: string }[];
@@ -445,7 +448,8 @@ export const api = {
   prCheck: (id: number) => call<PRCheckView>(`/pr-checks/${id}`),
   checkPr: (url: string) => call<{ run_id: string }>("/pr-checks", { url }),
   run: (id: number) => call<{ status: string }>(`/tasks/${id}/run`, {}),
-  revise: (id: number, note: string, latest: boolean) => call<TaskDetail>(`/tasks/${id}/revise`, { note, latest }),
+  revise: (id: number, note: string, latest: boolean, mode: "continue" | "restart" = "continue") =>
+    call<TaskDetail>(`/tasks/${id}/revise`, { note, latest, mode }),
   claim: (id: number, confirm: boolean) => call<{ result: string }>(`/tasks/${id}/claim`, { confirm }),
   publish: (id: number, confirm: boolean, edits: PublishEdits = {}) =>
     call<GateInfo>(`/tasks/${id}/publish`, { confirm, ...edits }),

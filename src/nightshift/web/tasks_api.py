@@ -162,6 +162,10 @@ async def get_task(task_id: int) -> dict[str, Any]:
         "baseline": res.get("baseline", []),
         "check": res.get("check"),
         "checks": res.get("checks", []),
+        # Earlier attempts, kept when the task was revised; where the next run picks up, if it continues
+        "attempts": res.get("attempts", []),
+        "resume": {k: res["resume"][k] for k in ("stopped_at", "todo")} if res.get("resume") else None,
+        "can_continue": bool(t.diff or res.get("partial_diff")),
         "context_check": res.get("context_check"),
         "reviews": [
             {"round": rv["round"], "verdict": rv["verdict"], "html": _md(rv["markdown"])}
@@ -229,13 +233,16 @@ class Revision(BaseModel):
     setup_commands: list[str] = []
     test_commands: list[str] = []
     run: bool = True
+    mode: worker.Mode = "continue"  # pick up where the last attempt stopped, or "restart" from the plan
 
 
 @router.post("/tasks/{task_id}/revise", dependencies=[Guard])
 async def revise(task_id: int, body: Revision) -> dict[str, Any]:
     """Send a ready or stopped task back with a correction (optionally on the latest commit), and run it."""
     try:
-        await worker.revise(task_id, body.note, body.setup_commands or None, body.test_commands or None, body.latest)
+        await worker.revise(
+            task_id, body.note, body.setup_commands or None, body.test_commands or None, body.latest, body.mode
+        )
     except worker.TaskError as e:
         raise HTTPException(409, str(e)) from e
     if body.run:

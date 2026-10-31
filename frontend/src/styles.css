@@ -596,3 +596,6 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 @media (max-width: 700px) { .compare-grid td { white-space: normal; } }
 .compare-grid td:nth-child(2) { white-space: normal; min-width: 220px; }
 .compare-grid td:nth-child(2) .verdict { display: inline-block; margin-top: 2px; }
+
+.revise-mode { display: grid; gap: 6px; margin: 8px 0; font-size: 13.5px; }
+.revise-mode .check { align-items: flex-start; }
