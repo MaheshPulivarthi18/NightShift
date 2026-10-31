@@ -23,6 +23,7 @@ import shlex
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 import structlog
 from pydantic import BaseModel, Field
@@ -33,7 +34,7 @@ from nightshift.config import get_settings
 from nightshift.context.change import change_context
 from nightshift.context.change import to_markdown as change_markdown
 from nightshift.db import PRCheck, Repo, session_scope
-from nightshift.github import GitHubClient, GitHubError
+from nightshift.github import GitHubClient, GitHubError, ci_status
 from nightshift.health.agents import UNTRUSTED_RULE
 from nightshift.health.graph import repo_brief
 from nightshift.llm import AgentOutputError, BudgetExceeded, LLMGateway, ModelAPIError, ModelRefused
@@ -108,6 +109,11 @@ def verification_summary(check: FixCheck) -> str:
 
 
 class CheckPlan(BaseModel):
+    intent: Literal["fix", "feature", "refactor", "tests", "benchmark", "docs", "chore"] = Field(
+        default="fix",
+        description="What the PR is: fix (changes wrong behaviour), feature (adds behaviour), refactor (same "
+        "behaviour), tests (only tests), benchmark, docs, chore (build, CI, dependencies)",
+    )
     targeted_command: str = Field(
         description="Runs only the tests this PR adds or changes, from the repo root, with the environment's test "
         "runner (e.g. `.venv/bin/pytest tests/test_x.py -q`). Empty if the PR adds or changes no tests"
@@ -121,6 +127,7 @@ class CheckPlan(BaseModel):
 
 CHECKER_SYSTEM = f"""You help a maintainer check a pull request by running it. Code runs everything you propose in a sandbox with the repo set up, on the base branch and with the PR.
 
+- intent says what the PR is, from its diff more than its title: a fix changes wrong behaviour, a feature adds behaviour, a refactor keeps behaviour, tests or benchmark only add those, docs, or chore (build, CI, dependencies).
 - targeted_command runs only the tests the PR adds or changes, with the same runner and style as the environment's test commands. Leave it empty if the PR touches no test files.
 - For a linked bug, write a reproduction: the issue's own case as the smallest script, saved as /tmp/nightshift-repro/<script_name> and run from the repo root, that exits non-zero while the bug is there and 0 once fixed. Use the repo's code the way the issue does. No network, done in under a minute. None if there is no linked bug or it needs services.
 
@@ -181,6 +188,7 @@ class Report(BaseModel):
     must: list[str] = []
     should: list[str] = []
     passed: list[str] = []  # what was checked and is fine
+    not_run: list[str] = []  # checks that could not run (no environment, a model error, the spend cap)
     verification: str = ""
     review: str = ""
     environment: str = ""
@@ -190,6 +198,8 @@ class Report(BaseModel):
     def verdict(self) -> str:
         if self.must:
             return "Needs work before review"
+        if self.not_run:  # never "ready" on a check that did not happen (the spend cap once made such checks pass)
+            return "Not fully checked"
         return "Ready for a maintainer's review" if not self.should else "Ready for review, with suggestions"
 
     def markdown(self) -> str:
@@ -199,6 +209,8 @@ class Report(BaseModel):
             out += ["## Must fix", "", *[f"- {m}" for m in self.must], ""]
         if self.should:
             out += ["## Should fix", "", *[f"- {s}" for s in self.should], ""]
+        if self.not_run:
+            out += ["## Not checked", "", *[f"- {s}" for s in self.not_run], ""]
         if self.passed:
             out += ["## Checked and fine", "", *[f"- {p}" for p in self.passed], ""]
         if self.verification:
@@ -219,8 +231,8 @@ async def check_guidelines(pr: PullRequest, report: Report) -> IssueView | None:
     if headings:
         missing = publish.missing_sections(pr.body, headings)
         required = [h for h in missing if not OPTIONAL_SECTION.search(h)]
-        if required:
-            report.must.append(
+        if required:  # advice, not a blocker: maintainers merge PRs without them (pydantic benchmark, 4 of 10)
+            report.should.append(
                 "The description is missing these sections of the repo's PR template: " + ", ".join(required)
             )
         if optional := [h for h in missing if OPTIONAL_SECTION.search(h)]:
@@ -249,7 +261,7 @@ async def check_guidelines(pr: PullRequest, report: Report) -> IssueView | None:
     try:
         issue = await fetch_issue(pr.repo, number)
     except GitHubError as e:
-        report.must.append(f"The linked issue #{number} cannot be read: {e}")
+        report.should.append(f"The linked issue #{number} cannot be read: {e}")
         return None
     if issue.state != "open":
         report.should.append(f"The linked issue #{number} is {issue.state}.")
@@ -292,15 +304,22 @@ async def plan_check(
 
 async def _fetch_pr(box: Sandbox, pr: PullRequest) -> tuple[str, str, str]:
     """Fetch the PR without checking it out: GitHub's merge preview (what CI tests), or its head when it
-    conflicts with the base branch. Returns (the base commit it is compared with, its ref, a note)."""
-    merge = await box.exec(f"git fetch --quiet origin +refs/pull/{pr.number}/merge:refs/remotes/pr/merge")
-    if merge.ok:
+    conflicts with the base branch. A closed or merged PR is checked as it was decided: its head against the
+    base it was written on (its merge preview is gone or stale). Returns (base commit, its ref, a note)."""
+    merge = (
+        await box.exec(f"git fetch --quiet origin +refs/pull/{pr.number}/merge:refs/remotes/pr/merge")
+        if pr.state == "open"
+        else None
+    )
+    if merge is not None and merge.ok:
         base = (await box.exec("git rev-parse refs/remotes/pr/merge^1")).stdout.strip()
         return base, "refs/remotes/pr/merge", "the PR merged into the current base branch (GitHub's merge preview)"
     head = await box.exec(f"git fetch --quiet origin +refs/pull/{pr.number}/head:refs/remotes/pr/head")
     if not head.ok:
         raise SandboxError(f"cannot fetch the PR: {head.tail(400)}")
     base = (await box.exec(f"git merge-base refs/remotes/pr/head {shlex.quote(pr.base_sha)}")).stdout.strip()
+    if pr.state != "open":
+        return base, "refs/remotes/pr/head", f"the PR's head as it was {pr.state}, on the base it was written on"
     return base, "refs/remotes/pr/head", "the PR's own head: it does not merge cleanly into the current base branch"
 
 
@@ -308,7 +327,7 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
     """Set up, run the base, run the PR, review it. Returns the diff."""
     env = await environment_for(llm, repo, pr.base_sha)
     if env.status != "ready":
-        report.should.append(f"Not run: the repo's environment is {env.status} ({env.blocker or env.detail}).")
+        report.not_run.append(f"Nothing was run: the repo's environment is {env.status} ({env.blocker or env.detail}).")
         return ""
     image = await ensure_env_image(env.system_packages, env.tools)
     box, _ = await prepare_repo(pr.repo, pr.base_sha, env.setup_commands, image=image)
@@ -321,7 +340,7 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
         try:
             plan = await plan_check(llm, pr, issue, env, patch)
         except MODEL_ERRORS as e:  # without it the suites are still compared
-            report.should.append(f"The PR's own tests and the issue's reproduction were not run: {_short(e)}")
+            report.not_run.append(f"The PR's own tests and the issue's reproduction were not run: {_short(e)}")
             plan = CheckPlan(targeted_command="")
         # The reproduction counts only if it fails without the PR: it runs on the base first.
         repro = plan.reproduction.model_dump() if plan.reproduction else None
@@ -337,7 +356,7 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
                     return patch
         check = await _verify(box, base_commit, plan, env, baseline, repro)
         report.verification = verification_summary(check)
-        _findings(check, report, repro)
+        _findings(check, report, repro, plan.intent)
         pack, _ = change_markdown(await change_context(box, base_commit), budget_tokens=6000)
         try:
             rules = brief_text((await repo_brief(llm, pr.repo))[0])
@@ -347,18 +366,18 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
                 diff=patch, verification=check.report(), rules=rules, change_context=pack,
             )  # fmt: skip
         except MODEL_ERRORS as e:  # what was verified by running still stands
-            report.should.append(f"The code review did not run: {_short(e)}")
+            report.not_run.append(f"The code review did not run: {_short(e)}")
             return patch
         # Related code the Reviewer judged fine is noise in a report for a maintainer: keep what needs a change.
         report.review = reviewer.to_markdown(
             rv.model_copy(update={"related": [c for c in rv.related if c.needs_change]}), 1
         )
-        # Blockers and majors must be fixed; minors are still listed, so a finding the model rates differently
-        # from run to run moves between the two lists instead of disappearing.
+        # Only blockers block. Majors appeared as often in PRs maintainers merged as in ones they closed (pydantic
+        # benchmark), so they are advice; so is anything about the PR's metadata rather than its code.
         for found in rv.issues:
             where = f"{found.path}:{found.line}" if found.line else found.path
-            findings = report.must if found.severity in ("blocker", "major") else report.should
-            findings.append(f"Review ({found.severity}): `{where}`: {found.problem}")
+            blocks = found.severity == "blocker" and "metadata" not in found.path.lower()
+            (report.must if blocks else report.should).append(f"Review ({found.severity}): `{where}`: {found.problem}")
         return patch
 
 
@@ -409,7 +428,7 @@ def _could_not_run(check: FixCheck) -> str | None:
     return None
 
 
-def _findings(check: FixCheck, report: Report, repro: dict[str, str] | None) -> None:
+def _findings(check: FixCheck, report: Report, repro: dict[str, str] | None, intent: str = "fix") -> None:
     if reason := _could_not_run(check):
         report.should.append(
             f"The PR's own tests could not run in this sandbox ({reason[:160]}): the environment does not cover "
@@ -422,6 +441,15 @@ def _findings(check: FixCheck, report: Report, repro: dict[str, str] | None) -> 
             continue  # already said under evidence
         if problem.startswith("no source file"):
             report.should.append("Only tests changed: no source change to verify.")
+        elif "PASSES without the fix" in problem and intent not in ("fix", "feature"):
+            # A refactor, benchmark or test-only PR is not meant to change behaviour: passing both ways is right
+            report.passed.append(f"The PR's tests pass with and without its source changes, as a {intent} should.")
+        elif "reproduction still fails" in problem:
+            # The reproduction is the checker's own reading of the issue, so it can be wrong: evidence, not a verdict
+            report.should.append(
+                "The checker's reproduction of the linked issue still fails with the PR: check the issue is fully "
+                "fixed (the reproduction is generated from the issue and can be wrong)."
+            )
         else:
             report.must.append(problem[0].upper() + problem[1:] + ".")
     if (
@@ -463,6 +491,29 @@ def prcheck_run_id(repo_id: int, number: int) -> str:
     return f"prcheck-{repo_id}-{number}-{uuid.uuid4().hex[:6]}"
 
 
+async def check_ci(pr: PullRequest, report: Report) -> None:
+    """The PR's own CI is evidence the sandbox may lack (it runs the whole suite, on every platform): a job that
+    fails on the PR and not on its base is a must-fix; one failing on both is the base branch's, so advice."""
+    gh = GitHubClient()
+    try:
+        head = await ci_status(gh, pr.repo, pr.head_sha)
+        base = await ci_status(gh, pr.repo, pr.base_sha) if head["failed"] else None
+    finally:
+        await gh.aclose()
+    if head["state"] == "none":
+        return
+    already = set((base or {}).get("failed", []))
+    new = [j for j in head["failed"] if j not in already]
+    if new:
+        report.must.append(f"CI fails on this PR at {pr.head_sha[:7]}: {', '.join(new[:8])}.")
+    if old := [j for j in head["failed"] if j in already]:
+        report.should.append(f"CI also fails on the base branch, so not because of this PR: {', '.join(old[:8])}.")
+    if head["pending"]:
+        report.should.append(f"CI is still running: {', '.join(head['pending'][:8])}. Check it again when done.")
+    if head["state"] == "passed":
+        report.passed.append(f"CI passes on this PR ({head['passed']} checks).")
+
+
 async def check_pr(url: str, run_id: str | None = None) -> Report:
     """Check one pull request. The result is saved as a PRCheck row (the dashboard's PR checks page) and as
     Markdown next to the repo's other reports."""
@@ -484,6 +535,7 @@ async def check_pr(url: str, run_id: str | None = None) -> Report:
         await events.record(run_id, "node_start", "guidelines", node="guidelines")
         issue = await check_guidelines(pr, report)
         check_evidence(pr, report)
+        await check_ci(pr, report)
         await events.record(run_id, "node_start", "run", node="run")
         await run_checks(pr, report, llm, repo, issue)
     except BaseException as e:

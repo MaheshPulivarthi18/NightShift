@@ -645,3 +645,7 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 .add-earlier .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
 .add-earlier input { flex: 1; min-width: 260px; }
 .record-grid td.mono { white-space: nowrap; }
+.ci { font: 500 11px var(--mono); padding: 1px 6px; border-radius: 4px; }
+.ci-passing { color: var(--ok); background: var(--ok-soft); }
+.ci-failing { color: var(--bad); background: var(--bad-soft); }
+.ci-running { color: var(--lamp); background: var(--lamp-soft); }

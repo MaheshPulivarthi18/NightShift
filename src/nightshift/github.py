@@ -351,6 +351,43 @@ class GitHubClient:
         return out, truncated, gaps
 
 
+CI_FAILED = ("failure", "timed_out", "action_required", "startup_failure")
+CI_IGNORED = ("neutral", "skipped", "cancelled", "stale")  # not a verdict on the code
+
+
+async def ci_status(gh: GitHubClient, full_name: str, sha: str) -> dict[str, Any]:
+    """The CI on one commit, from check runs and commit statuses: {"state": passed | failed | pending | none,
+    "failed": [job names], "pending": [job names], "passed": count}. Neutral, skipped and cancelled jobs say
+    nothing about the code and are left out."""
+    failed: list[str] = []
+    pending: list[str] = []
+    passed = 0
+    try:
+        runs = (await gh.rest_get(f"/repos/{full_name}/commits/{sha}/check-runs?per_page=100")).get("check_runs", [])
+        statuses = (await gh.rest_get(f"/repos/{full_name}/commits/{sha}/status")).get("statuses", [])
+    except GitHubError:
+        return {"state": "none", "failed": [], "pending": [], "passed": 0}
+    for r in runs:
+        name = r.get("name") or "a check"
+        if r.get("status") != "completed":
+            pending.append(name)
+        elif r.get("conclusion") in CI_FAILED:
+            failed.append(name)
+        elif r.get("conclusion") not in CI_IGNORED:
+            passed += 1
+    for st in statuses:  # older CI (Travis, Jenkins, some apps) report commit statuses instead
+        name = st.get("context") or "a status"
+        state = st.get("state")
+        if state in ("failure", "error"):
+            failed.append(name)
+        elif state == "pending":
+            pending.append(name)
+        elif state == "success":
+            passed += 1
+    state = "failed" if failed else "pending" if pending else "passed" if passed else "none"
+    return {"state": state, "failed": sorted(set(failed)), "pending": sorted(set(pending)), "passed": passed}
+
+
 def _gap(what: str, got: int, e: Exception) -> str:
     log.warning("github_list_incomplete", what=what, got=got, error=str(e))
     return f"GitHub kept timing out on {what}, so only the first {got} were read"

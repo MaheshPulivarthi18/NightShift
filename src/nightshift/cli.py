@@ -378,6 +378,23 @@ def check_pr_cmd(url: Annotated[str, typer.Argument(help="https://github.com/own
     _run_sandboxed(run())
 
 
+@app.command("bench")
+def bench_cmd(
+    repo: Annotated[str, typer.Argument(help="owner/name")],
+    merged: Annotated[int, typer.Option(help="How many merged PRs")] = 10,
+    closed: Annotated[int, typer.Option(help="How many closed, unmerged PRs")] = 10,
+    days: Annotated[int, typer.Option(help="Decided in the last N days")] = 90,
+) -> None:
+    """Score the PR checker on PRs maintainers already decided: its verdict against theirs. Posts nothing."""
+    from nightshift.worker.benchmark import run_benchmark
+
+    async def run() -> None:
+        path = await run_benchmark(_repo_name(repo), merged, closed, days)
+        typer.echo(path.read_text())
+
+    _run_sandboxed(run())
+
+
 @app.command("models")
 def models_cmd(agent: Annotated[str | None, typer.Argument(help="One agent, e.g. coder")] = None) -> None:
     """Each agent's models in the order the router uses now, why, and how each has done."""

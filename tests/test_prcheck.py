@@ -129,8 +129,79 @@ def test_a_referenced_issue_is_not_a_closed_one() -> None:
     assert prcheck.linked_issue_number(pr) is None and prcheck.referenced_issue_number(pr) == 4417
 
 
+def test_what_a_pr_is_decides_whether_its_tests_must_fail_without_it() -> None:
+    """pydantic benchmark: benchmark, refactor and test-only PRs were blocked for tests that pass both ways."""
+    check = FixCheck(
+        passed=False, test_files=["tests/t.py"], source_files=["a.py"],
+        problems=["the targeted test PASSES without the fix, so it does not reproduce the issue",
+                  "the issue's reproduction still fails with the PR, so the issue is not fixed",
+                  "these passed before the change and fail now: pytest -q"],
+    )  # fmt: skip
+    report = Report(pr=_pr())
+    prcheck._findings(check, report, None, intent="refactor")
+    assert report.must == ["These passed before the change and fail now: pytest -q."]  # a regression still blocks
+    assert "The PR's tests pass with and without its source changes, as a refactor should." in report.passed
+    assert any(s.startswith("The checker's reproduction of the linked issue still fails") for s in report.should)
+    fix = Report(pr=_pr())
+    prcheck._findings(check.model_copy(update={"problems": check.problems[:1]}), fix, None, intent="fix")
+    assert fix.must == ["The targeted test PASSES without the fix, so it does not reproduce the issue."]
+
+
 def test_the_review_drops_the_title_link_and_cost() -> None:
     body = prcheck.review_body(Report(pr=_pr(), must=["Fix X."], cost_usd=0.43).markdown())
     assert body.startswith("**Needs work before review.**\n\n## Must fix")
     assert "https://github.com/o/r/pull/5" not in body and "$" not in body
     assert body.endswith(f"at {'h' * 7}._")
+
+
+def test_a_check_that_could_not_run_is_never_ready() -> None:
+    """The spend cap once stopped the plan and the review, and those checks read "Ready for review"."""
+    report = Report(pr=_pr(), not_run=["The code review did not run: Daily budget reached."])
+    assert report.verdict == "Not fully checked"
+    assert "## Not checked\n\n- The code review did not run: Daily budget reached." in report.markdown()
+    blocked = Report(pr=_pr(), must=["These passed before the change and fail now: pytest -q."],
+                     not_run=["The code review did not run: timeout."])  # fmt: skip
+    assert blocked.verdict == "Needs work before review"  # what was found still blocks
+
+
+class _CI:
+    """GitHub's CI for two commits: check runs per sha, and commit statuses."""
+
+    def __init__(self, runs: dict[str, list[dict[str, Any]]], statuses: dict[str, list[dict[str, Any]]]) -> None:
+        self.runs, self.statuses = runs, statuses
+
+    async def rest_get(self, path: str) -> dict[str, Any]:
+        sha = path.split("/commits/")[1].split("/")[0]
+        if path.endswith("/status"):
+            return {"statuses": self.statuses.get(sha, [])}
+        return {"check_runs": self.runs.get(sha, [])}
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _run_(name: str, conclusion: str | None, status: str = "completed") -> dict[str, Any]:
+    return {"name": name, "status": status, "conclusion": conclusion}
+
+
+async def test_the_prs_own_ci_is_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """opentelemetry-python #5237: its CI failed, the sandbox's narrow tests passed, and the checker said ready."""
+    head, base = "h" * 40, "b" * 40
+    ci = _CI(
+        {head: [_run_("test (3.12)", "failure"), _run_("lint", "failure"), _run_("docs", "success"),
+                _run_("codecov", "neutral"), _run_("e2e", None, status="in_progress")],
+         base: [_run_("lint", "failure")]},
+        {head: [{"context": "jenkins", "state": "success"}]},
+    )  # fmt: skip
+    monkeypatch.setattr(prcheck, "GitHubClient", lambda: ci)
+    report = Report(pr=_pr())
+    await prcheck.check_ci(_pr(), report)
+    assert report.must == [f"CI fails on this PR at {head[:7]}: test (3.12)."]  # lint fails on the base too
+    assert "CI also fails on the base branch, so not because of this PR: lint." in report.should
+    assert "CI is still running: e2e. Check it again when done." in report.should
+
+    green = _CI({head: [_run_("test", "success"), _run_("skip", "skipped")]}, {})
+    monkeypatch.setattr(prcheck, "GitHubClient", lambda: green)
+    report = Report(pr=_pr())
+    await prcheck.check_ci(_pr(), report)
+    assert report.passed == ["CI passes on this PR (1 checks)."] and not report.must and not report.should

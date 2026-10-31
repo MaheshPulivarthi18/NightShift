@@ -55,12 +55,14 @@ export interface RecordPR {
   imported: boolean; // added by hand: no cost recorded
   attempts: number;
   understood: boolean | null; // passed the understanding check; null = not taken
+  ci: "passing" | "failing" | "running" | "none"; // the PR's CI on its last commit
 }
 export interface TrackRecord {
   summary: {
     prs: number; merged: number; approved: number; changes_requested: number; waiting: number; closed: number;
     unknown: number; accepted: number; merge_rate: number | null; median_days_to_merge: number | null;
     median_cost_usd: number | null; total_cost_usd: number; cost_per_merged_usd: number | null; with_cost: number;
+    ci_failing: number;
   };
   prs: RecordPR[];
 }
