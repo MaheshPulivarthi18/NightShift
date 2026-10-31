@@ -34,7 +34,7 @@ from nightshift.config import get_settings
 from nightshift.context.change import change_context
 from nightshift.context.change import to_markdown as change_markdown
 from nightshift.db import PRCheck, Repo, session_scope
-from nightshift.github import GitHubClient, GitHubError
+from nightshift.github import GitHubClient, GitHubError, ci_status
 from nightshift.health.agents import UNTRUSTED_RULE
 from nightshift.health.graph import repo_brief
 from nightshift.llm import AgentOutputError, BudgetExceeded, LLMGateway, ModelAPIError, ModelRefused
@@ -491,6 +491,29 @@ def prcheck_run_id(repo_id: int, number: int) -> str:
     return f"prcheck-{repo_id}-{number}-{uuid.uuid4().hex[:6]}"
 
 
+async def check_ci(pr: PullRequest, report: Report) -> None:
+    """The PR's own CI is evidence the sandbox may lack (it runs the whole suite, on every platform): a job that
+    fails on the PR and not on its base is a must-fix; one failing on both is the base branch's, so advice."""
+    gh = GitHubClient()
+    try:
+        head = await ci_status(gh, pr.repo, pr.head_sha)
+        base = await ci_status(gh, pr.repo, pr.base_sha) if head["failed"] else None
+    finally:
+        await gh.aclose()
+    if head["state"] == "none":
+        return
+    already = set((base or {}).get("failed", []))
+    new = [j for j in head["failed"] if j not in already]
+    if new:
+        report.must.append(f"CI fails on this PR at {pr.head_sha[:7]}: {', '.join(new[:8])}.")
+    if old := [j for j in head["failed"] if j in already]:
+        report.should.append(f"CI also fails on the base branch, so not because of this PR: {', '.join(old[:8])}.")
+    if head["pending"]:
+        report.should.append(f"CI is still running: {', '.join(head['pending'][:8])}. Check it again when done.")
+    if head["state"] == "passed":
+        report.passed.append(f"CI passes on this PR ({head['passed']} checks).")
+
+
 async def check_pr(url: str, run_id: str | None = None) -> Report:
     """Check one pull request. The result is saved as a PRCheck row (the dashboard's PR checks page) and as
     Markdown next to the repo's other reports."""
@@ -512,6 +535,7 @@ async def check_pr(url: str, run_id: str | None = None) -> Report:
         await events.record(run_id, "node_start", "guidelines", node="guidelines")
         issue = await check_guidelines(pr, report)
         check_evidence(pr, report)
+        await check_ci(pr, report)
         await events.record(run_id, "node_start", "run", node="run")
         await run_checks(pr, report, llm, repo, issue)
     except BaseException as e:

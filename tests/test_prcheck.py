@@ -162,3 +162,46 @@ def test_a_check_that_could_not_run_is_never_ready() -> None:
     blocked = Report(pr=_pr(), must=["These passed before the change and fail now: pytest -q."],
                      not_run=["The code review did not run: timeout."])  # fmt: skip
     assert blocked.verdict == "Needs work before review"  # what was found still blocks
+
+
+class _CI:
+    """GitHub's CI for two commits: check runs per sha, and commit statuses."""
+
+    def __init__(self, runs: dict[str, list[dict[str, Any]]], statuses: dict[str, list[dict[str, Any]]]) -> None:
+        self.runs, self.statuses = runs, statuses
+
+    async def rest_get(self, path: str) -> dict[str, Any]:
+        sha = path.split("/commits/")[1].split("/")[0]
+        if path.endswith("/status"):
+            return {"statuses": self.statuses.get(sha, [])}
+        return {"check_runs": self.runs.get(sha, [])}
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _run_(name: str, conclusion: str | None, status: str = "completed") -> dict[str, Any]:
+    return {"name": name, "status": status, "conclusion": conclusion}
+
+
+async def test_the_prs_own_ci_is_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """opentelemetry-python #5237: its CI failed, the sandbox's narrow tests passed, and the checker said ready."""
+    head, base = "h" * 40, "b" * 40
+    ci = _CI(
+        {head: [_run_("test (3.12)", "failure"), _run_("lint", "failure"), _run_("docs", "success"),
+                _run_("codecov", "neutral"), _run_("e2e", None, status="in_progress")],
+         base: [_run_("lint", "failure")]},
+        {head: [{"context": "jenkins", "state": "success"}]},
+    )  # fmt: skip
+    monkeypatch.setattr(prcheck, "GitHubClient", lambda: ci)
+    report = Report(pr=_pr())
+    await prcheck.check_ci(_pr(), report)
+    assert report.must == [f"CI fails on this PR at {head[:7]}: test (3.12)."]  # lint fails on the base too
+    assert "CI also fails on the base branch, so not because of this PR: lint." in report.should
+    assert "CI is still running: e2e. Check it again when done." in report.should
+
+    green = _CI({head: [_run_("test", "success"), _run_("skip", "skipped")]}, {})
+    monkeypatch.setattr(prcheck, "GitHubClient", lambda: green)
+    report = Report(pr=_pr())
+    await prcheck.check_ci(_pr(), report)
+    assert report.passed == ["CI passes on this PR (1 checks)."] and not report.must and not report.should

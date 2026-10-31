@@ -25,6 +25,9 @@ export function TrackRecord() {
           </p>
         </div>
       </header>
+      {s.ci_failing > 0 && (
+        <p className="blocked">CI fails on {s.ci_failing} of your open pull requests: maintainers rarely review a red one.</p>
+      )}
       {s.prs === 0 ? (
         <p className="muted">No pull requests yet. Publish one from a task, or add one you made earlier below.</p>
       ) : (
@@ -41,7 +44,7 @@ export function TrackRecord() {
           <div className="table-wrap">
             <table className="grid record-grid">
               <thead>
-                <tr><th>Pull request</th><th>Outcome</th><th>Opened</th><th>Merged in / open for</th><th>Cost</th><th>Attempts</th><th>Understood</th></tr>
+                <tr><th>Pull request</th><th>Outcome</th><th>CI</th><th>Opened</th><th>Merged in / open for</th><th>Cost</th><th>Attempts</th><th>Understood</th></tr>
               </thead>
               <tbody>
                 {[...data.prs].sort((a, b) => ORDER.indexOf(a.outcome) - ORDER.indexOf(b.outcome) || (b.opened ?? "").localeCompare(a.opened ?? "")).map((p) => (
@@ -51,6 +54,7 @@ export function TrackRecord() {
                       <span className="dim">{p.title.slice(0, 70)}</span>
                     </td>
                     <td><span className={`outcome outcome-${p.outcome.replace(" ", "-")}`}>{p.outcome}</span></td>
+                    <td>{p.ci === "none" ? <span className="dim">–</span> : <span className={`ci ci-${p.ci}`}>{p.ci}</span>}</td>
                     <td className="mono dim">{p.opened?.slice(0, 10) ?? ""}</td>
                     <td className="mono">{p.days_to_merge != null ? days(p.days_to_merge) : p.days_open != null ? <span className="dim">{days(p.days_open)}</span> : ""}</td>
                     <td className="mono">{p.imported ? <span className="dim">not recorded</span> : money(p.cost_usd)}</td>

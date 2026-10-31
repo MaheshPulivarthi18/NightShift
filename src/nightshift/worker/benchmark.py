@@ -32,7 +32,7 @@ import structlog
 from pydantic import BaseModel
 
 from nightshift.config import get_settings
-from nightshift.github import GitHubClient, GitHubError
+from nightshift.github import GitHubClient, ci_status
 from nightshift.worker.prcheck import check_pr
 from nightshift.worker.verify import is_doc_path
 
@@ -148,14 +148,8 @@ async def _case(
 
 
 async def _ci(gh: GitHubClient, full_name: str, sha: str) -> str:
-    try:
-        runs = (await gh.rest_get(f"/repos/{full_name}/commits/{sha}/check-runs?per_page=100")).get("check_runs", [])
-    except GitHubError:
-        return "none"
-    done = [r.get("conclusion") for r in runs if r.get("status") == "completed"]
-    if not done:
-        return "none"
-    return "failed" if any(c in FAILED for c in done) else "passed"
+    state = (await ci_status(gh, full_name, sha))["state"]
+    return state if state in ("passed", "failed") else "none"
 
 
 def paths(full_name: str, stamp: str) -> tuple[Path, Path]:

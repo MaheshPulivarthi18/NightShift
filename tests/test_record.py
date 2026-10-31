@@ -31,6 +31,8 @@ def test_the_outcome_follows_github() -> None:
     assert _facts_of(_pr("OPEN", ("jd", "CHANGES_REQUESTED"), ("jd", "APPROVED")))["outcome"] == "approved"
     assert _facts_of(_pr("OPEN", ("a", "APPROVED"), ("b", "CHANGES_REQUESTED")))["outcome"] == "changes requested"
     assert _facts_of(_pr("OPEN", ("me", "APPROVED")))["outcome"] == "waiting"  # the author's own review is not one
+    red = {**_pr("OPEN"), "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]}}
+    assert _facts_of(red)["ci"] == "failing" and _facts_of(_pr("OPEN"))["ci"] == "none"
 
 
 def test_the_totals() -> None:

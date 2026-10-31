@@ -50,7 +50,8 @@ async def pr_facts(repo: str, numbers: list[int]) -> dict[int, dict[str, Any]]:
     owner, name = repo.split("/", 1)
     fields = " ".join(
         f"p{n}: pullRequest(number: {n}) {{ title state createdAt mergedAt closedAt author {{ login }} "
-        "reviews(last: 50) { nodes { state author { login } } } }"
+        "reviews(last: 50) { nodes { state author { login } } } "
+        "commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }"
         for n in missing
     )
     gh = GitHubClient()
@@ -88,8 +89,12 @@ def _facts_of(pr: dict[str, Any]) -> dict[str, Any]:
         outcome = "approved"
     else:
         outcome = "waiting"
+    commits = (pr.get("commits") or {}).get("nodes") or [{}]
+    rollup = ((commits[-1].get("commit") or {}).get("statusCheckRollup") or {}).get("state")
+    ci = {"SUCCESS": "passing", "FAILURE": "failing", "ERROR": "failing", "PENDING": "running",
+          "EXPECTED": "running"}.get(rollup or "", "none")  # fmt: skip
     return {"title": pr.get("title", ""), "outcome": outcome, "created_at": pr.get("createdAt"),
-            "merged_at": pr.get("mergedAt"), "closed_at": pr.get("closedAt")}  # fmt: skip
+            "merged_at": pr.get("mergedAt"), "closed_at": pr.get("closedAt"), "ci": ci}  # fmt: skip
 
 
 def _days(start: str | None, end: str | None) -> float | None:
@@ -127,6 +132,7 @@ async def track_record() -> dict[str, Any]:
             "days_open": _days(f.get("created_at"), None) if f["outcome"] in ("approved", "changes requested",
                                                                                 "waiting") else None,
             "cost_usd": round(t.cost_usd or 0.0, 2), "imported": bool((t.result or {}).get("imported")),
+            "ci": f.get("ci", "none"),
             "attempts": len((t.result or {}).get("attempts", [])) + 1,
             "understood": bool(u and u[-1].get("passed")) if u else None,
         })  # fmt: skip
@@ -135,6 +141,9 @@ async def track_record() -> dict[str, Any]:
 
 def summary(prs: list[dict[str, Any]]) -> dict[str, Any]:
     counts = {o: sum(p["outcome"] == o for p in prs) for o in OUTCOMES}
+    # an open pull request whose CI fails needs its author: maintainers rarely review a red one
+    ci_failing = sum(p.get("ci") == "failing" and p["outcome"] in ("approved", "changes requested", "waiting")
+                     for p in prs)  # fmt: skip
     merge_days = [p["days_to_merge"] for p in prs if p["days_to_merge"] is not None]
     costs = [p["cost_usd"] for p in prs if not p["imported"]]  # imported PRs have no recorded cost
     merged_cost = [p["cost_usd"] for p in prs if p["outcome"] == "merged" and not p["imported"]]
@@ -149,6 +158,7 @@ def summary(prs: list[dict[str, Any]]) -> dict[str, Any]:
         "total_cost_usd": round(sum(costs), 2),
         "cost_per_merged_usd": round(sum(merged_cost) / len(merged_cost), 2) if merged_cost else None,
         "with_cost": len(costs),
+        "ci_failing": ci_failing,
     }
 
 
