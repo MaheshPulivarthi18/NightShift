@@ -89,3 +89,13 @@ async def no_stray_run_events() -> Any:
     yield
     async with session_scope() as s:
         await s.execute(delete(RunEvent).where(RunEvent.id > start, RunEvent.run_id.not_in(select(Run.run_id))))
+
+
+@pytest.fixture(autouse=True)
+def budgets_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spend caps are checked against the real ledger, so a busy day of real work (benchmarks) would refuse the
+    tests' fake model calls. Tests get room; a test about budgets sets its own caps, which win."""
+    from nightshift.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "daily_budget_usd", 1_000_000.0)
+    monkeypatch.setattr(get_settings(), "monthly_budget_usd", 1_000_000.0)

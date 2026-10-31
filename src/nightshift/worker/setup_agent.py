@@ -318,7 +318,7 @@ async def test_coverage(box: Sandbox, commands: list[str]) -> dict[str, Any]:
     """How many of the repo's test files the commands cover: a command naming no paths runs the whole suite
     (`pytest`, `go test ./...`); one naming files or folders covers the test files under them. Approximate:
     a `-k` selection or a filter inside a folder still counts the whole folder."""
-    tracked = (await box.exec("git ls-files")).stdout.splitlines()
+    tracked = (await box.exec("git ls-tree -r --name-only HEAD")).stdout.splitlines()  # no file contents needed
     tests = [f for f in tracked if TEST_FILE.search(f)]
     if not tests:
         return {}
