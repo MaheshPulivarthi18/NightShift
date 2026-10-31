@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import { api, CompareRow, LiveCheck } from "./api";
+import { api, CompareRow, FitView, LiveCheck } from "./api";
 import { ago, usePoll } from "./ui";
 
 // Where to contribute first: every watched repo, from its latest contributor report, ranked by how outside
@@ -8,9 +8,10 @@ import { ago, usePoll } from "./ui";
 const VERDICT_RANK: Record<string, number> = {
   welcoming: 0, active: 1, slow: 2, cautious: 3, mixed: 3, hard: 4, unwelcoming: 5, inactive: 6, closed: 7,
 };
-type Sort = "best" | "merge" | "response" | "starters";
+type Sort = "best" | "fit" | "merge" | "response" | "starters";
 const SORTS: { key: Sort; label: string }[] = [
   { key: "best", label: "Best first" },
+  { key: "fit", label: "Fit with you" },
   { key: "merge", label: "Merge rate" },
   { key: "response", label: "Response time" },
   { key: "starters", label: "Starter issues" },
@@ -18,13 +19,16 @@ const SORTS: { key: Sort; label: string }[] = [
 
 const ready = (r: CompareRow) => r.starters.filter((s) => s.size !== "large").length;
 
-function rank(rows: CompareRow[], sort: Sort): CompareRow[] {
+function rank(rows: CompareRow[], sort: Sort, fit: FitView | null): CompareRow[] {
+  const fits = (r: CompareRow) => fit?.repos[r.repo]?.score ?? -1;
   const verdict = (r: CompareRow) => (r.pulse ? VERDICT_RANK[r.pulse.verdict] ?? 8 : 9);
   const response = (r: CompareRow) => r.pulse?.median_pr_response_days ?? 999;
   const merge = (r: CompareRow) => r.pulse?.merge_rate ?? -1;
   const by: Record<Sort, (a: CompareRow, b: CompareRow) => number> = {
     // Welcoming first; among equals, more small and medium starter issues, then faster answers.
     best: (a, b) => verdict(a) - verdict(b) || ready(b) - ready(a) || response(a) - response(b),
+    // Repos in your languages first; among equals, the more welcoming one.
+    fit: (a, b) => fits(b) - fits(a) || verdict(a) - verdict(b) || ready(b) - ready(a),
     merge: (a, b) => merge(b) - merge(a) || verdict(a) - verdict(b),
     response: (a, b) => response(a) - response(b) || verdict(a) - verdict(b),
     starters: (a, b) => ready(b) - ready(a) || verdict(a) - verdict(b),
@@ -35,6 +39,7 @@ function rank(rows: CompareRow[], sort: Sort): CompareRow[] {
 /** `initial`: a repo whose row starts open (#/compare?open=owner/name), e.g. linked from elsewhere. */
 export function Compare({ initial = null }: { initial?: string | null }) {
   const [rows, error, reload] = usePoll<CompareRow[]>(api.compare, 5000, []);
+  const [fit] = usePoll<FitView>(api.compareFit, 600000, []);
   const [sort, setSort] = useState<Sort>("best");
   const [open, setOpen] = useState<string | null>(initial);
   const [busy, setBusy] = useState(false);
@@ -75,6 +80,12 @@ export function Compare({ initial = null }: { initial?: string | null }) {
         </div>
       </header>
       {note && <p className="muted">{note}</p>}
+      {fit && (fit.error ? <p className="dim">{fit.error}</p> : (
+        <p className="dim">
+          Fit is from @{fit.login}'s GitHub: you write {Object.entries(fit.languages).map(([l, s]) => `${l} ${Math.round(s * 100)}%`).join(", ")},
+          and repos where you already opened PRs count more.
+        </p>
+      ))}
       <div className="seg compare-sort" role="group" aria-label="Sort by">
         {SORTS.map((s) => (
           <button key={s.key} className={sort === s.key ? "on" : ""} onClick={() => setSort(s.key)} aria-pressed={sort === s.key}>
@@ -88,6 +99,7 @@ export function Compare({ initial = null }: { initial?: string | null }) {
             <tr>
               <th>#</th>
               <th>Repo</th>
+              <th title="How much of the repo's code is in languages you write, and whether you contribute there already">Fit</th>
               <th>Outside PRs, 90 days</th>
               <th>First answer</th>
               <th title="Outside PRs waiting a week or more with no maintainer response">Unanswered</th>
@@ -97,9 +109,9 @@ export function Compare({ initial = null }: { initial?: string | null }) {
             </tr>
           </thead>
           <tbody>
-            {rank(rows, sort).map((r, i) => (
+            {rank(rows, sort, fit).map((r, i) => (
               <Fragment key={r.repo}>
-                <Row r={r} n={i + 1} open={open === r.repo} onToggle={() => setOpen(open === r.repo ? null : r.repo)} />
+                <Row r={r} n={i + 1} fit={fit} open={open === r.repo} onToggle={() => setOpen(open === r.repo ? null : r.repo)} />
                 {open === r.repo && <Detail r={r} />}
               </Fragment>
             ))}
@@ -115,7 +127,8 @@ export function Compare({ initial = null }: { initial?: string | null }) {
   );
 }
 
-function Row({ r, n, open, onToggle }: { r: CompareRow; n: number; open: boolean; onToggle: () => void }) {
+function Row({ r, n, fit, open, onToggle }: { r: CompareRow; n: number; fit: FitView | null; open: boolean; onToggle: () => void }) {
+  const f = fit?.repos[r.repo];
   const p = r.pulse;
   const sizes = (["small", "medium", "large"] as const).map((s) => r.starters.filter((x) => x.size === s).length);
   const state = r.refresh === "running" ? "refreshing…" : r.refresh === "queued" ? "queued" : r.refresh === "failed" ? "refresh failed" : null;
@@ -126,6 +139,7 @@ function Row({ r, n, open, onToggle }: { r: CompareRow; n: number; open: boolean
         <span className="compare-repo">{r.repo}</span>
         {p ? <span className={`verdict verdict-${p.verdict}`}>{p.verdict}</span> : <span className="dim"> no report yet</span>}
       </td>
+      <td title={f?.why}>{f ? <span className={`fit fit-${f.label}`}>{f.label}</span> : <span className="dim">–</span>}</td>
       <td className="mono">
         {p ? (
           <>
@@ -160,7 +174,7 @@ function Detail({ r }: { r: CompareRow }) {
   return (
     <tr className="compare-detail">
       <td />
-      <td colSpan={7}>
+      <td colSpan={8}>
         {r.pulse && <p className="muted">{r.pulse.verdict_reason}</p>}
         {r.ai_rules.length > 0 && (
           <div className="ai-rules">

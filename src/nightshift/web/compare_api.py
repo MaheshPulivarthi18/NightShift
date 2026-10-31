@@ -24,6 +24,7 @@ from nightshift.health.graph import run_health_report
 from nightshift.health.report import asks_first, is_opportunity, starters
 from nightshift.web.api import _iso
 from nightshift.web.common import Guard
+from nightshift.worker.fit import fit
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/api")
@@ -92,6 +93,14 @@ async def compare() -> list[dict[str, Any]]:
             )
             titles = {(rid, n): t for rid, n, t in rows.all()}
     return [_row(r, latest.get(r.id), {n: t for (rid, n), t in titles.items() if rid == r.id}) for r in repos]
+
+
+@router.get("/compare/fit")
+async def compare_fit() -> dict[str, Any]:
+    """How well each watched repo fits you, from your GitHub languages and contributions (worker/fit.py)."""
+    async with session_scope() as s:
+        repos = list((await s.execute(select(Repo.full_name).where(Repo.watched.is_(True)))).scalars())
+    return await fit(repos)
 
 
 class RefreshIn(BaseModel):
