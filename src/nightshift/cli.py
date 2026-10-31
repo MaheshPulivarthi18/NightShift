@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -26,6 +27,8 @@ from nightshift.db import Control, Feedback, Repo, Report, session_scope
 from nightshift.github import GitHubError
 from nightshift.llm import BudgetExceeded, KillSwitchActive, ModelAPIError, spend_summary
 from nightshift.memory import get_or_create_repo, purge_repo
+from nightshift.sandbox.images import prune as prune_images
+from nightshift.sandbox.images import remove_repo as remove_repo_images
 
 app = typer.Typer(help="NightShift: autonomous repo maintainer agents.", no_args_is_help=True)
 watch_app = typer.Typer(help="Manage the watchlist of public repos.", no_args_is_help=True)
@@ -165,6 +168,9 @@ def watch_remove(
                     raise typer.Exit(1) from e
             if purge:
                 await purge_repo(s, r)
+                with contextlib.suppress(Exception):  # its sandbox images too; Docker may be down
+                    removed = await remove_repo_images(name)
+                    typer.echo(f"Removed {len(removed)} sandbox images of {name}")
             else:
                 r.watched = False
         typer.echo(f"{'Deleted' if purge else 'Removed from the watchlist (history kept)'}: {name}")
@@ -349,6 +355,14 @@ def sandbox_try(
         typer.echo(str(e), err=True)
         raise typer.Exit(1) from e
     raise typer.Exit(0 if ok else 1)
+
+
+@sandbox_app.command("prune")
+def sandbox_prune() -> None:
+    """Remove sandbox images nothing needs: each repo down to its newest few, unused environment images, and
+    images of repos no longer watched or stored."""
+    removed = asyncio.run(prune_images())
+    typer.echo(f"Removed {len(removed)} images" + "".join(f"\n  {t}" for t in removed))
 
 
 @sandbox_app.command("setup")

@@ -159,3 +159,45 @@ async def test_the_page_is_told_when_the_server_runs_old_code(
     monkeypatch.setattr(web, "_latest", (0.0, None))
     monkeypatch.setattr(web, "checkout_commit", lambda: None)  # not a git checkout: nothing to say
     assert (await client.get("/api/version")).json()["old"] is False
+
+
+async def test_findings_are_marked_right_or_wrong(client: httpx.AsyncClient) -> None:
+    from nightshift.worker.prcheck import findings
+
+    report = (
+        "# PR check: o/r#5 t\n\n## Must fix\n\n- The targeted test FAILS with the fix.\n\n"
+        "## Should fix\n\n- The description shows no test run.\n- Title style.\n\n"
+        "## Checked and fine\n\n- CI passes.\n"
+    )
+    found = findings(report)
+    assert [(f["kind"], f["text"]) for f in found] == [
+        ("must", "The targeted test FAILS with the fix."), ("should", "The description shows no test run."),
+        ("should", "Title style."),
+    ]  # fmt: skip
+    name = f"test/marks-{uuid.uuid4().hex[:8]}"
+    try:
+        async with session_scope() as s:
+            repo = Repo(full_name=name)
+            s.add(repo)
+            await s.flush()
+            check = PRCheck(repo_id=repo.id, number=5, url="u", run_id="r", status="done", markdown=report)
+            s.add(check)
+            await s.flush()
+            check_id = check.id
+        before = (await client.get("/api/pr-checks-accuracy")).json()
+        view = (
+            await client.post(f"/api/pr-checks/{check_id}/marks", json={"finding": found[0]["id"], "mark": "right"})
+        ).json()
+        assert view["findings"][0]["mark"] == "right" and view["findings"][1]["mark"] is None
+        await client.post(f"/api/pr-checks/{check_id}/marks", json={"finding": found[1]["id"], "mark": "wrong"})
+        after = (await client.get("/api/pr-checks-accuracy")).json()
+        assert (after["marked"] - before["marked"], after["right"] - before["right"]) == (2, 1)
+        view = (
+            await client.post(f"/api/pr-checks/{check_id}/marks", json={"finding": found[1]["id"], "mark": None})
+        ).json()
+        assert view["findings"][1]["mark"] is None  # cleared
+        bad = await client.post(f"/api/pr-checks/{check_id}/marks", json={"finding": "nope", "mark": "right"})
+        assert bad.status_code == 400
+    finally:
+        async with session_scope() as s:
+            await s.execute(delete(Repo).where(Repo.full_name == name))

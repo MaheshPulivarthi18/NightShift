@@ -29,6 +29,7 @@ from nightshift.health.report import is_opportunity
 from nightshift.llm import spend_summary
 from nightshift.memory import content_hash, get_or_create_repo
 from nightshift.router import AGENTS, agent_routes
+from nightshift.sandbox import images as sandbox_images
 from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker import sync
 from nightshift.worker.issue import fetch_issue
@@ -38,6 +39,7 @@ from nightshift.worker.prcheck import (
     PRCheckError,
     check_pr,
     fetch_pull,
+    findings,
     post_review,
     prcheck_run_id,
     review_body,
@@ -372,6 +374,26 @@ async def report_live(owner: str, name: str, run_id: str | None = None) -> dict[
 # ---------- jobs ----------
 
 
+# ---------- sandbox images ----------
+
+
+@router.get("/images")
+async def image_usage() -> dict[str, Any]:
+    """Sandbox images per repo and their size, for Settings. Docker down: nothing to show, said so."""
+    try:
+        return await sandbox_images.usage()
+    except Exception as e:  # noqa: BLE001 - Docker not running is a state to show, not a server error
+        return {"repos": [], "other": {"images": 0, "size": 0}, "total": 0, "keep": 0, "removable": 0,
+                "error": f"Docker did not answer: {type(e).__name__}"}  # fmt: skip
+
+
+@router.post("/images/prune", dependencies=[Guard])
+async def prune_images() -> dict[str, Any]:
+    """Remove images nothing needs (sandbox/images.py); an image a sandbox uses stays."""
+    removed = await sandbox_images.prune()
+    return {"removed": removed, **(await sandbox_images.usage())}
+
+
 # ---------- PR checks ----------
 
 
@@ -415,7 +437,40 @@ async def get_pr_check(check_id: int) -> dict[str, Any]:
         raise HTTPException(404, "No such PR check")
     c, repo, run = row
     body = re.sub(r"\A# PR check:[^\n]*\n+", "", c.markdown)  # the page header already shows the PR's title
-    return _check_view(c, repo, run) | {"html": render_markdown(body, repo.full_name)}
+    marks = c.marks or {}
+    return _check_view(c, repo, run) | {
+        "html": render_markdown(body, repo.full_name),
+        "findings": [{**f, "mark": marks.get(f["id"])} for f in findings(c.markdown)],
+    }
+
+
+class MarkIn(BaseModel):
+    finding: str = Field(max_length=40)
+    mark: Literal["right", "wrong"] | None  # None clears it
+
+
+@router.post("/pr-checks/{check_id}/marks", dependencies=[Guard])
+async def mark_finding(check_id: int, body: MarkIn) -> dict[str, Any]:
+    """Mark one finding right or wrong: how often the checker is right is measured from these."""
+    async with session_scope() as s:
+        c = await s.get(PRCheck, check_id)
+        if c is None:
+            raise HTTPException(404, "No such PR check")
+        if body.finding not in {f["id"] for f in findings(c.markdown)}:
+            raise HTTPException(400, "No such finding in this check.")
+        marks = {k: v for k, v in (c.marks or {}).items() if k != body.finding}
+        c.marks = {**marks, body.finding: body.mark} if body.mark else marks
+    return await get_pr_check(check_id)
+
+
+@router.get("/pr-checks-accuracy")
+async def finding_accuracy() -> dict[str, Any]:
+    """Findings you marked, and how many were right, over every check: the PRD's finding accuracy."""
+    async with session_scope() as s:
+        rows = (await s.execute(select(PRCheck.marks).where(PRCheck.marks != {}))).scalars().all()
+    values = [v for m in rows for v in (m or {}).values()]
+    right = sum(v == "right" for v in values)
+    return {"marked": len(values), "right": right, "share": round(right / len(values), 2) if values else None}
 
 
 @router.get("/incoming-checks")  # not under /pr-checks/{check_id}, declared earlier

@@ -86,6 +86,8 @@ def _summary(t: Task, r: Repo) -> dict[str, Any]:
         "ci_failing": ci_failing((t.result or {}).get("sync")),
         # the PR merged but its issue is still open: a "fixed by" comment is offered
         "fixed_open": fixed_open(t.result),
+        # GitHub's merge state of the open PR: BEHIND offers Update branch, DIRTY means conflicts
+        "merge_state": ((t.result or {}).get("sync") or {}).get("merge_state"),
         # a plan that asks the maintainers first, and whether the question is posted
         "asking": t.status == "planned" and not (t.plan or {}).get("actionable", True),
         "asked": str((t.result or {}).get("claim_url") or "").startswith("http"),
@@ -309,6 +311,27 @@ class FixedIn(BaseModel):
     confirm: bool = False
     text: str | None = Field(default=None, max_length=5000)
     dismiss: bool = False
+
+
+@router.post("/tasks/{task_id}/fix-ci", dependencies=[Guard])
+async def fix_ci(task_id: int) -> dict[str, Any]:
+    """Revise a published task from its PR's failing CI, and run it."""
+    try:
+        await worker.fix_ci(task_id)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+    _background(f"task-{task_id}", worker.run_task(task_id))
+    return await get_task(task_id)
+
+
+@router.post("/tasks/{task_id}/update-branch", dependencies=[Guard])
+async def update_branch(task_id: int, body: Confirm) -> dict[str, str]:
+    try:
+        return {"result": await worker.update_branch(task_id, confirm=body.confirm)}
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+    except PublishError as e:
+        raise HTTPException(502, f"GitHub refused: {e}") from e
 
 
 @router.post("/tasks/{task_id}/fixed-comment", dependencies=[Guard])

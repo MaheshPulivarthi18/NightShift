@@ -288,3 +288,43 @@ async def test_an_unreachable_github_is_waited_for_once(monkeypatch: pytest.Monk
         await down.graphql("query { viewer { login } }", {})
     assert github.outage["since"] is not None  # shown in the app until GitHub answers
     github.outage["since"] = None
+
+
+def test_a_ci_log_is_cut_to_what_failed() -> None:
+    from nightshift.github import log_excerpt
+
+    pytest_log = "\n".join([
+        "2026-10-31T06:33:19.7Z tests/test_a.py \x1b[32m.\x1b[0m\x1b[32m.\x1b[0m  [ 10%]",
+        "2026-10-31T06:33:20.1Z =========== short test summary info ===========",
+        "2026-10-31T06:33:20.1Z FAILED tests/test_a.py::test_x - AssertionError: assert 2 == 1",
+        "2026-10-31T06:33:20.2Z ##[error]Process completed with exit code 1.",
+    ])  # fmt: skip
+    assert log_excerpt(pytest_log) == "FAILED tests/test_a.py::test_x - AssertionError: assert 2 == 1"
+    go_log = "ok  \tpkg/a\t0.1s\n--- FAIL: TestB (0.00s)\n    b_test.go:12: expected 3, got 4\nFAIL\tpkg/b\n"
+    assert "--- FAIL: TestB" in log_excerpt(go_log) and "b_test.go:12: expected 3, got 4" in log_excerpt(go_log)
+    assert "ok  \tpkg/a" not in log_excerpt(go_log)
+
+
+async def test_failing_jobs_are_read_and_grouped() -> None:
+    from nightshift.github import ci_failures
+
+    log = "short test summary info\nFAILED tests/test_a.py::test_x - assert 2 == 1\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/check-runs"):
+            runs = [{"id": i, "name": name, "conclusion": c, "details_url": f"https://github.com/o/r/actions/runs/1/job/{i}",
+                     "output": {"annotations_count": 0}}
+                    for i, (name, c) in enumerate([("test (3.12)", "failure"), ("test (3.13)", "failure"),
+                                                   ("test (windows)", "failure"), ("codecov/patch", "failure"),
+                                                   ("lint", "success")], start=1)]  # fmt: skip
+            return httpx.Response(200, json={"check_runs": runs})
+        if "/logs" in path:
+            return httpx.Response(200, text=log.replace("tests/", "tests\\") if path.split("/")[-2] == "3" else log)
+        return httpx.Response(404)
+
+    gh = GitHubClient(token="t", transport=httpx.MockTransport(handler))
+    jobs = await ci_failures(gh, "o/r", "abc")
+    await gh.aclose()
+    assert [j["name"] for j in jobs] == ["test (3.12), test (3.13) and 1 more"]  # codecov is advice, not a failure
+    assert jobs[0]["excerpt"] == "FAILED tests/test_a.py::test_x - assert 2 == 1"
