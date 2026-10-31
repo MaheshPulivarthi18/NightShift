@@ -87,7 +87,9 @@ found under "Found by you".
 4. [x] **Toolchains on demand in the sandbox** (Bun for ai-job-search #765, Rust, Go). Done: the Setup agent's environment images (system packages; pnpm, yarn, Go, Rust).
 5. [ ] **Repo recipes in the UI:** see and edit each repo's saved setup and test commands.
 6. [x] **Architecture map view** (the L1 data exists; show it per repo). Done: the repo's Map tab (canvas).
-7. [ ] **Track record:** PRs opened, merged, time to merge; estimated vs actual cost per task.
+7. [x] **Track record:** PRs opened, merged, time to merge; estimated vs actual cost per task. Done: the Track
+       record page (`#/record`): outcomes from GitHub, median time to merge, cost per PR and per merged PR,
+       attempts and the understanding check; earlier PRs can be added by link.
 8. [ ] **Frontend tests** (vitest); there are none yet.
 
 ## Found 2026-10-28 to 2026-10-31

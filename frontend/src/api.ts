@@ -40,6 +40,31 @@ export interface LiveCheck {
   at: string;
 }
 
+// What happened to the pull requests made with NightShift
+export interface RecordPR {
+  repo: string;
+  number: number;
+  url: string;
+  task_id: number;
+  title: string;
+  outcome: "merged" | "approved" | "changes requested" | "waiting" | "closed" | "unknown";
+  opened: string | null;
+  days_to_merge: number | null;
+  days_open: number | null;
+  cost_usd: number;
+  imported: boolean; // added by hand: no cost recorded
+  attempts: number;
+  understood: boolean | null; // passed the understanding check; null = not taken
+}
+export interface TrackRecord {
+  summary: {
+    prs: number; merged: number; approved: number; changes_requested: number; waiting: number; closed: number;
+    unknown: number; accepted: number; merge_rate: number | null; median_days_to_merge: number | null;
+    median_cost_usd: number | null; total_cost_usd: number; cost_per_merged_usd: number | null; with_cost: number;
+  };
+  prs: RecordPR[];
+}
+
 // One watched repo on the Compare page, from its latest contributor report (no pulse: no report yet).
 export interface CompareRow {
   repo: string;
@@ -439,6 +464,8 @@ export const api = {
   understandingQuestions: (id: number, fresh = false) => call<Understanding>(`/tasks/${id}/understanding`, { fresh }),
   understandingAnswers: (id: number, answers: string[]) =>
     call<Understanding>(`/tasks/${id}/understanding/answers`, { answers }),
+  trackRecord: () => call<TrackRecord>("/track-record"),
+  addToRecord: (url: string) => call<TrackRecord>("/track-record", { url }),
   compare: () => call<CompareRow[]>("/compare"),
   refreshCompare: (staleDays = 7) => call<{ queued: string[]; already: boolean }>("/compare/refresh", { stale_days: staleDays }),
   reportLive: (repo: string, runId: string) => call<LiveCheck>(`/repos/${repo}/report/live?run_id=${runId}`),
