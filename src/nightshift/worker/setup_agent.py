@@ -59,6 +59,46 @@ ENV_ERROR = re.compile(
     r"|error while loading shared libraries|cannot open shared object file"
 )
 
+# Failures with one known cause: NightShift names the fix outright, so an attempt is not spent rediscovering it.
+# The header -> package map covers the build errors seen most; others still show the header for the agent.
+HEADER_PACKAGES = {
+    "libpq-fe.h": "libpq-dev", "ffi.h": "libffi-dev", "openssl/ssl.h": "libssl-dev", "zlib.h": "zlib1g-dev",
+    "yaml.h": "libyaml-dev", "sqlite3.h": "libsqlite3-dev", "libxml/xmlversion.h": "libxml2-dev",
+    "libxslt/xslt.h": "libxslt1-dev", "krb5.h": "libkrb5-dev", "bzlib.h": "libbz2-dev", "lzma.h": "liblzma-dev",
+    "jpeglib.h": "libjpeg-dev", "png.h": "libpng-dev", "freetype/freetype.h": "libfreetype-dev",
+    "curl/curl.h": "libcurl4-openssl-dev", "mysql.h": "default-libmysqlclient-dev", "readline/readline.h":
+    "libreadline-dev", "ncurses.h": "libncurses-dev", "gmp.h": "libgmp-dev", "snappy-c.h": "libsnappy-dev",
+}  # fmt: skip
+KNOWN_CAUSES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"No module named pip\b"),
+     "uv makes virtualenvs without pip: install with `uv pip install --python .venv/bin/python ...`, not `python -m pip`."),
+    (re.compile(r"externally-managed-environment"),
+     "The system Python is managed by the OS: install into a virtualenv in the repo (`uv venv .venv`)."),
+    (re.compile(r"pg_config executable not found|pg_config: (?:command )?not found"),
+     "pg_config comes with libpq-dev: add it to system_packages."),
+    (re.compile(r"(?:can't find|could not find) Rust compiler|cargo: (?:command )?not found|rustc: (?:command )?not found", re.I),
+     "A package builds Rust code: add `rust` to tools."),
+    (re.compile(r"\bgo: (?:command )?not found"), "Add `go` to tools."),
+    (re.compile(r"\bpnpm: (?:command )?not found"), "Add `pnpm` to tools."),
+    (re.compile(r"\byarn: (?:command )?not found"), "Add `yarn` to tools."),
+    (re.compile(r"Permission denied.*(?:/usr/|/opt/|/root|/etc/)|EACCES.*(?:/usr/|/opt/)|are you root\?", re.I),
+     "There is no root in the sandbox: install into the repo (a .venv, node_modules, GEM_HOME=$PWD/.gems), never system paths."),
+    (re.compile(r"(?:requires|Requires)[- ]Python\s*[<>=!~]+\s*([\d.]+)"),
+     "The project needs another Python version: `uv python install <version>` and make the venv with it."),
+    (re.compile(r"ENOSPC|No space left on device"), "The sandbox ran out of disk: install fewer extras (no GPU builds, no docs)."),
+]  # fmt: skip
+
+
+def known_causes(output: str) -> list[str]:
+    """Exact fixes for failures with one known cause, found in an attempt's output."""
+    out = [hint for pattern, hint in KNOWN_CAUSES if pattern.search(output)]
+    for header in re.findall(r"fatal error: ([\w/.+-]+\.h): No such file", output):
+        package = HEADER_PACKAGES.get(header)
+        out.append(f"The C header {header} is missing: add {package} to system_packages."
+                   if package else f"The C header {header} is missing: add the -dev package that ships it.")  # fmt: skip
+    return list(dict.fromkeys(out))
+
+
 Blocker = Literal["none", "services", "secrets", "gpu", "os", "network", "other"]
 Tool = Literal["pnpm", "yarn", "go", "rust"]
 assert set(Tool.__args__) == set(TOOLS)  # type: ignore[attr-defined]
@@ -114,6 +154,8 @@ class Attempt(BaseModel):
         else:
             lines.append("The image built and the setup succeeded. Test results:")
             lines += [f"{t.line()}\n{t.tail[-2000:]}" for t in self.tests]
+        if hints := known_causes(self.error + "\n".join(t.tail for t in self.tests)):
+            lines += ["Known causes NightShift recognises in this output:", *[f"- {h}" for h in hints]]
         if self.note:
             lines.append(f"NightShift: {self.note}")
         return "\n".join(lines) + "\n</attempt>"
