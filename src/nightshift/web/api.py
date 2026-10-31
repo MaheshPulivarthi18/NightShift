@@ -29,6 +29,7 @@ from nightshift.health.report import is_opportunity
 from nightshift.llm import spend_summary
 from nightshift.memory import content_hash, get_or_create_repo
 from nightshift.router import AGENTS, agent_routes
+from nightshift.sandbox import images as sandbox_images
 from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker import sync
 from nightshift.worker.issue import fetch_issue
@@ -370,6 +371,26 @@ async def report_live(owner: str, name: str, run_id: str | None = None) -> dict[
 
 
 # ---------- jobs ----------
+
+
+# ---------- sandbox images ----------
+
+
+@router.get("/images")
+async def image_usage() -> dict[str, Any]:
+    """Sandbox images per repo and their size, for Settings. Docker down: nothing to show, said so."""
+    try:
+        return await sandbox_images.usage()
+    except Exception as e:  # noqa: BLE001 - Docker not running is a state to show, not a server error
+        return {"repos": [], "other": {"images": 0, "size": 0}, "total": 0, "keep": 0, "removable": 0,
+                "error": f"Docker did not answer: {type(e).__name__}"}  # fmt: skip
+
+
+@router.post("/images/prune", dependencies=[Guard])
+async def prune_images() -> dict[str, Any]:
+    """Remove images nothing needs (sandbox/images.py); an image a sandbox uses stays."""
+    removed = await sandbox_images.prune()
+    return {"removed": removed, **(await sandbox_images.usage())}
 
 
 # ---------- PR checks ----------

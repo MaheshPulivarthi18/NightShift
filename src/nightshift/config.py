@@ -115,6 +115,7 @@ class Settings(BaseSettings):
     setup_budget_usd: float = 1.0
     pr_check_budget_usd: float = 1.5  # per checked PR, the Setup agent included
     setup_test_seconds: int = 300  # per test command while finding an environment: big suites must be scoped
+    repo_images_kept: int = 2  # per repo, newest first; older ones are removed after each save (sandbox/images.py)
     # An environment image build past this is stopped: one ran 20 silent minutes (multilspy) before this limit
     image_build_seconds: int = 600
     # One model request may take this long before it is given up and the next model on the route is tried.
