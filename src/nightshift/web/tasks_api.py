@@ -16,9 +16,11 @@ from sqlalchemy import select
 
 from nightshift.config import model_id
 from nightshift.db import LLMCall, Repo, Task, session_scope
+from nightshift.health.brief import ai_rules
 from nightshift.router import CHOOSABLE, agent_routes, choices
 from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker import task as worker
+from nightshift.worker import understanding
 from nightshift.worker.prcheck import PRCheckError
 from nightshift.worker.publish import PublishError
 
@@ -161,6 +163,8 @@ async def get_task(task_id: int) -> dict[str, Any]:
         else [],
         "baseline": res.get("baseline", []),
         "check": res.get("check"),
+        "understanding": understanding.view(res),
+        "ai_rules": ai_rules(understanding.pr_rules(res.get("brief", ""))),
         "checks": res.get("checks", []),
         "context_check": res.get("context_check"),
         "reviews": [
@@ -273,6 +277,10 @@ class Confirm(BaseModel):
     confirm: bool = False
 
 
+class Fresh(BaseModel):
+    fresh: bool = False  # a new set of questions
+
+
 @router.post("/tasks/{task_id}/claim", dependencies=[Guard])
 async def claim(task_id: int, body: Confirm) -> dict[str, str]:
     try:
@@ -370,6 +378,28 @@ class Publish(BaseModel):
     remember: bool = False  # keep the attribution and branch prefix for this repo
     replies: dict[str, str] | None = None  # follow-up: the operator's edits to the drafted replies, by comment id
     post_replies: bool = False  # follow-up: post the replies after pushing
+
+
+class Answers(BaseModel):
+    answers: list[str]
+
+
+@router.post("/tasks/{task_id}/understanding", dependencies=[Guard])
+async def understanding_questions(task_id: int, body: Fresh) -> dict[str, Any]:
+    """The understanding check's questions about this change (written on the first call, or with `fresh`)."""
+    try:
+        return await understanding.ask(task_id, fresh=body.fresh)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+
+
+@router.post("/tasks/{task_id}/understanding/answers", dependencies=[Guard])
+async def understanding_answers(task_id: int, body: Answers) -> dict[str, Any]:
+    """Grade the contributor's answers; every attempt is kept on the task."""
+    try:
+        return await understanding.answer(task_id, body.answers)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
 
 
 @router.post("/tasks/{task_id}/publish", dependencies=[Guard])

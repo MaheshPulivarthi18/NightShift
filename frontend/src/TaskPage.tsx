@@ -318,7 +318,13 @@ function RevisePanel({ task, onChange }: { task: TaskDetail; onChange: () => voi
 
 function ActionPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   if (task.status === "planned") return <Gate1 task={task} onChange={onChange} />;
-  if (task.status === "ready") return <Gate2 task={task} onChange={onChange} />;
+  if (task.status === "ready")
+    return (
+      <>
+        {!task.pr_url && <UnderstandingCheck task={task} onChange={onChange} />}
+        <Gate2 task={task} onChange={onChange} />
+      </>
+    );
   if (task.status === "approved") return <RunPanel task={task} onChange={onChange} />;
   return null;
 }
@@ -538,6 +544,95 @@ function RunPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }
         </button>
         {msg && <span className="error">{msg}</span>}
       </div>
+    </section>
+  );
+}
+
+// Before the first publish: can you explain this change to its reviewers? It warns, never blocks.
+function UnderstandingCheck({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
+  const u = task.understanding;
+  const [answers, setAnswers] = useState<string[]>(() => u?.last?.answers ?? []);
+  const [busy, setBusy] = useState<"ask" | "grade" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(!u?.passed);
+  const run = (what: "ask" | "grade", call: () => Promise<unknown>) => {
+    setBusy(what);
+    setError(null);
+    call().then(
+      () => (setBusy(null), onChange()),
+      (e: Error) => (setError(e.message), setBusy(null)),
+    );
+  };
+  const ask = (fresh: boolean) =>
+    run("ask", () => api.understandingQuestions(task.id, fresh).then(() => setAnswers([])));
+  const grade = () => run("grade", () => api.understandingAnswers(task.id, u!.questions.map((_, i) => answers[i] ?? "")));
+  const status = !u ? "not taken" : u.passed ? "passed" : u.attempts ? "not passed yet" : "questions ready";
+  return (
+    <section className={`gate calm understand${u?.passed ? " passed" : ""}`}>
+      <header onClick={() => setOpen(!open)} className="understand-h">
+        <span className="gate-mark">Before you publish</span>
+        <h2>Can you explain this change?</h2>
+        <span className={`understand-status ${u?.passed ? "ok-text" : "dim"}`}>{status}</span>
+      </header>
+      {open && (
+        <>
+          <p className="muted">
+            Reviewers will ask why the bug happened, why the fix works and what the test proves. Answer three questions in
+            your own words; NightShift checks the answers against the code. It does not stop you publishing.
+          </p>
+          {task.ai_rules.length > 0 && (
+            <div className="ai-rules">
+              <b>This repo's rules on AI</b>
+              <ul>{task.ai_rules.map((r) => <li key={r}>{r}</li>)}</ul>
+            </div>
+          )}
+          {!u ? (
+            <button className="primary" onClick={() => ask(false)} disabled={busy !== null}>
+              {busy === "ask" ? "Writing questions…" : "Start the check"}
+            </button>
+          ) : (
+            <ol className="understand-qs">
+              {u.questions.map((q, i) => {
+                const g = u.last?.grades[i];
+                return (
+                  <li key={i}>
+                    <p className="q">{q.question}</p>
+                    <p className="mono dim small-print">{q.about}</p>
+                    <textarea
+                      rows={3}
+                      value={answers[i] ?? ""}
+                      onChange={(e) => setAnswers((a) => Object.assign([...a], { [i]: e.target.value }))}
+                      placeholder="In your own words"
+                      aria-label={`Answer ${i + 1}`}
+                    />
+                    {g && (
+                      <div className={`grade grade-${g.verdict}`}>
+                        <b>{g.verdict}</b> {g.feedback}
+                        {q.expects && (
+                          <details>
+                            <summary>What a good answer covers</summary>
+                            <ul>{q.expects.map((x) => <li key={x}>{x}</li>)}</ul>
+                          </details>
+                        )}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+          {u && (
+            <div className="understand-actions">
+              <button className="primary" onClick={grade} disabled={busy !== null || u.questions.some((_, i) => !(answers[i] ?? "").trim())}>
+                {busy === "grade" ? "Checking…" : u.attempts ? "Check again" : "Check my answers"}
+              </button>
+              <button onClick={() => ask(true)} disabled={busy !== null}>{busy === "ask" ? "Writing…" : "New questions"}</button>
+              {u.attempts > 0 && <span className="dim">{u.attempts} attempt{u.attempts > 1 ? "s" : ""}</span>}
+            </div>
+          )}
+          {error && <p className="error">{error}</p>}
+        </>
+      )}
     </section>
   );
 }

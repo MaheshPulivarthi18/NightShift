@@ -875,6 +875,10 @@ async def gate2(
         )
     if attribution:
         warnings.append(f'The commit ends with the line "{attribution}". Clear it below to leave it out.')
+    from nightshift.worker.understanding import gate_warning  # it builds on this module
+
+    if understood := gate_warning(task.result):  # warns, never blocks (the agreed product rule)
+        warnings.append(understood)
 
     prepared = await publish.prepare(repo, task, task_dir(repo.full_name, task.id) / "publish", branch=branch)
     info = publish.summary(prepared, pr["title"], pr["body"]) | {
