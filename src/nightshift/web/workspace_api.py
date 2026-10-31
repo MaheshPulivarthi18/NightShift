@@ -49,6 +49,7 @@ def _task_item(t: Task, state: str | None) -> dict[str, Any]:
         else 0,
         "ci_failing": ci_failing(res.get("sync")),
         "fixed_open": fixed_open(res),
+        "merge_state": (res.get("sync") or {}).get("merge_state"),
         "asking": t.status == "planned" and not (t.plan or {}).get("actionable", True),
         "asked": str(res.get("claim_url") or "").startswith("http"),
     }  # fmt: skip

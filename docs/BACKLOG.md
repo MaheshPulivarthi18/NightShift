@@ -5,7 +5,9 @@ and the move of every page into the React app; extended 2026-10-31 with what the
 task, the multilspy setup and the 20-repo comparison showed. Tick items off as they land; add the UI bugs you
 found under "Found by you".
 
-**Next up:** the plan below.
+**Next up:** what the plan below still leaves open (2026-10-31): C4 ranking repos by fit with you, P4 setup
+time counted apart from the Coder's, L7 checking the live log on screen, proof environments, and M7 the
+GitHub App once maintainers use the local checks.
 
 ## Plan, 2026-10-31: trustworthy for maintainers, productive for contributors
 
@@ -48,8 +50,9 @@ maintainers rejected, partly because the sandbox runs 3 of pydantic's 257 test f
       in "Needs you" and on the board: the sync reads the CI on each open PR's latest commit (benchmark and
       coverage jobs are advice, not a failure). (tortoise-orm #2390 shows no CI: a first-time contributor's workflows wait for a
       maintainer's approval.)
-- [ ] C4. Fit with you (D5); C5. a drafted "fixed by #N" comment (D7); C6. lock-file churn as a package summary
-      (P3) and setup time apart from the Coder's (P4).
+- [ ] C4. Fit with you (D5): rank repos and issues by your languages and past PRs, from your GitHub.
+- [x] C5. A drafted "fixed by #N" comment when a merged fix leaves its issue open (D7). Done in #30.
+- [ ] C6. Lock-file churn as a package summary (P3, done in #31) and setup time apart from the Coder's (P4, open).
 
 **Reliability:** R1 a separate test database, R2 a backup before a purge, R3 "GitHub is unreachable" detected
 once, L4 sidebar search, L5 a banner when the server runs old code.

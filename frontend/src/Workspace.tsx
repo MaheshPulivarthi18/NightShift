@@ -53,6 +53,7 @@ function itemStatus(i: RepoItem): [string, string] {
   if (i.asking && i.feedback) return [`Answered · ${i.feedback}: plan it again`, "info"];
   if (i.asking) return ["Question posted · waiting for a reply", ""];
   if (i.stage === "done" && i.feedback) return [`In review · ${i.feedback} new comment${i.feedback > 1 ? "s" : ""}`, "info"];
+  if (i.stage === "done" && i.merge_state === "DIRTY") return ["In review · conflicts with the base", "bad"];
   if (i.stage === "done" && i.ci_failing?.length) return [`CI failing: ${i.ci_failing.slice(0, 3).join(", ")}`, "bad"];
   return ({
     plan: ["Planning", ""], gate1: ["Plan ready: approve it", "info"], work: ["Working", ""],

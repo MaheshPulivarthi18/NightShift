@@ -129,7 +129,7 @@ export function Settings() {
           <a href="#/jobs">Jobs: every run, with its live log and cost</a>
           <a href="#/board">All tasks on one board</a>
           <a href="#/checks">All PR checks</a>
-          <a href="#/repos">Manage repos: add, remove, report view</a>
+          <a href="#/repos">Manage repos: add, remove, contributor or maintainer view, check new PRs</a>
         </div>
       </section>
     </div>
