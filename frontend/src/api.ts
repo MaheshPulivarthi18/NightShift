@@ -8,6 +8,7 @@ export interface Overview {
 export interface RepoRow {
   full_name: string;
   role: "contributor" | "maintainer";
+  auto_check: boolean; // others' open PRs checked on every background sync
   verdict: string | null;
   opportunities: number;
   findings: number | null;
@@ -292,6 +293,8 @@ export interface PRCheckRow {
   created_at: string;
   error: string | null;
   review_url: string | null; // the review posted from this check
+  auto: boolean; // started by the background sync, for a repo that opted in
+  dismissed: boolean; // not to be posted
 }
 
 export interface PRCheckView extends PRCheckRow {
@@ -519,6 +522,9 @@ export const api = {
     }),
   models: () => call<ModelsPage>("/models"),
   prChecks: () => call<PRCheckRow[]>("/pr-checks"),
+  incomingChecks: () => call<PRCheckRow[]>("/incoming-checks"),
+  dismissCheck: (id: number) => call<{ dismissed: boolean }>(`/pr-checks/${id}/dismiss`, {}),
+  setAutoCheck: (repo: string, on: boolean) => call<RepoRow[]>(`/repos/${repo}/auto-check`, { on }),
   prCheck: (id: number) => call<PRCheckView>(`/pr-checks/${id}`),
   checkPr: (url: string) => call<{ run_id: string }>("/pr-checks", { url }),
   reviewPr: (id: number, confirm: boolean, edits: { body?: string; event?: ReviewEvent; attribution?: boolean } = {}) =>

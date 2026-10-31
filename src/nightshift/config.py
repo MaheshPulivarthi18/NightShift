@@ -132,6 +132,8 @@ class Settings(BaseSettings):
     sync_minutes: int = 60
     # How long a GitHub request waits for GitHub to be reachable again (no network, DNS) before it fails
     github_outage_seconds: int = 300
+    # Repos with auto_check: new open PRs checked per repo per sync, newest first (each costs about $0.15)
+    auto_check_per_sync: int = 3
     watchlist_max: int = 30  # repos on the watchlist; adding one past it is refused (CLI and web)
     sandbox_cpus: float = 2.0
     sandbox_memory: str = "4g"
@@ -159,6 +161,7 @@ class Settings(BaseSettings):
     embedding_dim: int = 384
 
     reports_dir: str = "reports"
+    backups_dir: str = "backups"  # database dumps taken before a purge (`nightshift backup`)
 
 
 @lru_cache
