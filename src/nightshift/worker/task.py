@@ -49,6 +49,7 @@ from nightshift.worker.coder import CoderRun
 from nightshift.worker.issue import IssueView, fetch_issue
 from nightshift.worker.relevant import coverage, relevant_files
 from nightshift.worker.setup_agent import RECIPE, ensure_environment, environment_for, load_recipe
+from nightshift.worker.sync import pr_number
 from nightshift.worker.verify import (
     CommandResult,
     FixCheck,
@@ -965,6 +966,44 @@ async def draft_pr(task: Task, repo: Repo, llm: LLMGateway | None = None) -> dic
     (task_dir(repo.full_name, task.id) / "pr.md").write_text(f"# {pr['title']}\n\n{pr['body']}")
     await _save(task, result={**task.result, "pr": pr}, cost_usd=await task_cost(task))
     return pr
+
+
+def fixed_text(task: Task) -> str:
+    """The courtesy comment for an issue left open after its fix merged."""
+    pr = pr_number(task.result.get("pr_url"))
+    return f"This is fixed by #{pr}, which is merged. Could this issue be closed? Thanks!"
+
+
+async def fixed_comment(task_id: int, *, confirm: bool, text: str | None = None, dismiss: bool = False) -> str:
+    """Tell the maintainers the issue is fixed (its PR merged, the issue still open). Without `confirm`, only
+    says what would be posted; `dismiss` drops the offer."""
+    task, repo = await load_task(task_id)
+    if task.result.get("fixed_comment_url"):
+        raise TaskError(f"Already done: {task.result['fixed_comment_url']}")
+    if dismiss:
+        await _save(task, result={**task.result, "fixed_comment_url": "dismissed"})
+        return "dismissed"
+    sync = task.result.get("sync") or {}
+    if sync.get("pr_state") != "MERGED":
+        raise TaskError("The pull request is not merged yet.")
+    body = (text or fixed_text(task)).strip()
+    if not confirm:
+        return f"Would post on {repo.full_name}#{task.issue_number}:\n\n{body}"
+    async with session_scope() as s:  # marked first, so a second click posts nothing
+        marked = await s.execute(
+            update(Task)
+            .where(Task.id == task.id, Task.result["fixed_comment_url"].as_string().is_(None))
+            .values(result={**task.result, "fixed_comment_url": "posting"})
+        )
+    if not cast(CursorResult[Any], marked).rowcount:
+        raise TaskError("The comment is already posted or being posted.")
+    try:
+        url = await publish.post_comment(repo, task.issue_number, body)
+    except BaseException:
+        await _save(task, result={k: v for k, v in task.result.items() if k != "fixed_comment_url"})
+        raise
+    await _save(task, result={**task.result, "fixed_comment_url": url})
+    return url
 
 
 async def claim(task_id: int, *, confirm: bool) -> str:

@@ -3,7 +3,8 @@
 It runs when the app starts and then every `sync_minutes` (0: only when asked, with Sync now). For each
 published task whose PR is still open, it reads the PR's open feedback the way the task page does,
 leaving out what you already answered, here or on GitHub, and the CI on the PR's latest commit (a red PR
-waits on its author: maintainers rarely review one), and keeps a short summary on the task. For a
+waits on its author: maintainers rarely review one), and keeps a short summary on the task. Once the PR is
+merged, it notes whether the issue it fixed is still open, so a "fixed by" comment can be offered. For a
 plan that asked the maintainers first, it reads the issue for replies after your question. Read-only:
 nothing is posted.
 """
@@ -87,6 +88,19 @@ async def pr_ci(repo: str, number: int) -> dict[str, Any] | None:
     return {"state": state, "failed": failed[:8], "sha": head[:7]}
 
 
+async def issue_open(repo: str, number: int) -> bool | None:
+    """Whether the issue is still open (None: GitHub did not say). A merged PR without "Fixes #N" leaves it open."""
+    gh = GitHubClient()
+    try:
+        issue = await gh.rest_get(f"/repos/{repo}/issues/{number}")
+    except GitHubError as e:
+        log.warning("sync_issue_failed", repo=repo, issue=number, error=str(e)[:200])
+        return None
+    finally:
+        await gh.aclose()
+    return issue.get("state") == "open" and "pull_request" not in issue
+
+
 async def _save_sync(task_id: int, summary: dict[str, Any]) -> None:
     """Set result.sync without rewriting the rest of the result, which a running task may be changing."""
     async with session_scope() as s:
@@ -135,7 +149,16 @@ async def sync_once(repos: list[str] | None = None) -> dict[str, Any]:
                      "text": next((ln for ln in c.body.splitlines() if ln.strip()), "")[:200]}
                     for c in comments if c.suggested
                 ]  # fmt: skip
-                summary = {"at": datetime.now(UTC).isoformat(), "pr_state": state, "open": open_, "ci": ci}
+                summary: dict[str, Any] = {
+                    "at": datetime.now(UTC).isoformat(),
+                    "pr_state": state,
+                    "open": open_,
+                    "ci": ci,
+                }
+                if state == "MERGED" and not (t.result or {}).get("fixed_comment_url"):
+                    before = ((t.result or {}).get("sync") or {}).get("issue_open")
+                    # a closed issue stays closed: asked about until then, not every sync forever
+                    summary["issue_open"] = False if before is False else await issue_open(repo, t.issue_number)
                 await _save_sync(t.id, summary)
                 checked += 1
                 with_feedback += bool(open_)

@@ -160,6 +160,7 @@ export interface TaskSummary {
   updated_at: string | null;
   feedback: number; // unanswered review feedback on its open PR, or replies to its question, from the sync
   ci_failing: string[]; // CI jobs failing on its open PR, from the sync: a red PR waits on its author
+  fixed_open: boolean; // its PR merged and the issue is still open: a "fixed by" comment is offered
   asking: boolean; // a plan that asks the maintainers before any code
   asked: boolean; // and the question is posted on the issue
 }
@@ -220,6 +221,7 @@ export interface TaskDetail extends TaskSummary {
   claim_comment: string;
   actionable: boolean;
   claim_url: string | null;
+  fixed_comment: string; // the drafted "fixed by" comment, while fixed_open
   baseline: CommandResult[];
   check: FixCheck | null;
   understanding: Understanding | null;
@@ -395,6 +397,7 @@ export interface RepoItem {
   updated_at: string | null;
   feedback?: number;
   ci_failing?: string[];
+  fixed_open?: boolean;
   asking?: boolean;
   asked?: boolean;
 }
@@ -527,6 +530,8 @@ export const api = {
   revise: (id: number, note: string, latest: boolean, mode: "continue" | "restart" = "continue") =>
     call<TaskDetail>(`/tasks/${id}/revise`, { note, latest, mode }),
   claim: (id: number, confirm: boolean) => call<{ result: string }>(`/tasks/${id}/claim`, { confirm }),
+  fixedComment: (id: number, body: { confirm?: boolean; text?: string; dismiss?: boolean }) =>
+    call<{ result: string }>(`/tasks/${id}/fixed-comment`, body),
   publish: (id: number, confirm: boolean, edits: PublishEdits = {}) =>
     call<GateInfo>(`/tasks/${id}/publish`, { confirm, ...edits }),
 };

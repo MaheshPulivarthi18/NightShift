@@ -274,6 +274,12 @@ async def post_claim(repo: Repo, task: Task, text: str) -> str:
     return out.strip().splitlines()[-1]
 
 
+async def post_comment(repo: Repo, number: int, text: str) -> str:
+    """Post a comment on an issue with your gh login. Returns the comment URL."""
+    out = await _run("gh", "issue", "comment", str(number), "--repo", repo.full_name, "--body-file", "-", stdin=text)
+    return out.strip().splitlines()[-1]
+
+
 def summary(prepared: Prepared, title: str, body: str) -> dict[str, Any]:
     return {"branch": prepared.branch, "base": prepared.default_branch, "head": prepared.head,
             "drift": prepared.drift, "files": prepared.files, "title": title, "body": body}  # fmt: skip
