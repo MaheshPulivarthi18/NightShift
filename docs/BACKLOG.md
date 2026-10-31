@@ -5,8 +5,7 @@ and the move of every page into the React app; extended 2026-10-31 with what the
 task, the multilspy setup and the 20-repo comparison showed. Tick items off as they land; add the UI bugs you
 found under "Found by you".
 
-**Next up, in order:** the PR checker's strictness (benchmark round 2), S2 (Setup agent speed), S3 (a test
-command must run tests).
+**Next up, in order:** the PR checker's strictness (benchmark round 2), S3 (a test command must run tests).
 
 ## Found by you
 
@@ -145,9 +144,13 @@ command must run tests).
       a build stopped at the limit tells the Setup agent where it was and to ask for smaller packages; downloads
       stay in BuildKit's cache between builds (a second image with one more package: 2 s), and toolchain layers
       come first so images needing the same toolchain share them.
-- [ ] **S2. Setup agent speed** (proposed, not built): attach the log files a failure names, keep the sandbox
+- [x] **S2. Setup agent speed** (proposed, not built): attach the log files a failure names, keep the sandbox
       between attempts instead of rebuilding, and a rule table for known failures (no pip in a uv venv, missing
       `-dev` packages).
+      Done: known causes (no pip in a uv venv, a missing C header and its -dev package, pg_config, a missing
+      toolchain, no root, the Python version, no disk) are named in the attempt for the agent; the end of each log
+      file a failed setup command names is attached; and after each slow setup step that succeeds the sandbox is
+      saved, so the next attempt starting with the same steps resumes there (tested: 4.6 s instead of re-running).
 - [ ] **S3. A "test command" must run tests.** multilspy's environment counts `ls tests/multilspy` as a passing
       test command; require a test runner (pytest, go test, jest …) and say which parts of the suite were left out
       (multilspy ran only the Python language-server tests).
