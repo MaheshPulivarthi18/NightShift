@@ -243,6 +243,7 @@ class OpenRouter:
         if not key and http is None:
             raise ModelConfigError("OPENROUTER_API_KEY is not set.")
         self.url = settings.openrouter_base_url.rstrip("/") + "/chat/completions"
+        self.deadline = settings.model_call_seconds
         self.http = http or httpx.AsyncClient(
             headers={"Authorization": f"Bearer {key}", "X-Title": "NightShift"}, timeout=httpx.Timeout(600, connect=30)
         )
@@ -256,7 +257,9 @@ class OpenRouter:
     async def complete(self, body: dict[str, Any]) -> dict[str, Any]:
         for attempt in range(5):
             try:
-                res = await self.http.post(self.url, json=body)
+                res = await asyncio.wait_for(self.http.post(self.url, json=body), self.deadline)
+            except TimeoutError as e:  # no retry on the same model: the gateway falls back to the next one
+                raise ModelAPIError(504, f"no answer within {self.deadline} s") from e
             except httpx.TransportError as e:
                 if attempt == 4:
                     raise ModelAPIError(0, f"cannot reach OpenRouter: {e}") from e
@@ -271,6 +274,7 @@ class OpenRouter:
         raise AssertionError("unreachable")
 
     async def stream(self, body: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        started = time.monotonic()
         async with self.http.stream("POST", self.url, json={**body, "stream": True}) as res:
             if res.status_code != 200:
                 raw = await res.aread()
@@ -280,6 +284,8 @@ class OpenRouter:
                     data = raw.decode(errors="replace")
                 raise self._error(res.status_code, data)
             async for line in res.aiter_lines():
+                if time.monotonic() - started > self.deadline:  # kept alive but never finishing
+                    raise ModelAPIError(504, f"no complete answer within {self.deadline} s")
                 if not line.startswith("data: ") or line == "data: [DONE]":
                     continue  # comments like ": OPENROUTER PROCESSING" keep the connection alive
                 chunk = json.loads(line[6:])
