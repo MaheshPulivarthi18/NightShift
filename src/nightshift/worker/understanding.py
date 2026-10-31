@@ -12,6 +12,7 @@ changes … without relying on AI tools"). Every attempt is kept on the task.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -80,6 +81,37 @@ def pr_rules(brief: str) -> list[str]:
             break
         out.append(line[2:])
     return out
+
+
+TRAILER = "Assisted-by: NightShift"
+ASKS_TRAILER = re.compile(r"assisted-by", re.I)
+ASKS_DISCLOSURE = re.compile(r"\bdisclos", re.I)
+
+
+def ai_policy(result: dict[str, Any]) -> dict[str, list[str]]:
+    """What the repo's PR rules ask of AI-assisted work, from the task's repo brief: a commit trailer
+    (OpenTelemetry: `Assisted-by:`), a disclosure in the PR (django), or both."""
+    rules = ai_rules(pr_rules(result.get("brief", "")))
+    return {
+        "trailer": [r for r in rules if ASKS_TRAILER.search(r)],
+        "disclosure": [r for r in rules if ASKS_DISCLOSURE.search(r) and not ASKS_TRAILER.search(r)],
+    }
+
+
+def attribution(result: dict[str, Any], saved: dict[str, Any], default: str) -> tuple[str, list[str]]:
+    """The commit's last line before any edit at Gate 2, and the warnings the repo's AI rules call for. A repo
+    that asks for an `Assisted-by:` trailer gets one unless the developer saved their own choice for it."""
+    policy = ai_policy(result)
+    line = default
+    if policy["trailer"] and "attribution" not in saved:
+        line = TRAILER
+    warnings = []
+    if policy["trailer"]:
+        warnings.append("This repo asks AI-assisted commits to say so with an `Assisted-by:` trailer: "
+                        + " ".join(policy["trailer"]))  # fmt: skip
+    if policy["disclosure"]:
+        warnings.append("This repo asks you to disclose AI help in the pull request: " + " ".join(policy["disclosure"]))
+    return line, warnings
 
 
 def view(result: dict[str, Any]) -> dict[str, Any] | None:

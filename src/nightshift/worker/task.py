@@ -999,7 +999,12 @@ async def gate2(
     pr = dict(task.result.get("pr") or await draft_pr(task, repo))
     pr["commit_message"] = publish.strip_attribution(pr["commit_message"])  # drafts before Gate 2 showed it
     pr.update({k: edits[k] for k in ("title", "body", "commit_message") if k in edits})
-    attribution = edits.get("attribution", publish.attribution_for(repo)).strip()
+    from nightshift.worker import understanding  # it builds on this module
+
+    suggested, policy_warnings = understanding.attribution(
+        task.result, repo.publish or {}, publish.attribution_for(repo)
+    )
+    attribution = edits.get("attribution", suggested).strip()
     branch = edits.get("branch", "").strip() or publish.branch_name(task, repo)
     if edits:
         await _save(task, result={**task.result, "pr": pr})
@@ -1025,6 +1030,7 @@ async def gate2(
 
     if understood := gate_warning(task.result):  # warns, never blocks (the agreed product rule)
         warnings.append(understood)
+    warnings += policy_warnings
 
     prepared = await publish.prepare(repo, task, task_dir(repo.full_name, task.id) / "publish", branch=branch)
     info = publish.summary(prepared, pr["title"], pr["body"]) | {
@@ -1061,7 +1067,12 @@ async def _follow_up(
     revision = (task.note or "").rsplit("Revision:", 1)[-1].strip()
     default = "Address review feedback" + (f"\n\n{revision}" if revision else "")
     message = edits.get("commit_message") or task.result.get("follow_up_message") or default
-    attribution = edits.get("attribution", publish.attribution_for(repo)).strip()
+    from nightshift.worker import understanding  # it builds on this module
+
+    suggested, policy_warnings = understanding.attribution(
+        task.result, repo.publish or {}, publish.attribution_for(repo)
+    )
+    attribution = edits.get("attribution", suggested).strip()
     if "commit_message" in edits:
         await _save(task, result={**task.result, "follow_up_message": message})
     blockers = await publish.freshness(repo.full_name, task)
@@ -1073,6 +1084,7 @@ async def _follow_up(
             f"the PR's branch is on {pr.head_owner}'s fork, not yours ({login or 'NIGHTSHIFT_GITHUB_LOGIN unset'})"
         )
     warnings = [f'The commit ends with the line "{attribution}". Clear it to leave it out.'] if attribution else []
+    warnings += policy_warnings
     info: dict[str, Any] = {
         "mode": "follow_up", "url": pr.url, "branch": pr.head_branch, "base": "", "head": "", "drift": [],
         "files": [], "title": (task.result.get("pr") or {}).get("title", ""),
