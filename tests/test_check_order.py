@@ -116,6 +116,8 @@ async def test_suites_run_after_approval_and_a_regression_goes_back(
     assert prefers == [None, get_settings().reviewer_followup]
     assert done.status == "ready"
     checks = [(c["check"], c["ok"], c["round"]) for c in done.result["checks"]]
+    # setup and baseline are timed apart: the Coder's time limit starts after them
+    assert set(done.result["timing"]) == {"setup_seconds", "baseline_seconds"}
     assert checks == [
         ("scope", True, 1), ("test", True, 1), ("review", True, 1), ("suites", False, 1),
         ("scope", True, 2), ("test", True, 2), ("review", True, 2), ("suites", True, 2),

@@ -672,7 +672,6 @@ async def run_task(task_id: int) -> Task:
         )
     issue = IssueView.model_validate(task.issue)
     folder = task_dir(repo.full_name, task.id)
-    deadline = time.monotonic() + settings.task_minutes * 60
     llm = LLMGateway(task.run_id, repo.id, run_budget_usd=settings.task_budget_usd)
     result: dict[str, Any] = dict(task.result)
     resume = result.pop("resume", None)  # used by this run only: a later revise records a new one
@@ -683,9 +682,11 @@ async def run_task(task_id: int) -> Task:
     coder: CoderRun | None = None
     try:
         await events.record(task.run_id, "node_start", "setup", node="setup")
+        setup_started = time.monotonic()
         env = plan.get("environment") or {}
         image = await ensure_env_image(env.get("system_packages", []), env.get("tools", []))
         box, cached = await prepare_repo(repo.full_name, task.base_commit, plan["setup_commands"], image=image)
+        baseline_started = time.monotonic()
         kept = [CommandResult.model_validate(b) for b in (resume or {}).get("baseline", [])]
         if resume and resume["base"] == task.base_commit and [b.command for b in kept] == plan["test_commands"]:
             # Same commit, same commands: the last attempt's baseline still holds, so it is not run again
@@ -696,6 +697,18 @@ async def run_task(task_id: int) -> Task:
             baseline = await run_commands(box, plan["test_commands"], note="baseline, before any change")
             await save_recipe(repo.id, task.base_commit, plan["setup_commands"], baseline)
         result["baseline"] = [b.model_dump() for b in baseline]
+        # The Coder's time starts now: a slow install or a long suite (laya #50 spent its 30 minutes before the
+        # Coder began) is the repo's cost, not the fix's. Setup and baseline have their own command time limits.
+        result["timing"] = {"setup_seconds": round(baseline_started - setup_started),
+                            "baseline_seconds": round(time.monotonic() - baseline_started)}  # fmt: skip
+        deadline = time.monotonic() + settings.task_minutes * 60
+        if time.monotonic() - setup_started > 300:
+            await events.record(
+                task.run_id, "warning",
+                f"Setup took {_minutes(result['timing']['setup_seconds'])} and the baseline "
+                f"{_minutes(result['timing']['baseline_seconds'])}; the Coder's {settings.task_minutes} minutes "
+                "start now",
+            )  # fmt: skip
         if resume:  # pick up where the last attempt stopped: its change goes back in before the Coder starts
             await box.write_file(PUBLISHED_PATCH, resume["diff"])
             applied = await box.exec(f"git apply --3way --whitespace=nowarn {PUBLISHED_PATCH}")
@@ -968,6 +981,10 @@ async def draft_pr(task: Task, repo: Repo, llm: LLMGateway | None = None) -> dic
     (task_dir(repo.full_name, task.id) / "pr.md").write_text(f"# {pr['title']}\n\n{pr['body']}")
     await _save(task, result={**task.result, "pr": pr}, cost_usd=await task_cost(task))
     return pr
+
+
+def _minutes(seconds: float) -> str:
+    return f"{round(seconds / 60, 1)} min" if seconds >= 60 else f"{round(seconds)} s"
 
 
 CI_NOTE_CHARS = 6000

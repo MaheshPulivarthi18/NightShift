@@ -1030,6 +1030,12 @@ function Checks({ task }: { task: TaskDetail }) {
   const caught = checks.filter((e) => e.check === "scope" && !e.ok).length;
   return (
     <div className="verify">
+      {task.timing && (
+        <p className="dim small-print">
+          Setup {fmtSeconds(task.timing.setup_seconds)} · baseline {fmtSeconds(task.timing.baseline_seconds)}, before the
+          Coder's time limit started.
+        </p>
+      )}
       {checks.length > 0 || next ? (
         <ol className="checks">
           {CHECKS.map((g) => {
