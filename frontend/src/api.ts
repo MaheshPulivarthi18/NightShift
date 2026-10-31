@@ -162,6 +162,7 @@ export interface TaskSummary {
   feedback: number; // unanswered review feedback on its open PR, or replies to its question, from the sync
   ci_failing: string[]; // CI jobs failing on its open PR, from the sync: a red PR waits on its author
   fixed_open: boolean; // its PR merged and the issue is still open: a "fixed by" comment is offered
+  merge_state?: string | null; // GitHub's merge state of its open PR: BEHIND, DIRTY (conflicts), CLEAN, BLOCKED…
   asking: boolean; // a plan that asks the maintainers before any code
   asked: boolean; // and the question is posted on the issue
 }
@@ -410,8 +411,20 @@ export interface RepoItem {
   feedback?: number;
   ci_failing?: string[];
   fixed_open?: boolean;
+  merge_state?: string | null;
   asking?: boolean;
   asked?: boolean;
+}
+
+// Sandbox images on disk (sizes overlap: images share layers).
+export interface ImageUsage {
+  repos: { repo: string; images: number; size: number; newest: number }[];
+  other: { images: number; size: number };
+  total: number;
+  keep: number; // images kept per repo
+  removable: number; // repo images past that
+  error?: string;
+  removed?: string[];
 }
 
 export interface SyncStatus {
@@ -445,6 +458,11 @@ export interface RepoKnowledge {
   recipe: { setup: string[]; tests: string[]; passing: string[] } | null;
   map: { commit: string; built_at: string; components: number; relationships: number } | null;
   brief: string | null;
+  brief_at: string | null;
+  brief_edited: boolean; // your version: every agent reads it instead of the generated one
+  notes: string; // your notes, read by every agent beside the brief
+  notes_at: string | null;
+  recipe_at: string | null;
   // The latest run that set the repo up: environment, then map, then brief.
   setup: { run_id: string; status: string; step: string | null; error: string | null; at: string } | null;
 }
@@ -481,12 +499,17 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
 
 export const api = {
   overview: () => call<Overview>("/overview"),
+  images: () => call<ImageUsage>("/images"),
+  pruneImages: () => call<ImageUsage>("/images/prune", {}),
   version: () => call<{ running: string | null; latest: string | null; old: boolean }>("/version"),
   setKill: (killed: boolean) => call<Overview>("/control/kill", { killed }),
   repos: () => call<RepoRow[]>("/repos"),
   repoItems: (repo: string) => call<RepoItem[]>(`/repos/${repo}/items`),
   repoMap: (repo: string) => call<RepoMap>(`/repos/${repo}/map`),
   repoKnowledge: (repo: string) => call<RepoKnowledge>(`/repos/${repo}/knowledge`),
+  editBrief: (repo: string, text: string) => call<RepoKnowledge>(`/repos/${repo}/knowledge/brief`, { text }),
+  editNotes: (repo: string, text: string) => call<RepoKnowledge>(`/repos/${repo}/knowledge/notes`, { text }),
+  forget: (repo: string, piece: string) => call<RepoKnowledge>(`/repos/${repo}/knowledge/forget`, { piece }),
   repoStats: (repo: string) => call<RepoStats>(`/repos/${repo}/stats`),
   syncStatus: () => call<SyncStatus>("/sync"),
   replan: (id: number, answer: string) => call<{ status: string; repo: string }>(`/tasks/${id}/replan`, { answer }),
@@ -550,6 +573,8 @@ export const api = {
   revise: (id: number, note: string, latest: boolean, mode: "continue" | "restart" = "continue") =>
     call<TaskDetail>(`/tasks/${id}/revise`, { note, latest, mode }),
   claim: (id: number, confirm: boolean) => call<{ result: string }>(`/tasks/${id}/claim`, { confirm }),
+  fixCi: (id: number) => call<TaskDetail>(`/tasks/${id}/fix-ci`, {}),
+  updateBranch: (id: number, confirm: boolean) => call<{ result: string }>(`/tasks/${id}/update-branch`, { confirm }),
   fixedComment: (id: number, body: { confirm?: boolean; text?: string; dismiss?: boolean }) =>
     call<{ result: string }>(`/tasks/${id}/fixed-comment`, body),
   publish: (id: number, confirm: boolean, edits: PublishEdits = {}) =>

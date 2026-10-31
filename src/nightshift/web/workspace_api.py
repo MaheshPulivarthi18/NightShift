@@ -1,4 +1,5 @@
-"""The repo workspace: one repo's issues and PRs, map, knowledge and numbers. Read-only.
+"""The repo workspace: one repo's issues and PRs, map, knowledge and numbers. Read-only, except your
+corrections to the knowledge: an edited brief, your notes, and forgetting a piece so it is learned again.
 
 Items are the repo's tasks (issues NightShift worked on, and PRs of yours it follows) and its PR checks
 (incoming PRs). An item is closed once GitHub has merged or closed its PR, or its plan was rejected.
@@ -13,7 +14,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from pydantic import BaseModel, Field
+from sqlalchemy import delete, select
 
 from nightshift import events, github
 from nightshift.config import get_settings
@@ -24,8 +26,8 @@ from nightshift.web.api import _environment_view, _iso, _repo
 from nightshift.web.common import Guard
 from nightshift.web.tasks_api import STAGES, ci_failing, fixed_open
 from nightshift.worker import sync
-from nightshift.worker.onboard import BRIEF
-from nightshift.worker.setup_agent import ENVIRONMENT, Environment, load_recipe
+from nightshift.worker.onboard import BRIEF, NOTES
+from nightshift.worker.setup_agent import ENVIRONMENT, RECIPE, Environment, load_recipe
 
 router = APIRouter(prefix="/api")
 
@@ -49,6 +51,7 @@ def _task_item(t: Task, state: str | None) -> dict[str, Any]:
         else 0,
         "ci_failing": ci_failing(res.get("sync")),
         "fixed_open": fixed_open(res),
+        "merge_state": (res.get("sync") or {}).get("merge_state"),
         "asking": t.status == "planned" and not (t.plan or {}).get("actionable", True),
         "asked": str(res.get("claim_url") or "").startswith("http"),
     }  # fmt: skip
@@ -128,6 +131,8 @@ async def repo_knowledge(owner: str, name: str) -> dict[str, Any]:
     env = next((c for c in contexts if c.kind == ENVIRONMENT), None)
     amap = next((c for c in contexts if c.kind == archmap.KIND), None)
     stored_brief = next((c for c in contexts if c.kind == BRIEF), None)
+    notes = next((c for c in contexts if c.kind == NOTES), None)
+    recipe_row = next((c for c in contexts if c.kind == RECIPE), None)
     return {
         "environment": _environment_view(Environment.model_validate(env.data), env.created_at) if env else None,
         "recipe": await load_recipe(repo.id),
@@ -135,9 +140,76 @@ async def repo_knowledge(owner: str, name: str) -> dict[str, Any]:
                 "components": len(amap.data.get("components", [])),
                 "relationships": len(amap.data.get("relationships", []))} if amap else None,
         "brief": stored_brief.data.get("text") if stored_brief else (brief or {}).get("brief"),
+        "brief_at": _iso(stored_brief.created_at) if stored_brief else None,
+        "brief_edited": bool(stored_brief and stored_brief.data.get("edited")),
+        "notes": notes.data.get("text", "") if notes else "",
+        "notes_at": _iso(notes.created_at) if notes else None,
+        "recipe_at": _iso(recipe_row.created_at) if recipe_row else None,
         "setup": {"run_id": setup.run_id, "status": setup.status, "step": setup.current_node, "error": setup.error,
                   "at": _iso(setup.started_at)} if setup else None,
     }  # fmt: skip
+
+
+FORGETTABLE = {"environment": ENVIRONMENT, "recipe": RECIPE, "map": archmap.KIND, "brief": BRIEF, "notes": NOTES}
+
+
+class KnowledgeText(BaseModel):
+    text: str = Field(max_length=20_000)
+
+
+async def _replace(repo_id: int, kind: str, data: dict[str, Any], commit: str = "") -> None:
+    async with session_scope() as s:
+        await s.execute(delete(RepoContext).where(RepoContext.repo_id == repo_id, RepoContext.kind == kind))
+        s.add(RepoContext(repo_id=repo_id, kind=kind, commit=commit, data=data))
+
+
+@router.post("/repos/{owner}/{name}/knowledge/brief", dependencies=[Guard])
+async def edit_brief(owner: str, name: str, body: KnowledgeText) -> dict[str, Any]:
+    """Your version of the repo brief and PR rules: every agent reads it instead of the generated one, until
+    you forget it (the next setup then writes a fresh one)."""
+    repo = await _repo(f"{owner}/{name}")
+    if not body.text.strip():
+        raise HTTPException(400, "The brief is empty; use Forget to go back to the generated one.")
+    async with session_scope() as s:
+        latest = (
+            await s.execute(
+                select(RepoContext.commit)
+                .where(RepoContext.repo_id == repo.id, RepoContext.kind == BRIEF)
+                .order_by(RepoContext.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    await _replace(repo.id, BRIEF, {"text": body.text.strip(), "edited": True}, latest or "")
+    return await repo_knowledge(owner, name)
+
+
+@router.post("/repos/{owner}/{name}/knowledge/notes", dependencies=[Guard])
+async def edit_notes(owner: str, name: str, body: KnowledgeText) -> dict[str, Any]:
+    """Your notes about the repo, read by every agent beside the brief. Empty removes them."""
+    repo = await _repo(f"{owner}/{name}")
+    if body.text.strip():
+        await _replace(repo.id, NOTES, {"text": body.text.strip()})
+    else:
+        async with session_scope() as s:
+            await s.execute(delete(RepoContext).where(RepoContext.repo_id == repo.id, RepoContext.kind == NOTES))
+    return await repo_knowledge(owner, name)
+
+
+class Forget(BaseModel):
+    piece: str
+
+
+@router.post("/repos/{owner}/{name}/knowledge/forget", dependencies=[Guard])
+async def forget(owner: str, name: str, body: Forget) -> dict[str, Any]:
+    """Forget one piece of what NightShift learned; it is learned again the next time it is needed (the
+    environment and map at the next task or setup, the brief at the next setup)."""
+    repo = await _repo(f"{owner}/{name}")
+    kind = FORGETTABLE.get(body.piece)
+    if kind is None:
+        raise HTTPException(400, f"Nothing called {body.piece!r} to forget.")
+    async with session_scope() as s:
+        await s.execute(delete(RepoContext).where(RepoContext.repo_id == repo.id, RepoContext.kind == kind))
+    return await repo_knowledge(owner, name)
 
 
 @router.get("/repos/{owner}/{name}/stats")

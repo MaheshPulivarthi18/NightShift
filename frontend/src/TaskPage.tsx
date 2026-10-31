@@ -76,6 +76,9 @@ export function TaskPage({ id, embedded = false }: { id: number; embedded?: bool
 
       <ActionPanel task={task} onChange={load} />
       {task.fixed_open && <FixedPanel task={task} onChange={load} />}
+      {task.status === "published" && (task.ci_failing.length > 0 || task.merge_state === "BEHIND" || task.merge_state === "DIRTY") && (
+        <PrStatePanel task={task} onChange={load} />
+      )}
       {task.pr_url && FEEDBACK.has(task.status) && <FeedbackPanel task={task} onChange={load} />}
       {REVISABLE.has(task.status) && <RevisePanel task={task} onChange={load} />}
       {!task.pr_url && ATTACHABLE.has(task.status) && <AttachPr task={task} onChange={load} />}
@@ -140,6 +143,47 @@ const FEEDBACK = new Set(["published", "needs_operator", "failed"]);
 
 // What reviewers asked on the PR: read from GitHub on request; tick what to address, then one run makes
 // the changes on top of the PR, and Gate 2 pushes a follow-up commit with a drafted reply to each.
+/** The open PR needs its author: CI fails (revise from the failing jobs' output), or the base branch moved
+ * on (merge it in on GitHub, never a rebase), or it conflicts with the base (revise on the latest commit). */
+function PrStatePanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [armed, setArmed] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const act = (p: Promise<unknown>) => {
+    setBusy(true);
+    setMsg(null);
+    p.then(onChange, (e: Error) => setMsg(e.message)).finally(() => (setBusy(false), setArmed(false)));
+  };
+  return (
+    <section className="panel action">
+      <div className="panel-h"><h2>Your pull request needs you</h2></div>
+      <div className="panel-b">
+        {task.ci_failing.length > 0 && (
+          <div className="row-flex">
+            <span className="grow">CI fails: <span className="mono">{task.ci_failing.join(", ")}</span>. NightShift reads what the jobs printed and revises the fix from it; you publish the follow-up commit as usual.</span>
+            <button disabled={busy} onClick={() => act(api.fixCi(task.id))}>Fix CI</button>
+          </div>
+        )}
+        {task.merge_state === "BEHIND" && (
+          <div className="row-flex">
+            <span className="grow">The base branch has moved on. Merge it into your branch on GitHub (a merge commit, never a force push); CI runs again.</span>
+            {armed ? (
+              <>
+                <button disabled={busy} onClick={() => act(api.updateBranch(task.id, true))}>Merge the base in</button>
+                <button className="ghost" onClick={() => setArmed(false)}>Cancel</button>
+              </>
+            ) : <button className="ghost" disabled={busy} onClick={() => setArmed(true)}>Update branch</button>}
+          </div>
+        )}
+        {task.merge_state === "DIRTY" && (
+          <p>It conflicts with the base branch. Open <b>Revise and run again</b> below, tick "Start from the latest commit on the default branch", then publish the follow-up.</p>
+        )}
+        {msg && <p className="error">{msg}</p>}
+      </div>
+    </section>
+  );
+}
+
 /** The fix merged but the issue is still open (no "Fixes #N", or the repo does not close issues): offer the
  * maintainers a short note so they can close it. Posted with your gh login, only on click. */
 function FixedPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {

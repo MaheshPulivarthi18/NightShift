@@ -658,3 +658,5 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 .side-none { padding: 4px 14px; font-size: 12px; }
 .marks .mark-row { padding: 6px 0; border-top: 1px solid var(--line); align-items: flex-start; }
 .marks .mark-row:first-child { border-top: 0; }
+.brief-edit { width: 100%; box-sizing: border-box; font-family: var(--mono, ui-monospace, monospace); font-size: 12.5px; }
+.knowledge textarea { width: 100%; box-sizing: border-box; }

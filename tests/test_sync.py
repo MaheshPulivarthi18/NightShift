@@ -139,3 +139,49 @@ async def test_a_merged_fix_with_its_issue_open_offers_a_comment(
         merged = await s.get(Task, tasks["merged"])
     assert not _summary(merged, Repo(full_name="o/r"))["fixed_open"]  # type: ignore[arg-type]
     assert await worker.fixed_comment(tasks["open"], confirm=False, dismiss=True) == "dismissed"
+
+
+async def test_failing_ci_becomes_a_revision_and_the_branch_is_updated_on_click(
+    tasks: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nightshift.worker import publish
+
+    class GH:
+        async def rest_get(self, path: str) -> dict[str, object]:
+            return {"head": {"sha": "abcdef1234"}}
+
+        async def aclose(self) -> None:
+            pass
+
+    async def failures(gh: object, repo: str, sha: str) -> list[dict[str, str]]:
+        return [{"name": "test (3.12)", "url": "u", "excerpt": "FAILED tests/test_a.py::test_x"}]
+
+    revised: list[tuple[int, str]] = []
+
+    async def revise(task_id: int, note: str) -> Task:
+        revised.append((task_id, note))
+        return Task()
+
+    updated: list[int] = []
+
+    async def update(repo: Repo, number: int) -> None:
+        updated.append(number)
+
+    monkeypatch.setattr(worker, "GitHubClient", GH)
+    monkeypatch.setattr(worker, "ci_failures", failures)
+    monkeypatch.setattr(worker, "revise", revise)
+    monkeypatch.setattr(publish, "update_branch", update)
+    await worker.fix_ci(tasks["open"])
+    ((task_id, note),) = revised
+    assert task_id == tasks["open"] and "CI fails on the pull request at abcdef1" in note
+    assert "<ci_output>\n### test (3.12)\n```\nFAILED tests/test_a.py::test_x\n```\n</ci_output>" in note
+
+    async def none(gh: object, repo: str, sha: str) -> list[dict[str, str]]:
+        return []
+
+    monkeypatch.setattr(worker, "ci_failures", none)
+    with pytest.raises(worker.TaskError, match="No CI job fails"):
+        await worker.fix_ci(tasks["open"])
+
+    assert "Would merge the base branch" in await worker.update_branch(tasks["open"], confirm=False) and not updated
+    assert "Merged the base branch" in await worker.update_branch(tasks["open"], confirm=True) and updated == [31]
