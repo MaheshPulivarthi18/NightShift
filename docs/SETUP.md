@@ -96,6 +96,7 @@ example `NIGHTSHIFT_CODER__MODEL`.
 | `NIGHTSHIFT_<AGENT>__LADDER` | see `nightshift models` | Models tried next, as a JSON list |
 | `NIGHTSHIFT_ROUTER_LEARNING` | true | Reorder each agent's models from past outcomes |
 | `NIGHTSHIFT_SYNC_MINUTES` | 60 | How often to check your published PRs for new review feedback (also when the app starts); 0 = only with Sync now |
+| `NIGHTSHIFT_AUTO_CHECK_PER_SYNC` | 3 | On repos where "check new PRs" is on (Repos page, maintainer view): new open PRs by others checked per repo on each sync, newest first. Each costs about $0.15 and waits in Needs you; nothing is posted until you click |
 | `NIGHTSHIFT_IMAGE_BUILD_SECONDS` | 600 | How long an environment image build may run before it is stopped |
 | `NIGHTSHIFT_SCOPE_LIMITS` | `{"small": 250, "medium": 600, "large": 2500}` | Changed lines (tests and lock files left out) a fix of each planned size may have before it goes back to the Coder |
 | `NIGHTSHIFT_MODEL_CALL_SECONDS` | 300 | How long one model request may take before the next model on the route is tried |

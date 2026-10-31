@@ -30,6 +30,7 @@ from nightshift.llm import spend_summary
 from nightshift.memory import content_hash, get_or_create_repo
 from nightshift.router import AGENTS, agent_routes
 from nightshift.web.common import Guard, model_view, render_markdown
+from nightshift.worker import sync
 from nightshift.worker.issue import fetch_issue
 from nightshift.worker.onboard import onboard
 from nightshift.worker.prcheck import (
@@ -191,6 +192,7 @@ async def list_repos() -> list[dict[str, Any]]:
             {
                 "full_name": repo.full_name,
                 "role": repo.role,
+                "auto_check": repo.auto_check,
                 "verdict": (snap.get("pulse") or {}).get("verdict"),
                 "opportunities": sum(1 for o in snap.get("opportunities", []) if is_opportunity(o)),
                 "findings": len(snap.get("findings", [])) if repo.role == "maintainer" else None,
@@ -255,6 +257,21 @@ async def remove_repo(owner: str, name: str) -> list[dict[str, Any]]:
 
 class RoleIn(BaseModel):
     role: Role
+
+
+class AutoCheckIn(BaseModel):
+    on: bool
+
+
+@router.post("/repos/{owner}/{name}/auto-check", dependencies=[Guard])
+async def set_auto_check(owner: str, name: str, body: AutoCheckIn) -> list[dict[str, Any]]:
+    """Check others' open PRs on this repo on every background sync (worker/autocheck.py)."""
+    repo = await _repo(f"{owner}/{name}")
+    async with session_scope() as s:
+        stored = await s.get(Repo, repo.id)
+        assert stored is not None
+        stored.auto_check = body.on
+    return await list_repos()
 
 
 @router.post("/repos/{owner}/{name}/role", dependencies=[Guard])
@@ -364,7 +381,7 @@ def _check_view(c: PRCheck, repo: Repo, run: Run | None) -> dict[str, Any]:
         "id": c.id, "repo": repo.full_name, "number": c.number, "url": c.url, "title": c.title,
         "author": c.author, "status": status, "verdict": c.verdict, "must": c.must, "should": c.should,
         "cost_usd": round(c.cost_usd, 4), "run_id": c.run_id, "created_at": _iso(c.created_at), "error": c.error,
-        "review_url": c.review_url,
+        "review_url": c.review_url, "auto": c.auto, "dismissed": c.dismissed,
     }  # fmt: skip
 
 
@@ -399,6 +416,44 @@ async def get_pr_check(check_id: int) -> dict[str, Any]:
     c, repo, run = row
     body = re.sub(r"\A# PR check:[^\n]*\n+", "", c.markdown)  # the page header already shows the PR's title
     return _check_view(c, repo, run) | {"html": render_markdown(body, repo.full_name)}
+
+
+@router.get("/incoming-checks")  # not under /pr-checks/{check_id}, declared earlier
+async def incoming_checks() -> list[dict[str, Any]]:
+    """Automatic checks of incoming PRs that wait on you: finished, not posted or dismissed, the PR still open.
+    The latest check of each PR only."""
+    async with session_scope() as s:
+        rows = (
+            await s.execute(
+                select(PRCheck, Repo)
+                .join(Repo, Repo.id == PRCheck.repo_id)
+                .where(PRCheck.auto, Repo.watched)
+                .order_by(PRCheck.created_at.desc(), PRCheck.id.desc())
+                .limit(300)
+            )
+        ).all()
+    latest: dict[tuple[int, int], tuple[PRCheck, Repo]] = {}
+    for c, repo in rows:
+        latest.setdefault((repo.id, c.number), (c, repo))
+    waiting = [(c, r) for c, r in latest.values() if c.status == "done" and not c.review_url and not c.dismissed]
+    by_repo: dict[str, list[int]] = {}
+    for c, r in waiting:
+        by_repo.setdefault(r.full_name, []).append(c.number)
+    states: dict[tuple[str, int], str] = {}
+    for name, numbers in by_repo.items():
+        states |= {(name, n): st for n, st in (await sync.pr_states(name, numbers)).items()}
+    return [_check_view(c, r, None) for c, r in waiting if states.get((r.full_name, c.number), "OPEN") == "OPEN"]
+
+
+@router.post("/pr-checks/{check_id}/dismiss", dependencies=[Guard])
+async def dismiss_pr_check(check_id: int) -> dict[str, Any]:
+    """Not to be posted: out of Needs you. The check and its report stay."""
+    async with session_scope() as s:
+        c = await s.get(PRCheck, check_id)
+        if c is None:
+            raise HTTPException(404, "No such PR check")
+        c.dismissed = True
+    return {"dismissed": True}
 
 
 class CheckIn(BaseModel):

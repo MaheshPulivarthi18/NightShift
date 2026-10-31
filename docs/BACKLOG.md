@@ -25,8 +25,10 @@ maintainers rejected, partly because the sandbox runs 3 of pydantic's 257 test f
       environment's narrow set. Done: up to 15 test files (name match, then the same folder, then tests importing
       the module) or the changed Go packages, with the environment's own runner, on the base and with the PR.
       Live on pydantic #14153: 3 related files, 280 tests, beside the suite.
-- [ ] M5. Incoming PRs for repos you maintain: checked automatically (opt-in per repo), listed in "Needs you",
-      the review posted only on your click.
+- [x] M5. Incoming PRs for repos you maintain: checked automatically (opt-in per repo), listed in "Needs you",
+      the review posted only on your click. Done: "check new PRs" on the Repos page (maintainer view); each sync
+      checks up to `NIGHTSHIFT_AUTO_CHECK_PER_SYNC` new PRs or new pushes per repo (no drafts, bots or your own);
+      Needs you lists each finished check until its review is posted or it is dismissed.
 - [ ] M6. A third benchmark (a Go repo) after M3 and M4. Target: 8 of 10 merged PRs ready, 5 of 10 rejected blocked.
 - [ ] M7. The GitHub App, once M5 shows maintainers use the checks.
 

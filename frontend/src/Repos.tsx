@@ -9,6 +9,7 @@ export function Repos() {
   const runReport = (repo: string) =>
     api.runReport(repo).then((r) => (window.location.hash = `#/jobs/${r.run_id}`), (e: Error) => setMsg(e.message));
   const setRole = (repo: string, role: string) => api.setRole(repo, role).then(reload, (e: Error) => setMsg(e.message));
+  const setAuto = (repo: string, on: boolean) => api.setAutoCheck(repo, on).then(reload, (e: Error) => setMsg(e.message));
   const remove = (repo: string) => api.removeRepo(repo).then(reload, (e: Error) => setMsg(e.message));
   const setup = (repo: string) =>
     api.setupRepo(repo).then((r) => (window.location.hash = `#/jobs/${r.run_id}`), (e: Error) => setMsg(e.message));
@@ -41,7 +42,7 @@ export function Repos() {
                 <td colSpan={6} className="muted">No repos yet. Add one above.</td>
               </tr>
             )}
-            {rows?.map((r) => <RepoLine key={r.full_name} r={r} onRun={runReport} onRole={setRole} onSetup={setup} onRemove={remove} />)}
+            {rows?.map((r) => <RepoLine key={r.full_name} r={r} onRun={runReport} onRole={setRole} onAuto={setAuto} onSetup={setup} onRemove={remove} />)}
           </tbody>
         </table>
       </div>
@@ -53,12 +54,14 @@ function RepoLine({
   r,
   onRun,
   onRole,
+  onAuto,
   onSetup,
   onRemove,
 }: {
   r: RepoRow;
   onRun: (repo: string) => void;
   onRole: (repo: string, role: string) => void;
+  onAuto: (repo: string, on: boolean) => void;
   onSetup: (repo: string) => void;
   onRemove: (repo: string) => void;
 }) {
@@ -77,6 +80,11 @@ function RepoLine({
           <option value="contributor">contributor</option>
           <option value="maintainer">maintainer</option>
         </select>
+        {r.role === "maintainer" && (
+          <label className="dim nowrap" title="Check others' open PRs on every background sync, a few at a time. Nothing is posted until you click.">
+            {" "}<input type="checkbox" checked={r.auto_check} onChange={(e) => onAuto(r.full_name, e.target.checked)} /> check new PRs
+          </label>
+        )}
       </td>
       <td>
         {r.report_at ? (
