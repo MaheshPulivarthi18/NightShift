@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from sqlalchemy import select
 
 from nightshift import events
+from nightshift.backup import BackupError, backup
 from nightshift.catalog import ModelConfigError
 from nightshift.config import get_settings
 from nightshift.db import Control, Feedback, Repo, Report, session_scope
@@ -144,8 +145,10 @@ def watch_remove(
     purge: Annotated[
         bool, typer.Option("--purge", help="Delete everything stored about it: reports, tasks, history.")
     ] = False,
+    no_backup: Annotated[bool, typer.Option("--no-backup", help="Purge without dumping the database first.")] = False,
 ) -> None:
-    """Take a repo off the watchlist, keeping its history (adding it again restores it); --purge deletes it all."""
+    """Take a repo off the watchlist, keeping its history (adding it again restores it); --purge deletes it all,
+    after a backup of the database."""
 
     async def run() -> None:
         name = _repo_name(repo)
@@ -154,6 +157,12 @@ def watch_remove(
             if r is None:
                 typer.echo(f"Not watching {name}")
                 return
+            if purge and not no_backup:
+                try:
+                    typer.echo(f"Backed up the database first: {backup(f'purge {name}')}")
+                except BackupError as e:
+                    typer.echo(f"Not purged: the backup failed ({e}). Use --no-backup to purge anyway.", err=True)
+                    raise typer.Exit(1) from e
             if purge:
                 await purge_repo(s, r)
             else:
@@ -879,6 +888,16 @@ def serve(
         "nightshift.web.app:app", host=host, port=port, log_level="warning", reload=reload,
         reload_dirs=[src] if reload else None,
     )  # fmt: skip
+
+
+@app.command("backup")
+def backup_cmd() -> None:
+    """Dump the database to backups/ (restore with `pg_restore -d <url> <file>`)."""
+    try:
+        typer.echo(f"Saved {backup('manual')}")
+    except BackupError as e:
+        typer.echo(f"Backup failed: {e}", err=True)
+        raise typer.Exit(1) from e
 
 
 @app.command("db-setup")

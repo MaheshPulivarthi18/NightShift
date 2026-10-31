@@ -255,8 +255,9 @@ once, L4 sidebar search, L5 a banner when the server runs old code.
 - [x] **R1. Tests share the development database.** They no longer leave rows or containers behind, but a separate
       test database (or schema) would make that impossible rather than cleaned up. Fixed: tests use
       `nightshift_test` (or `NIGHTSHIFT_TEST_DATABASE_URL`), created and migrated when the run starts.
-- [ ] **R2. A backup before destructive actions.** `watch remove --purge` and data wipes have no undo; take a
-      `pg_dump` first (the last one is from 2026-10-27).
+- [x] **R2. A backup before destructive actions.** `watch remove --purge` and data wipes have no undo; take a
+      `pg_dump` first (the last one is from 2026-10-27). Fixed: `nightshift backup` dumps to backups/ (the
+      container's pg_dump when none is installed); `--purge` backs up first and stops if that fails.
 - [ ] **R3. Network trouble is reported as each command's own failure.** One flaky connection failed five reports
       and a GitHub check in a row; detect it once ("GitHub is not reachable"), pause and retry, instead of failing
       every job.
