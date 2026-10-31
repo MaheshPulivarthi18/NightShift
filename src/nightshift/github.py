@@ -7,6 +7,7 @@ lookback window; later runs take only items updated since the last fetch.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -353,6 +354,11 @@ class GitHubClient:
 
 CI_FAILED = ("failure", "timed_out", "action_required", "startup_failure")
 CI_IGNORED = ("neutral", "skipped", "cancelled", "stale")  # not a verdict on the code
+
+
+# Jobs that judge rather than test: a benchmark slowing or coverage dropping is the maintainers' call, not broken
+# code (pydantic #14104 failed only CodSpeed). Their failures are advice.
+ADVISORY_JOB = re.compile(r"codspeed|codecov|coverage|coveralls|benchmark|performance|perf\b|bundle ?size", re.I)
 
 
 async def ci_status(gh: GitHubClient, full_name: str, sha: str) -> dict[str, Any]:

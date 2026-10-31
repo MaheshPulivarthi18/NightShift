@@ -51,6 +51,12 @@ def _md(text: str, repo: str | None = None) -> str:
     return render_markdown(text or "", repo)
 
 
+def ci_failing(synced: dict[str, Any] | None) -> list[str]:
+    s = synced or {}
+    ci = s.get("ci") or {}
+    return list(ci.get("failed") or ["CI"]) if s.get("pr_state") == "OPEN" and ci.get("state") == "failed" else []
+
+
 def _summary(t: Task, r: Repo) -> dict[str, Any]:
     return {
         "id": t.id,
@@ -69,6 +75,8 @@ def _summary(t: Task, r: Repo) -> dict[str, Any]:
         if ((t.result or {}).get("sync") or {}).get("pr_state") == "OPEN"
         or ((t.result or {}).get("sync") or {}).get("kind") == "answers"
         else 0,
+        # the CI jobs failing on the task's open PR, from the sync: a red PR waits on its author
+        "ci_failing": ci_failing((t.result or {}).get("sync")),
         # a plan that asks the maintainers first, and whether the question is posted
         "asking": t.status == "planned" and not (t.plan or {}).get("actionable", True),
         "asked": str((t.result or {}).get("claim_url") or "").startswith("http"),

@@ -2,7 +2,8 @@
 
 It runs when the app starts and then every `sync_minutes` (0: only when asked, with Sync now). For each
 published task whose PR is still open, it reads the PR's open feedback the way the task page does,
-leaving out what you already answered, here or on GitHub, and keeps a short summary on the task. For a
+leaving out what you already answered, here or on GitHub, and the CI on the PR's latest commit (a red PR
+waits on its author: maintainers rarely review one), and keeps a short summary on the task. For a
 plan that asked the maintainers first, it reads the issue for replies after your question. Read-only:
 nothing is posted.
 """
@@ -22,13 +23,14 @@ from sqlalchemy import select, text
 
 from nightshift.config import get_settings
 from nightshift.db import Repo, Task, session_scope
-from nightshift.github import GitHubClient, GitHubError
+from nightshift.github import ADVISORY_JOB, GitHubClient, GitHubError, ci_status
 from nightshift.worker.feedback import SERVICE
 
 log = structlog.get_logger()
 
 PR_STATES_SECONDS = 300
 _pr_states: dict[tuple[str, int], tuple[float, str]] = {}  # (repo, number) -> (fetched at, OPEN|MERGED|CLOSED)
+_pr_heads: dict[tuple[str, int], str] = {}  # (repo, number) -> the PR's latest commit, from the same query
 status: dict[str, Any] = {"at": None, "running": False, "checked": 0, "with_feedback": 0, "error": None}
 
 
@@ -50,7 +52,7 @@ async def pr_states(repo: str, numbers: list[int], *, fresh: bool = False) -> di
     if not missing:
         return known
     owner, name = repo.split("/", 1)
-    fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ state }}" for n in missing)
+    fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ state headRefOid }}" for n in missing)
     gh = GitHubClient()
     try:
         query = f"query($o: String!, $n: String!) {{ repository(owner: $o, name: $n) {{ {fields} }} }}"
@@ -63,8 +65,26 @@ async def pr_states(repo: str, numbers: list[int], *, fresh: bool = False) -> di
     for n in missing:
         if pr := (data.get("repository") or {}).get(f"p{n}"):
             _pr_states[(repo, n)] = (now, pr["state"])
+            if pr.get("headRefOid"):
+                _pr_heads[(repo, n)] = pr["headRefOid"]
             known[n] = pr["state"]
     return known
+
+
+async def pr_ci(repo: str, number: int) -> dict[str, Any] | None:
+    """The CI on an open PR's latest commit: {"state": failed | pending | passed | none, "failed": [jobs]}.
+    Benchmark and coverage jobs are advice, not a failure. None when the commit is not known."""
+    head = _pr_heads.get((repo, number))
+    if not head:
+        return None
+    gh = GitHubClient()
+    try:
+        ci = await ci_status(gh, repo, head)
+    finally:
+        await gh.aclose()
+    failed = [j for j in ci["failed"] if not ADVISORY_JOB.search(j)]
+    state = "failed" if failed else "pending" if ci["pending"] else "passed" if ci["passed"] else "none"
+    return {"state": state, "failed": failed[:8], "sha": head[:7]}
 
 
 async def _save_sync(task_id: int, summary: dict[str, Any]) -> None:
@@ -102,18 +122,21 @@ async def sync_once(repos: list[str] | None = None) -> dict[str, Any]:
             for t, n in tasks:
                 state = states.get(n)
                 comments = []
+                ci = None
                 if state == "OPEN":
                     try:
                         comments = await review_feedback(t.id)
                     except TaskError as e:
                         log.warning("sync_feedback_failed", task=t.id, error=str(e)[:200])
                         continue
+                    ci = await pr_ci(repo, n)
                 open_ = [
                     {"id": c.id, "kind": c.kind, "author": c.author, "url": c.url,
                      "text": next((ln for ln in c.body.splitlines() if ln.strip()), "")[:200]}
                     for c in comments if c.suggested
                 ]  # fmt: skip
-                await _save_sync(t.id, {"at": datetime.now(UTC).isoformat(), "pr_state": state, "open": open_})
+                summary = {"at": datetime.now(UTC).isoformat(), "pr_state": state, "open": open_, "ci": ci}
+                await _save_sync(t.id, summary)
                 checked += 1
                 with_feedback += bool(open_)
         checked_q, answered = await _sync_questions(repos)

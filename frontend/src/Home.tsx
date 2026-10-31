@@ -4,18 +4,19 @@ import { ago, money, Title, usePoll } from "./ui";
 
 // The global overview: what waits on you across repos, and every repo at a glance.
 
-/** Tasks that wait on the operator: a plan to approve, a fix to publish, a stopped run, or review feedback
- * on a published PR that nobody has answered yet. */
+/** Tasks that wait on the operator: a plan to approve, a fix to publish, a stopped run, review feedback
+ * on a published PR that nobody has answered yet, or a published PR whose CI fails. */
 export function needsYou(tasks: TaskSummary[]): TaskSummary[] {
   return tasks.filter((t) => {
     if (t.archived || t.busy) return false;
     if (t.asking && t.asked) return t.feedback > 0; // waiting on the maintainers until someone replies
-    return ["gate1", "gate2", "stopped"].includes(t.stage) || t.feedback > 0;
+    return ["gate1", "gate2", "stopped"].includes(t.stage) || t.feedback > 0 || (t.ci_failing ?? []).length > 0;
   });
 }
 
 function ask(t: TaskSummary): [string, string] {
   if (t.stage === "done" && t.feedback) return [`Reply · ${t.feedback}`, "badge yours"];
+  if (t.ci_failing?.length) return ["CI failing", "badge must"];
   if (t.asking) return t.asked ? [`Answered · ${t.feedback}`, "badge yours"] : ["Ask the maintainers", "badge info"];
   return ({ gate1: ["Approve plan", "badge info"], gate2: ["Publish", "badge info"], stopped: ["Stopped", "badge must"] } as
     Record<string, [string, string]>)[t.stage] ?? [t.stage, "badge"];
@@ -60,7 +61,7 @@ export function Home() {
         {needs.length === 0 && <p className="panel-b dim">Nothing waits on you.</p>}
         {needs.map((t) => (
           <a key={t.id} className="row" href={`#/r/${t.repo}/items/t${t.id}`}>
-            <span className={ask(t)[1]}>{ask(t)[0]}</span>
+            <span className={ask(t)[1]} title={t.ci_failing?.length ? `Failing: ${t.ci_failing.join(", ")}` : undefined}>{ask(t)[0]}</span>
             <span className="mono dim">{t.repo.split("/")[1]}#{t.issue}</span>
             <span className="grow ell"><Title text={t.title} /></span>
             <span className="dim">{ago(t.updated_at)}</span>

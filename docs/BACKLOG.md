@@ -36,8 +36,9 @@ maintainers rejected, partly because the sandbox runs 3 of pydantic's 257 test f
 - [x] C2. A cost guard per task: review rounds after the first on a cheaper model; expected against actual cost at
       Gate 2 (tortoise-orm: $2.65 of $4.55 was 11 review calls on Sol). Done: rounds from the second use
       `NIGHTSHIFT_REVIEWER_FOLLOWUP` (Terra); Gate 2 warns past 1.5x the expected cost, naming the agent that spent most.
-- [ ] C3. CI status of published PRs: on the Track record, with a warning when an open one is red (done in #17);
-      still to do in "Needs you". (tortoise-orm #2390 shows no CI: a first-time contributor's workflows wait for a
+- [x] C3. CI status of published PRs: on the Track record, with a warning when an open one is red (#17), and
+      in "Needs you" and on the board: the sync reads the CI on each open PR's latest commit (benchmark and
+      coverage jobs are advice, not a failure). (tortoise-orm #2390 shows no CI: a first-time contributor's workflows wait for a
       maintainer's approval.)
 - [ ] C4. Fit with you (D5); C5. a drafted "fixed by #N" comment (D7); C6. lock-file churn as a package summary
       (P3) and setup time apart from the Coder's (P4).

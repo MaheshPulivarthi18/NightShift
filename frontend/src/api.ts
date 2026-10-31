@@ -159,6 +159,7 @@ export interface TaskSummary {
   archived: boolean;
   updated_at: string | null;
   feedback: number; // unanswered review feedback on its open PR, or replies to its question, from the sync
+  ci_failing: string[]; // CI jobs failing on its open PR, from the sync: a red PR waits on its author
   asking: boolean; // a plan that asks the maintainers before any code
   asked: boolean; // and the question is posted on the issue
 }
@@ -393,6 +394,7 @@ export interface RepoItem {
   hidden: boolean;
   updated_at: string | null;
   feedback?: number;
+  ci_failing?: string[];
   asking?: boolean;
   asked?: boolean;
 }

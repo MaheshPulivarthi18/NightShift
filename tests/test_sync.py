@@ -55,7 +55,11 @@ async def test_open_prs_keep_their_unanswered_feedback(tasks: dict[str, int], mo
             ReviewComment(id="comment:6", kind="comment", author="ci-bot", body="Coverage 90%", url="u", bot=True),
         ]
 
+    async def ci(repo: str, number: int) -> dict[str, object]:
+        return {"state": "failed", "failed": ["test (3.12)"], "sha": "abc1234"}
+
     monkeypatch.setattr(sync, "pr_states", states)
+    monkeypatch.setattr(sync, "pr_ci", ci)
     monkeypatch.setattr(worker, "review_feedback", feedback)
     async with session_scope() as s:
         name = (await s.get(Repo, tasks["repo"])).full_name  # type: ignore[union-attr]
@@ -73,9 +77,29 @@ async def test_open_prs_keep_their_unanswered_feedback(tasks: dict[str, int], mo
         **rows[tasks["merged"]].result["sync"],
         "pr_state": "MERGED",
         "open": [],
+        "ci": None,  # CI matters only while the PR is open
     }
     assert status["checked"] == 2 and status["error"] is None
 
     repo = Repo(full_name="o/r")
     assert _summary(rows[tasks["open"]], repo)["feedback"] == 1  # shown in Needs you
     assert _summary(rows[tasks["merged"]], repo)["feedback"] == 0
+    assert _summary(rows[tasks["open"]], repo)["ci_failing"] == ["test (3.12)"]  # a red PR waits on you
+    assert _summary(rows[tasks["merged"]], repo)["ci_failing"] == []
+
+
+async def test_ci_on_an_open_pr_leaves_advice_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def status(gh: object, repo: str, sha: str) -> dict[str, object]:
+        return {"state": "failed", "failed": ["codspeed", "lint"], "pending": [], "passed": 4}
+
+    monkeypatch.setattr(sync, "ci_status", status)
+    assert await sync.pr_ci("o/r", 7) is None  # its latest commit is not known yet
+    sync._pr_heads[("o/r", 7)] = "abcdef1234"
+    assert await sync.pr_ci("o/r", 7) == {"state": "failed", "failed": ["lint"], "sha": "abcdef1"}
+    monkeypatch.setattr(sync, "ci_status", lambda *a: _done({"state": "failed", "failed": ["codspeed"],
+                                                             "pending": [], "passed": 4}))  # fmt: skip
+    assert (await sync.pr_ci("o/r", 7))["state"] == "passed"  # type: ignore[index]  # a benchmark is advice
+
+
+async def _done(value: dict[str, object]) -> dict[str, object]:
+    return value
