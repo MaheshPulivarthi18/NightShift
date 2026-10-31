@@ -149,7 +149,7 @@ class Environment(BaseModel):
 SETUP_SYSTEM = f"""You are the Setup agent for NightShift. You work out how to install a GitHub repository's dependencies and run its tests inside a Linux sandbox. The sandbox tries what you propose and you see the result, for a few attempts.
 
 The sandbox: a Debian 12 container with Python 3.12, Node 22 with npm, Bun, uv, git and a C/C++ compiler. Commands run from the repo root as a non-root user with no sudo, each in a fresh bash shell, with network access for package downloads, no services (no database, Redis or Docker) and no secrets. You can add:
-- system_packages: Debian 12 (bookworm) apt package names, installed into the image before the setup, e.g. libpq-dev, pkg-config, libssl-dev, openjdk-17-jdk-headless, maven.
+- system_packages: Debian 12 (bookworm) apt package names, installed into the image before the setup, e.g. libpq-dev, pkg-config, libssl-dev, openjdk-17-jdk-headless, maven. Ask only for what the setup or the tests need, and the smallest variant (-headless, -dev, never -doc or full desktop stacks): an image build that runs past its time limit is stopped.
 - tools, only from this list: pnpm, yarn, go (1.23), rust (1.83).
 For another Python version, use uv in the setup, e.g. `uv venv --python 3.11`.
 

@@ -123,7 +123,16 @@ def test_env_image_rules() -> None:
     assert env_image_name([], []) == get_settings().sandbox_image
     assert env_image_name(["libpq-dev"], []) == env_image_name(["libpq-dev", "libpq-dev"], [])
     text = dockerfile("nightshift-sandbox:3", ["libpq-dev"], ["rust"])
-    assert "curl libpq-dev" in text and "RUSTUP_HOME" in text and text.rstrip().endswith("USER worker")
+    lines = text.splitlines()
+    # Toolchain layers first (curl for its installer), then the repo's packages: images needing the same
+    # toolchain share those layers; downloads are kept in BuildKit's cache between builds
+    curl = next(i for i, x in enumerate(lines) if x.endswith("install -y --no-install-recommends curl"))
+    rust = next(i for i, x in enumerate(lines) if "rustup" in x)
+    pkgs = next(i for i, x in enumerate(lines) if x.endswith("--no-install-recommends libpq-dev"))
+    assert curl < rust < pkgs and "type=cache,target=/var/cache/apt" in lines[pkgs]
+    assert "RUSTUP_HOME" in text and text.rstrip().endswith("USER worker")
+    same_tool = dockerfile("nightshift-sandbox:3", ["libssl-dev"], ["rust"]).splitlines()
+    assert same_tool[: rust + 1] == lines[: rust + 1]  # shared toolchain layers whatever the packages
 
 
 RECIPE = {"setup": ["uv sync"], "tests": ["pytest -q", "pytest slow -q"], "passing": ["pytest -q"]}
@@ -148,3 +157,12 @@ async def test_a_recipe_that_broke_is_the_agents_first_attempt(monkeypatch: pyte
     env = await find_environment(llm, "o/r", "abc", "hints", recipe=RECIPE)  # type: ignore[arg-type]
     assert env.status == "ready" and env.setup_commands == ["uv sync --upgrade"]
     assert "worked in an earlier task" in llm.prompts[0] and "lockfile out of date" in llm.prompts[0]
+
+
+def test_a_build_past_its_limit_says_where_it_was_and_what_to_ask_for() -> None:
+    from nightshift.sandbox.envimage import timeout_message
+
+    out = "#7 [3/4] RUN apt-get install openjdk-17-jdk\n#7 112.4 Unpacking openjdk-17-jdk (17.0.13)\n"
+    msg = timeout_message(600, out + "docker build timed out after 630s")
+    assert msg.startswith("the environment image build was stopped at its 10-minute limit")
+    assert "Unpacking openjdk-17-jdk" in msg and "timed out after" not in msg and "-headless" in msg
