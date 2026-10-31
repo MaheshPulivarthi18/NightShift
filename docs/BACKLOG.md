@@ -172,11 +172,12 @@ once, L4 sidebar search, L5 a banner when the server runs old code.
       on" with the reason. redis-py now lists one starter (#3141), the one that is free.
 - [ ] **D5. Fit with you.** Ranking by stack fit needs a profile: languages, frameworks and past PRs (from your
       GitHub), so "fit" is not typed in by hand.
-- [ ] **D6. Show a repo's AI policy where it matters.** sarama: "explain and defend the changes … without relying
+- [x] **D6. Show a repo's AI policy where it matters.** (Done as C1.) sarama: "explain and defend the changes … without relying
       on AI tools"; OpenTelemetry Python: no AI-written comments, an `Assisted-by:` trailer. Show it on the repo and
       at Gate 2, and add the trailer when the repo asks for it (product direction: follow repo AI policy).
-- [ ] **D7. Offer the maintainer courtesy when an issue is already fixed** (#4454 is open after #4455 merged): a
-      drafted "fixed by #N" comment, posted only on confirm.
+- [x] **D7. Offer the maintainer courtesy when an issue is already fixed** (#4454 is open after #4455 merged): a
+      drafted "fixed by #N" comment, posted only on confirm. Done: the sync notes a merged PR whose issue is
+      still open; Needs you and the task page offer an editable comment, posted with your gh login, or dismissed.
 
 ### Repo setup
 

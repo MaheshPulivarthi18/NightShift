@@ -58,8 +58,12 @@ async def test_open_prs_keep_their_unanswered_feedback(tasks: dict[str, int], mo
     async def ci(repo: str, number: int) -> dict[str, object]:
         return {"state": "failed", "failed": ["test (3.12)"], "sha": "abc1234"}
 
+    async def still_open(repo: str, number: int) -> bool:
+        return True
+
     monkeypatch.setattr(sync, "pr_states", states)
     monkeypatch.setattr(sync, "pr_ci", ci)
+    monkeypatch.setattr(sync, "issue_open", still_open)
     monkeypatch.setattr(worker, "review_feedback", feedback)
     async with session_scope() as s:
         name = (await s.get(Repo, tasks["repo"])).full_name  # type: ignore[union-attr]
@@ -78,6 +82,7 @@ async def test_open_prs_keep_their_unanswered_feedback(tasks: dict[str, int], mo
         "pr_state": "MERGED",
         "open": [],
         "ci": None,  # CI matters only while the PR is open
+        "issue_open": True,  # merged, yet its issue is open
     }
     assert status["checked"] == 2 and status["error"] is None
 
@@ -103,3 +108,34 @@ async def test_ci_on_an_open_pr_leaves_advice_out(monkeypatch: pytest.MonkeyPatc
 
 async def _done(value: dict[str, object]) -> dict[str, object]:
     return value
+
+
+async def test_a_merged_fix_with_its_issue_open_offers_a_comment(
+    tasks: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nightshift.worker import publish
+
+    posted: list[tuple[int, str]] = []
+
+    async def post(repo: Repo, number: int, text: str) -> str:
+        posted.append((number, text))
+        return "https://github.com/o/r/issues/32#issuecomment-1"
+
+    monkeypatch.setattr(publish, "post_comment", post)
+    async with session_scope() as s:
+        t = await s.get(Task, tasks["merged"])
+        assert t is not None
+        t.result = {**t.result, "sync": {"pr_state": "MERGED", "open": [], "issue_open": True}}
+    async with session_scope() as s:
+        merged = await s.get(Task, tasks["merged"])
+    assert _summary(merged, Repo(full_name="o/r"))["fixed_open"]  # type: ignore[arg-type]
+    draft = await worker.fixed_comment(tasks["merged"], confirm=False)
+    assert "This is fixed by #32, which is merged. Could this issue be closed?" in draft and not posted
+    url = await worker.fixed_comment(tasks["merged"], confirm=True, text="Fixed by #32, thanks!")
+    assert url.endswith("issuecomment-1") and posted == [(32, "Fixed by #32, thanks!")]
+    with pytest.raises(worker.TaskError, match="Already done"):
+        await worker.fixed_comment(tasks["merged"], confirm=True)
+    async with session_scope() as s:
+        merged = await s.get(Task, tasks["merged"])
+    assert not _summary(merged, Repo(full_name="o/r"))["fixed_open"]  # type: ignore[arg-type]
+    assert await worker.fixed_comment(tasks["open"], confirm=False, dismiss=True) == "dismissed"

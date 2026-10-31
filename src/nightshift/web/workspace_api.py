@@ -22,7 +22,7 @@ from nightshift.db import PRCheck, RepoContext, Run, Task, session_scope
 from nightshift.github import GitHubClient, GitHubError
 from nightshift.web.api import _environment_view, _iso, _repo
 from nightshift.web.common import Guard
-from nightshift.web.tasks_api import STAGES, ci_failing
+from nightshift.web.tasks_api import STAGES, ci_failing, fixed_open
 from nightshift.worker import sync
 from nightshift.worker.onboard import BRIEF
 from nightshift.worker.setup_agent import ENVIRONMENT, Environment, load_recipe
@@ -48,6 +48,7 @@ def _task_item(t: Task, state: str | None) -> dict[str, Any]:
         if state == "OPEN" or (res.get("sync") or {}).get("kind") == "answers"
         else 0,
         "ci_failing": ci_failing(res.get("sync")),
+        "fixed_open": fixed_open(res),
         "asking": t.status == "planned" and not (t.plan or {}).get("actionable", True),
         "asked": str(res.get("claim_url") or "").startswith("http"),
     }  # fmt: skip

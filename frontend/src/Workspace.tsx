@@ -42,7 +42,7 @@ const ROLE = { yours: "Yours", incoming: "Incoming PR", issue: "Issue" } as cons
 
 /** Where the item stands, in words, and the tone of its dot: info waits on you, bad needs work. */
 function itemStatus(i: RepoItem): [string, string] {
-  if (i.pr_state === "MERGED") return ["Merged", "ok"];
+  if (i.pr_state === "MERGED") return i.fixed_open ? ["Merged · issue still open: say so", "info"] : ["Merged", "ok"];
   if (i.pr_state === "CLOSED") return ["Closed without merge", ""];
   if (i.kind === "check") {
     if (i.status === "running") return ["Checking", "info"];
