@@ -5,7 +5,7 @@ every change follows. Start with [docs/SETUP.md](docs/SETUP.md) to get a working
 
 ## Where to start
 
-- [docs/PRD.md](docs/PRD.md) is the spec. Requirements are tagged R1, R2 or R3; R1 is being built now.
+- [docs/PRD.md](docs/PRD.md) is the spec. Requirements are tagged R1, R2 or R3.
 - [docs/BACKLOG.md](docs/BACKLOG.md) lists known bugs and planned work.
 - For anything larger than a bug fix, open an issue first so we can agree on the approach.
 
@@ -16,8 +16,12 @@ src/nightshift/
   cli.py            the `nightshift` command (Typer)
   config.py         settings, read from the environment and .env
   db.py             SQLAlchemy models; schema changes go through Alembic (migrations/)
-  llm.py            the model gateway: OpenRouter, budgets, kill switch, cost ledger, answer cache
+  llm.py            the model gateway: OpenRouter, budgets, kill switch, cost ledger, answer cache,
+                    a deadline on every call
+  prompt.py         the one prompt builder: layered, budgeted context for every agent
   router.py         picks a model per agent, with fallbacks; outcomes.py learns from results
+  events.py         runs and their live log (run events, heartbeats)
+  backup.py         database dumps before anything destructive
   catalog.py        OpenRouter's model list and prices
   github.py         read-only GitHub client (GraphQL and REST)
   memory.py         repo and item storage, incremental fetch, repo renames
@@ -26,9 +30,13 @@ src/nightshift/
   context/          repo context: architecture map (L1), change context (L3)
   sandbox/          Docker sandboxes, the base Dockerfile, environment images
   worker/           the Contribution Worker and PR checker:
-                      setup_agent, planner, coder, verify, reviewer, prwriter, publish,
-                      task (the task flow and gates), feedback (review comments), prcheck
-  web/              FastAPI JSON API; serves the built frontend
+                      onboard (setting a repo up when it is added), setup_agent, issue (is it free?),
+                      planner, plancheck, coder, verify, related_tests, lockfiles, reviewer,
+                      understanding (the check before publishing), prwriter, publish,
+                      task (the task flow, gates and resume), feedback (review comments),
+                      prcheck, autocheck (incoming PRs), benchmark (scoring the checker),
+                      sync (background follow-up), record (track record)
+  web/              FastAPI JSON API, one router per area; serves the built frontend
 frontend/           React + TypeScript web app (Vite)
 migrations/         Alembic migrations
 tests/              pytest; Postgres-backed tests run when `docker compose` is up
@@ -47,8 +55,10 @@ uv run mypy src                        # types
 cd frontend && npm run typecheck       # frontend types
 ```
 
-Tests never call a real model: `tests/fake_openrouter.py` stands in for OpenRouter. A bug fix comes
-with a test that fails without the fix and passes with it.
+Tests never call a real model: `tests/fake_openrouter.py` stands in for OpenRouter. They use their own
+database, `nightshift_test` beside the main one, created and migrated when the run starts, so they never
+touch your tasks, runs or spend. They never start real sandboxes or post to GitHub either: those are
+faked. A bug fix comes with a test that fails without the fix and passes with it.
 
 ## Schema changes
 
@@ -86,6 +96,13 @@ These protect the people who use NightShift and the maintainers it talks to.
   plain, without jargon.
 - Commit subjects describe the change in plain English, for example
   "Purging a repo deletes its records instead of failing". The body says why when it is not obvious.
+
+## Measuring the PR checker
+
+A change to how the PR checker decides should be scored before and after with
+`uv run nightshift bench owner/repo --merged 10 --closed 10 --days 180`: it checks pull requests
+maintainers already merged or closed and compares verdicts. It posts nothing, costs about $0.10 to
+$0.15 a PR and writes its report to `reports/<repo>/benchmark/`.
 
 ## Sending a change
 

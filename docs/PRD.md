@@ -1,6 +1,6 @@
 # PRD v3: NightShift — open-source contribution and review workbench
 
-**Status:** Draft v3, 2026-10-26 (replaces v2 of 2026-10-20) · **Author:** [@MaheshPulivarthi18](https://github.com/MaheshPulivarthi18)
+**Status:** v3, 2026-10-26, status section updated 2026-10-31 (replaces v2 of 2026-10-20) · **Author:** [@MaheshPulivarthi18](https://github.com/MaheshPulivarthi18)
 
 This is the product spec contributors build against. Release tags (R1, R2, R3) mark what ships when; see [Built today, gaps and roadmap](#built-today-gaps-and-roadmap).
 
@@ -319,19 +319,31 @@ The north star is **merged PRs that stay merged** for contributors and **maintai
 
 ## Built today, gaps and roadmap
 
-The engine is mostly built; the gaps are the harness, the repo-first UI and release work.
+Most of R1 is built, and two R2 items (the understanding check and the AI-policy check) came early because
+publishing to strict repos needed them. What is left is mostly maintainer-side and housekeeping.
 
-| Part | Built today | Gap |
+| Part | Built (2026-10-31) | Gap |
 | --- | --- | --- |
-| Path A: fix an issue | Planner with reproduction, Gate 1, Coder with fail-first check, Reviewer, Gate 2 with editable PR text | Shown as tasks, not inside a repo; stage-aware item view |
-| Path B: check a PR | Guidelines, evidence, run on merge preview, review, must and should findings | Mark right or wrong; drafted review; lives on its own page |
-| Path C: follow up | Feedback from threads, reviews, comments and closing issue; replies; follow-up commits | Background sync and Needs you; today it is fetched on demand |
-| Setup and sandbox | Setup agent, recipes, environment images, limits | Per-item worktrees from a cached clone |
-| Models | OpenRouter gateway, router, fallbacks, learning from outcomes | Per-agent pinning in Settings |
-| Memory and context | Verdict cache, recipes, environment, code map per commit, change context, cache-read tokens in the ledger | One prompt builder, layer budgets, provenance, chat summaries, Context panel |
-| Health report | Fetch, link, clusters, PR verdicts, verifier, report pages | Inside the repo view; right or wrong marks |
-| UI | Tasks, Repos, PR checks, Jobs, Models pages | Repo-first layout, Overview, Settings with pause and kill |
-| Release | Tests (about 176), Alembic migrations | Docker Compose, README, docs, licence |
+| Repo workspace | Overview with Needs you across repos; a sidebar of repos (searchable); per repo: Overview, Issues & PRs (Open and Closed), Map, Knowledge; chat beside every item that can run its next step | Knowledge pieces cannot be edited or forgotten yet (FR-11); per-item worktrees (FR-5) |
+| Find work | Where to contribute: repos ranked on outside PRs merged and closed, time to first answer, AI rules; starter issues checked live from five sources | Ranking by fit with you (a profile from your GitHub history) |
+| Path A: fix an issue | Plan, plan check by another model (FR-27), Gate 1, fail-first fix, scope check, review, full suites, Gate 2 with editable title, body, commit, branch and attribution; understanding check; the repo's AI policy (an `Assisted-by:` trailer where asked); resume from where a run stopped; a cost warning past 1.5x the expected cost | Setup time counted apart from the Coder's; real-run proof gathered before Gate 2 |
+| Path B: check a PR | Guidelines and evidence, the PR's own CI (a job failing only on the PR is a must-fix; coverage, benchmark and changelog jobs are advice), the run in the sandbox with the tests related to the change, review, must and should findings, "not fully checked" when a step could not run; review posted with one click; incoming PRs checked on each sync where you opt in, waiting in Needs you | Mark findings right or wrong in the app (CLI only, for health reports); the GitHub App |
+| Path C: follow up | Background sync on start and hourly (Sync now): review feedback, red CI, merges and an issue left open after its fix merged (a drafted "fixed by" comment); replies, revisions and follow-up commits, never forced | Update the branch and Fix CI as actions (FR-22); mergeability in the item (FR-20) |
+| Track record | Every PR made with NightShift (and earlier ones you add): outcome, CI, days to merge, cost, attempts | Time saved is not measured |
+| Setup and sandbox | Setup agent run when a repo is added, environment images with cached installs, checkpoints, a build time limit, a live sandbox log | Image hygiene and disk use per repo (FR-24) |
+| Models | OpenRouter gateway, router with fallbacks and learning, a deadline on every call, a cheaper reviewer from the second round, spend caps per task, day and month | Per-agent pinning in Settings |
+| Harness | One prompt builder with stable-first layers and budgets, cache reads in the ledger, change context, code map per commit | Context panel per run |
+| Reliability | Runs marked interrupted after 3 minutes without a heartbeat, a separate test database, a backup before a purge, one wait for a GitHub outage, a banner when the server runs old code | |
+| Release | About 290 tests, Alembic migrations, Docker Compose for Postgres, README, setup and contributing guides, Apache-2.0 | |
+
+**Measured so far** (details in the backlog):
+
+| Measure | Result |
+| --- | --- |
+| Contributor PRs to others' projects | 9: 3 merged, 3 approved, 3 waiting, none rejected; median model cost $0.75 |
+| PR checker on PRs maintainers merged | 10 of 10 ready (opentelemetry-python, pydantic after calibration); 8 of 10 on opentelemetry-go-contrib, 10 of 10 after two fixes |
+| PR checker on PRs maintainers closed | 3 of 10 blocked (opentelemetry-python), 2 of 5 (opentelemetry-go-contrib): many are closed for reasons the code does not show |
+| PR check cost and time | $0.08 to $0.14 and 2 to 6 minutes a PR |
 
 ```mermaid
 flowchart LR
@@ -341,7 +353,8 @@ flowchart LR
     R1 --> R2 --> R3
 ```
 
-No dates yet: R1 is the next build, starting with the prompt builder, because every later screen shows what it records.
+No dates. R1's remaining gaps are in the table above; R3's GitHub App waits until maintainers use the
+local checks (incoming PRs checked on each sync are the first step).
 
 ## Decisions and open questions
 
