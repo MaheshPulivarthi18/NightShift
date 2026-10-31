@@ -242,7 +242,8 @@ function Knowledge({ repo }: { repo: string }) {
       <p className="dim">Learned once when the repo is added, and reused by every issue and PR in it.</p>
       <SetupProgress repo={repo} setup={k.setup} onStarted={reload} />
       <section className="panel">
-        <div className="panel-h"><h2>Environment</h2>{env ? <span className={`badge ${env.status === "ready" ? "ok" : "must"}`}>{env.status}</span> : <span className="badge">not set up</span>}</div>
+        <div className="panel-h"><h2>Environment</h2>{env ? <span className={`badge ${env.status === "ready" ? "ok" : "must"}`}>{env.status}</span> : <span className="badge">not set up</span>}
+          {env && <ForgetButton repo={repo} piece="environment" what="the environment: the next task or setup works it out again" onDone={reload} />}</div>
         <div className="panel-b">
           {env ? (
             <>
@@ -260,23 +261,93 @@ function Knowledge({ repo }: { repo: string }) {
       </section>
       {k.recipe && (
         <section className="panel">
-          <div className="panel-h"><h2>Commands that worked in a fix</h2></div>
+          <div className="panel-h"><h2>Commands that worked in a fix</h2>{k.recipe_at && <span className="dim">{ago(k.recipe_at)}</span>}
+            <ForgetButton repo={repo} piece="recipe" what="these commands" onDone={reload} /></div>
           <div className="panel-b"><Commands title="Setup" list={k.recipe.setup} /><Commands title="Tests" list={k.recipe.tests} /></div>
         </section>
       )}
       <section className="panel">
-        <div className="panel-h"><h2>Code map</h2>{k.map && <a className="push" href={`#/r/${repo}/map`}>Open the map</a>}</div>
+        <div className="panel-h"><h2>Code map</h2>{k.map && <a className="push" href={`#/r/${repo}/map`}>Open the map</a>}
+          {k.map && <ForgetButton repo={repo} piece="map" what="the map: the next task builds it again" onDone={reload} />}</div>
         <div className="panel-b">
           {k.map ? (
             <p className="dim">{k.map.components} components and {k.map.relationships} links, built at <span className="mono">{k.map.commit.slice(0, 7)}</span>, {ago(k.map.built_at)}.</p>
           ) : <p className="dim">Not built yet.</p>}
         </div>
       </section>
-      <section className="panel">
-        <div className="panel-h"><h2>Repo brief and PR rules</h2></div>
-        <div className="panel-b">{k.brief ? <pre className="brief">{k.brief}</pre> : <p className="dim">Written during setup, from the repo's README and contributing guide.</p>}</div>
-      </section>
+      <BriefPanel repo={repo} k={k} onChange={reload} />
+      <NotesPanel repo={repo} k={k} onChange={reload} />
     </div>
+  );
+}
+
+/** Forget one piece of knowledge, after a second click; it is learned again when next needed. */
+function ForgetButton({ repo, piece, what, onDone }: { repo: string; piece: string; what: string; onDone: () => void }) {
+  const [armed, setArmed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const go = () => api.forget(repo, piece).then(() => (setArmed(false), onDone()), (e: Error) => setError(e.message));
+  return (
+    <span className="push row-flex">
+      {error && <span className="error small-print">{error}</span>}
+      {armed ? (
+        <>
+          <button className="danger small" onClick={go} title={`Forget ${what}`}>Forget</button>
+          <button className="ghost small" onClick={() => setArmed(false)}>Cancel</button>
+        </>
+      ) : <button className="ghost small" onClick={() => setArmed(true)} title={`Forget ${what}`}>Forget…</button>}
+    </span>
+  );
+}
+
+/** The repo brief and PR rules every agent reads. Yours replaces the generated one until you forget it. */
+function BriefPanel({ repo, k, onChange }: { repo: string; k: RepoKnowledge; onChange: () => void }) {
+  const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const save = () => text !== null && api.editBrief(repo, text).then(() => (setText(null), onChange()), (e: Error) => setError(e.message));
+  return (
+    <section className="panel">
+      <div className="panel-h">
+        <h2>Repo brief and PR rules</h2>
+        {k.brief_edited ? <span className="badge info">your version</span> : k.brief_at && <span className="dim">{ago(k.brief_at)}</span>}
+        <span className="push row-flex">
+          {k.brief && text === null && <button className="ghost small" onClick={() => setText(k.brief ?? "")}>Edit</button>}
+        </span>
+        {k.brief && <ForgetButton repo={repo} piece="brief" what={k.brief_edited ? "your version: agents go back to the generated brief" : "the brief: the next setup writes it again"} onDone={onChange} />}
+      </div>
+      <div className="panel-b">
+        {text !== null ? (
+          <>
+            <p className="dim">Every agent reads this instead of the generated brief: planning, review, Publish and PR checks.</p>
+            <textarea className="brief-edit" rows={14} value={text} onChange={(e) => setText(e.target.value)} aria-label="Repo brief" />
+            <div className="row-flex">
+              <button className="primary small" onClick={save}>Save</button>
+              <button className="ghost small" onClick={() => setText(null)}>Cancel</button>
+              {error && <span className="error">{error}</span>}
+            </div>
+          </>
+        ) : k.brief ? <pre className="brief">{k.brief}</pre> : <p className="dim">Written during setup, from the repo's README and contributing guide.</p>}
+      </div>
+    </section>
+  );
+}
+
+/** What you know about the repo that its docs do not say; every agent reads it beside the brief. */
+function NotesPanel({ repo, k, onChange }: { repo: string; k: RepoKnowledge; onChange: () => void }) {
+  const [text, setText] = useState(k.notes);
+  const [saved, setSaved] = useState<string | null>(null);
+  const save = () => api.editNotes(repo, text).then(() => (setSaved("Saved."), onChange()), (e: Error) => setSaved(e.message));
+  return (
+    <section className="panel">
+      <div className="panel-h"><h2>Your notes</h2>{k.notes_at && <span className="dim">{ago(k.notes_at)}</span>}</div>
+      <div className="panel-b">
+        <p className="dim">What the docs do not say, for example "maintainers want one PR per issue" or "run tests with -p no:randomly". Every agent reads it beside the brief.</p>
+        <textarea rows={4} value={text} onChange={(e) => (setText(e.target.value), setSaved(null))} aria-label="Your notes about the repo" />
+        <div className="row-flex">
+          <button className="small" disabled={text === k.notes} onClick={save}>Save notes</button>
+          {saved && <span className="dim">{saved}</span>}
+        </div>
+      </div>
+    </section>
   );
 }
 
