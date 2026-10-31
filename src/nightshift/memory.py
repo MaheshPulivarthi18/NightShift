@@ -97,8 +97,9 @@ async def follow_rename(s: AsyncSession, old_name: str, new_name: str) -> Repo |
     return old
 
 
-async def upsert_items(s: AsyncSession, repo: Repo, fetched: list[dict[str, Any]]) -> int:
-    """Store fetched items; return how many were new or changed."""
+async def upsert_items(s: AsyncSession, repo: Repo, fetched: list[dict[str, Any]], complete: bool = True) -> int:
+    """Store fetched items; return how many were new or changed. Only a `complete` fetch moves the repo's
+    "fetched up to" mark: after a partial one, the next fetch starts from the same point."""
     existing = {it.number: it for it in (await s.execute(select(Item).where(Item.repo_id == repo.id))).scalars()}
     changed = 0
     for raw in fetched:
@@ -127,7 +128,8 @@ async def upsert_items(s: AsyncSession, repo: Repo, fetched: list[dict[str, Any]
         ):
             setattr(item, field, raw[field])
         item.content_hash = h
-    repo.last_fetched_at = datetime.now(UTC)
+    if complete:
+        repo.last_fetched_at = datetime.now(UTC)
     await s.flush()
     return changed
 

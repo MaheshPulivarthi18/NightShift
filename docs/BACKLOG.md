@@ -5,7 +5,7 @@ and the move of every page into the React app; extended 2026-10-31 with what the
 task, the multilspy setup and the 20-repo comparison showed. Tick items off as they land; add the UI bugs you
 found under "Found by you".
 
-**Next up, in order:** GitHub timeouts and null bytes in reports (D2, D3), the
+**Next up, in order:** the
 watchlist comparison (D4), the understanding check before publishing (L1), the image build limit (S1).
 
 ## Found by you
@@ -104,11 +104,15 @@ watchlist comparison (D4), the understanding check before publishing (L1), the i
       it when the comment says they do its work; PRs opened since the issue whose titles share its key terms are
       possible matches, shown as a Gate 1 warning. Live: #4454 now reads "merged PR #4455 … does its work, says a
       comment on #4462".
-- [ ] **D2. A null byte in GitHub text fails the whole report.** jaegertracing/jaeger: a PR body with `\u0000`
+- [x] **D2. A null byte in GitHub text fails the whole report.** jaegertracing/jaeger: a PR body with `\u0000`
       cannot be stored in Postgres (`UntranslatableCharacter`). Strip null bytes from everything fetched from GitHub.
-- [ ] **D3. GitHub timeouts on large repos fail the whole report.** fastapi, starlette, django and instructor timed
+      Fixed: the GitHub client drops null bytes from everything it returns.
+- [x] **D3. GitHub timeouts on large repos fail the whole report.** fastapi, starlette, django and instructor timed
       out (`GitHubTimeout`/`ReadTimeout`, after up to 31 minutes), kafka-go lost the connection. Retry a timed-out
       page with a smaller page size and backoff, and finish with what was fetched, saying what is missing.
+      Fixed: a slow or dropped answer shrinks the page like a 504; a list that still fails at the smallest page
+      is left incomplete after two tries, the report says what is missing, and the next run asks for it again.
+      A fetch that got nothing still fails.
 - [ ] **D4. Compare the watchlist: "where should I contribute first?"** Today that took 20 CLI reports and a
       script. One page ranking watched repos on outside-PR merge rate and response time (last 90 days), PRs left
       unanswered, free starter issues by size, and the repo's AI policy; with "report all" running a few at a time

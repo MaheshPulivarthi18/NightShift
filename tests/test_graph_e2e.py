@@ -99,8 +99,8 @@ FIXTURE = [
 
 async def fake_fetch(
     self: GitHubClient, full_name: str, since: Any, lookback: int, limit: int
-) -> tuple[list[dict[str, Any]], bool]:
-    return FIXTURE, False
+) -> tuple[list[dict[str, Any]], bool, list[str]]:
+    return FIXTURE, False, []
 
 
 async def same_name(self: GitHubClient, full_name: str) -> str:
