@@ -21,6 +21,7 @@ from nightshift.router import CHOOSABLE, agent_routes, choices
 from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker import task as worker
 from nightshift.worker import understanding
+from nightshift.worker.lockfiles import summaries
 from nightshift.worker.prcheck import PRCheckError
 from nightshift.worker.publish import PublishError
 
@@ -185,6 +186,7 @@ async def get_task(task_id: int) -> dict[str, Any]:
             for rv in res.get("reviews", [])
         ],
         "diff": t.diff or res.get("partial_diff") or "",
+        "lock_summaries": summaries(t.diff or res.get("partial_diff") or ""),
         "pr": {"title": pr["title"], "html": _md(pr["body"], r.full_name), "commit": pr["commit_message"]}
         if pr
         else None,

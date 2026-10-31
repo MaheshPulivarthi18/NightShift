@@ -649,3 +649,6 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 .ci-passing { color: var(--ok); background: var(--ok-soft); }
 .ci-failing { color: var(--bad); background: var(--bad-soft); }
 .ci-running { color: var(--lamp); background: var(--lamp-soft); }
+.lock-summary { padding: 8px 14px; }
+.lock-summary ul { margin: 0 0 8px; padding-left: 18px; columns: 2; font-size: 12.5px; }
+.lock-summary > details > summary { cursor: pointer; font-size: 12.5px; }

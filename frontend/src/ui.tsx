@@ -66,7 +66,9 @@ export function usePoll<T>(load: () => Promise<T>, ms: number, deps: unknown[]):
   return [data, error, () => setTick((t) => t + 1)];
 }
 
-export function Diff({ text }: { text: string }) {
+/** A unified diff, one collapsible file each. `locks`: regenerated lock files, as the packages they change
+ * (from the server); their hundreds of lines stay folded below. */
+export function Diff({ text, locks = {} }: { text: string; locks?: Record<string, string[]> }) {
   if (!text.trim()) return <p className="muted">No changes.</p>;
   const files = text.split(/^(?=diff --git )/m).filter((f) => f.trim());
   return (
@@ -80,11 +82,17 @@ export function Diff({ text }: { text: string }) {
           <details key={name + i} open={files.length <= 8}>
             <summary>
               <span className="mono">{name}</span>
+              {locks[name] && <span className="dim"> regenerated lock file · {locks[name].length} package{locks[name].length === 1 ? "" : "s"}</span>}
               <span className="diffstat">
                 <span className="add">+{added}</span> <span className="del">−{removed}</span>
               </span>
             </summary>
-            <pre>
+            {locks[name] ? (
+              <div className="lock-summary">
+                <ul>{locks[name].map((l) => <li key={l} className="mono">{l}</li>)}</ul>
+                <details><summary className="dim">Show the {added + removed} changed lines</summary><pre>{lines.join("\n")}</pre></details>
+              </div>
+            ) : <pre>
               {lines
                 .filter((l) => !/^(diff --git|index |--- |\+\+\+ |new file mode|deleted file mode)/.test(l))
                 .map((l, n) => (
@@ -93,7 +101,7 @@ export function Diff({ text }: { text: string }) {
                     {"\n"}
                   </span>
                 ))}
-            </pre>
+            </pre>}
           </details>
         );
       })}

@@ -220,6 +220,7 @@ export interface TaskDetail extends TaskSummary {
   claim_comment: string;
   actionable: boolean;
   claim_url: string | null;
+  lock_summaries: Record<string, string[]>; // regenerated lock files in the diff, as the packages they change
   baseline: CommandResult[];
   check: FixCheck | null;
   understanding: Understanding | null;
