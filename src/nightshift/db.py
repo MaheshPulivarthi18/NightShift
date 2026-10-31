@@ -158,6 +158,8 @@ class PRCheck(Base):
     review_url: Mapped[str | None] = mapped_column(String(300))  # the review the operator posted from it
     auto: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # started by the sync
     dismissed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # not to be posted
+    # Your marks on its findings, {finding id: "right" | "wrong"}: how often the checker is right (finding_marks)
+    marks: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict, server_default=text("'{}'"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 

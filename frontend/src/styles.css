@@ -660,3 +660,7 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 .fit-strong { background: var(--ok-soft, rgba(22, 163, 74, 0.12)); color: var(--ok, #15803d); }
 .fit-some { background: var(--warn-soft); color: var(--warn); }
 .fit-little { color: var(--muted, #888); }
+.marks .mark-row { padding: 6px 0; border-top: 1px solid var(--line); align-items: flex-start; }
+.marks .mark-row:first-child { border-top: 0; }
+.brief-edit { width: 100%; box-sizing: border-box; font-family: var(--mono, ui-monospace, monospace); font-size: 12.5px; }
+.knowledge textarea { width: 100%; box-sizing: border-box; }

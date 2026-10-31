@@ -17,6 +17,7 @@ The PR's code is untrusted: it only ever runs inside the sandbox.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shlex
@@ -43,6 +44,7 @@ from nightshift.sandbox.docker import DEP_FILES, Sandbox, SandboxError, prepare_
 from nightshift.sandbox.envimage import ensure_env_image
 from nightshift.worker import publish, reviewer
 from nightshift.worker.issue import IssueView, fetch_issue
+from nightshift.worker.onboard import your_brief
 from nightshift.worker.planner import Reproduction
 from nightshift.worker.prwriter import essential_lines
 from nightshift.worker.related_tests import related
@@ -365,7 +367,7 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
         _findings(check, report, repro, plan.intent)
         pack, _ = change_markdown(await change_context(box, base_commit), budget_tokens=6000)
         try:
-            rules = brief_text((await repo_brief(llm, pr.repo))[0])
+            rules = await your_brief(repo.id, brief_text((await repo_brief(llm, pr.repo))[0]))
             rv = await reviewer.review(
                 llm, repo=pr.repo, issue=issue_text(issue) if issue else "(no linked issue)",
                 plan=f"The PR's own description (not a plan approved by anyone):\n{pr.title}\n\n{pr.body}",
@@ -473,6 +475,19 @@ def _findings(check: FixCheck, report: Report, repro: dict[str, str] | None, int
     if check.suite and not check.regressions:
         report.passed.append(f"No regressions: {sum(r.ok for r in check.suite)} of {len(check.suite)} suites pass "
                              f"({len(check.already_failing)} already failing on the base).")  # fmt: skip
+
+
+def findings(markdown: str) -> list[dict[str, str]]:
+    """The must-fix and should-fix findings of a saved report, each with a stable id for marking it right or
+    wrong: [{"id", "kind": "must" | "should", "text"}]."""
+    out, kind = [], None
+    for line in markdown.splitlines():
+        if line.startswith("## "):
+            kind = {"## Must fix": "must", "## Should fix": "should"}.get(line.strip())
+        elif kind and line.startswith("- "):
+            text = line[2:].strip()
+            out.append({"id": hashlib.sha1(f"{kind}:{text}".encode()).hexdigest()[:12], "kind": kind, "text": text})
+    return out
 
 
 REVIEW_EVENTS = ("COMMENT", "REQUEST_CHANGES", "APPROVE")

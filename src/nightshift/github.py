@@ -7,6 +7,7 @@ lookback window; later runs take only items updated since the last fetch.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -431,6 +432,77 @@ async def ci_status(gh: GitHubClient, full_name: str, sha: str) -> dict[str, Any
             passed += 1
     state = "failed" if failed else "pending" if pending else "passed" if passed else "none"
     return {"state": state, "failed": sorted(set(failed)), "pending": sorted(set(pending)), "passed": passed}
+
+
+# Lines in a CI log that say what went wrong, across runners and languages
+ERROR_LINE = re.compile(
+    r"##\[error\]|\bFAIL(ED|URE)?\b|\bERROR\b|\berror(\[\w+\])?:|Error:|Traceback|panic:|AssertionError|"
+    r"\bexpected\b.*\bgot\b|^E\s{2,}|would reformat|Found \d+ errors?",
+)
+_TIMESTAMP = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z ")
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_PROGRESS = re.compile(r"^(\S+ )?[.sxXFEp]+\s*(\[\s*\d+%\])?$")  # pytest's per-file dots: no information
+GENERIC_ANNOTATION = re.compile(
+    r"Process completed with exit code|label will migrate|is deprecated|Node\.js \d+ actions|capacity constraints"
+)
+
+
+def log_excerpt(log: str, limit: int = 40) -> str:
+    """The part of a CI log that says why it failed, without timestamps or colours, at most `limit` lines:
+    pytest's short summary when there is one, else each error line and the two after it (a traceback or
+    a diff goes on below the line that names it)."""
+    lines = [_ANSI.sub("", _TIMESTAMP.sub("", ln)).rstrip() for ln in log.splitlines()]
+    lines = [ln for ln in lines if not _PROGRESS.match(ln.strip())]
+    summary = next((i for i, ln in enumerate(lines) if "short test summary info" in ln), None)
+    if summary is not None:
+        picked = [ln for ln in lines[summary + 1 :] if ln.strip() and not ln.startswith("##[")][:limit]
+        return "\n".join(ln[:300] for ln in picked)
+    keep: list[int] = []
+    for i, line in enumerate(lines):
+        if ERROR_LINE.search(line) and "exit code" not in line:
+            keep.extend(j for j in range(i, min(i + 3, len(lines))) if j not in keep)
+    if not keep:  # nothing recognisable: the end of the log, where the failure usually is
+        keep = list(range(max(len(lines) - 15, 0), len(lines)))
+    return "\n".join(lines[j][:300] for j in sorted(keep)[:limit])
+
+
+async def ci_failures(gh: GitHubClient, full_name: str, sha: str, jobs: int = 4) -> list[dict[str, str]]:
+    """What the failing CI jobs on a commit say: [{"name", "url", "excerpt"}], from each check run's annotations
+    and, for GitHub Actions, the job's log. Advisory jobs (coverage, benchmarks, changelog) are left out."""
+    runs = (await gh.rest_get(f"/repos/{full_name}/commits/{sha}/check-runs?per_page=100")).get("check_runs", [])
+    out = []
+    for r in runs:
+        name = r.get("name") or "a check"
+        if r.get("conclusion") not in CI_FAILED or ADVISORY_JOB.search(name):
+            continue
+        parts = []
+        output = r.get("output") or {}
+        if output.get("annotations_count"):
+            with contextlib.suppress(GitHubError):
+                for a in await gh.rest_get(f"/repos/{full_name}/check-runs/{r['id']}/annotations"):
+                    if not GENERIC_ANNOTATION.search(a.get("message") or ""):
+                        parts.append(f"{a.get('path')}:{a.get('start_line')}: {(a.get('message') or '')[:300]}")
+        if "/actions/runs/" in (r.get("details_url") or ""):
+            with contextlib.suppress(*NETWORK_ERRORS):
+                resp = await gh._http.get(
+                    f"{gh._url.removesuffix('/graphql')}/repos/{full_name}/actions/jobs/{r['id']}/logs"
+                )
+                if resp.status_code == 200:
+                    parts.append(log_excerpt(resp.text))
+        if not parts and (output.get("title") or output.get("summary")):
+            parts.append(f"{output.get('title') or ''}\n{(output.get('summary') or '')[:1500]}".strip())
+        out.append({"name": name, "url": r.get("details_url") or "", "excerpt": "\n".join(parts).strip()})
+    # the same failure on several platforms is one entry, named after all of them
+    merged: dict[str, tuple[dict[str, str], list[str]]] = {}
+    for j in out:
+        key = "\n".join([ln for ln in j["excerpt"].replace("\\", "/").splitlines() if ln.strip()][:3])  # same tests
+        merged.setdefault(key, (j, []))[1].append(j["name"])
+    groups = []
+    for j, names in merged.values():
+        more = f" and {len(names) - 2} more" if len(names) > 2 else ""
+        groups.append({**j, "name": ", ".join(names[:2]) + more})
+    # jobs that say why come first: an aggregate job ("all green") only says another one failed
+    return sorted(groups, key=lambda j: -len(j["excerpt"]))[:jobs]
 
 
 def _gap(what: str, got: int, e: Exception) -> str:
