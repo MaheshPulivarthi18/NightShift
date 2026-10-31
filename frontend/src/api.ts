@@ -166,6 +166,20 @@ export interface CheckStep {
   detail: string;
 }
 
+// Can the contributor explain the change? Questions before the first answers; points and grades after.
+export interface Understanding {
+  questions: { question: string; about: string; expects?: string[] }[];
+  last: {
+    answers: string[];
+    grades: { verdict: "understood" | "partly" | "missed"; feedback: string }[];
+    passed: boolean;
+    at: string;
+  } | null;
+  attempts: number;
+  passed: boolean;
+  cost_usd: number;
+}
+
 export interface TaskDetail extends TaskSummary {
   issue_url: string | null;
   run_id: string;
@@ -179,6 +193,8 @@ export interface TaskDetail extends TaskSummary {
   claim_url: string | null;
   baseline: CommandResult[];
   check: FixCheck | null;
+  understanding: Understanding | null;
+  ai_rules: string[]; // the repo's PR rules about AI use
   checks: CheckStep[];
   attempts: { n: number; status: string; stopped_at: string | null; error: string | null; cost_usd: number; lines: number; at: string }[];
   resume: { stopped_at: string; todo: string } | null; // where the queued run picks up
@@ -419,6 +435,9 @@ export const api = {
   runReport: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/run`, {}),
   removeRepo: (repo: string) => call<RepoRow[]>(`/repos/${repo}/remove`, {}),
   setupRepo: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/setup`, {}),
+  understandingQuestions: (id: number, fresh = false) => call<Understanding>(`/tasks/${id}/understanding`, { fresh }),
+  understandingAnswers: (id: number, answers: string[]) =>
+    call<Understanding>(`/tasks/${id}/understanding/answers`, { answers }),
   compare: () => call<CompareRow[]>("/compare"),
   refreshCompare: (staleDays = 7) => call<{ queued: string[]; already: boolean }>("/compare/refresh", { stale_days: staleDays }),
   reportLive: (repo: string, runId: string) => call<LiveCheck>(`/repos/${repo}/report/live?run_id=${runId}`),
