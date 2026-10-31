@@ -254,12 +254,22 @@ class OpenRouter:
         message = (err or {}).get("message") if isinstance(err, dict) else str(body)[:500]
         return ModelAPIError(int((err or {}).get("code") or status) if isinstance(err, dict) else status, message or "")
 
+    async def _within(self, call: Any, seconds: float, message: str) -> Any:
+        """`call`'s result, or a 504 after `seconds`. The call is cancelled but not waited for: cancelling a
+        request on a dead connection can itself hang (asyncio.wait_for waits for it; a review hung 40 minutes)."""
+        task = asyncio.ensure_future(call)
+        done, _ = await asyncio.wait({task}, timeout=max(seconds, 0.01))
+        if task in done:
+            return task.result()
+        task.cancel()
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())  # nobody waits for it: keep it quiet
+        raise ModelAPIError(504, message)
+
     async def complete(self, body: dict[str, Any]) -> dict[str, Any]:
         for attempt in range(5):
-            try:
-                res = await asyncio.wait_for(self.http.post(self.url, json=body), self.deadline)
-            except TimeoutError as e:  # no retry on the same model: the gateway falls back to the next one
-                raise ModelAPIError(504, f"no answer within {self.deadline} s") from e
+            try:  # a 504 is not retried on the same model: the gateway falls back to the next one
+                res = await self._within(self.http.post(self.url, json=body), self.deadline,
+                                         f"no answer within {self.deadline} s")  # fmt: skip
             except httpx.TransportError as e:
                 if attempt == 4:
                     raise ModelAPIError(0, f"cannot reach OpenRouter: {e}") from e
@@ -275,7 +285,10 @@ class OpenRouter:
 
     async def stream(self, body: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         started = time.monotonic()
-        async with self.http.stream("POST", self.url, json={**body, "stream": True}) as res:
+        late = f"no complete answer within {self.deadline} s"
+        request = self.http.build_request("POST", self.url, json={**body, "stream": True})
+        res = await self._within(self.http.send(request, stream=True), self.deadline, late)
+        try:
             if res.status_code != 200:
                 raw = await res.aread()
                 try:
@@ -283,15 +296,21 @@ class OpenRouter:
                 except ValueError:
                     data = raw.decode(errors="replace")
                 raise self._error(res.status_code, data)
-            async for line in res.aiter_lines():
-                if time.monotonic() - started > self.deadline:  # kept alive but never finishing
-                    raise ModelAPIError(504, f"no complete answer within {self.deadline} s")
+            lines = res.aiter_lines()
+            while True:  # each line within what is left: kept alive but never finishing, or silent, is given up
+                try:
+                    line = await self._within(anext(lines), self.deadline - (time.monotonic() - started), late)
+                except StopAsyncIteration:
+                    break
                 if not line.startswith("data: ") or line == "data: [DONE]":
                     continue  # comments like ": OPENROUTER PROCESSING" keep the connection alive
                 chunk = json.loads(line[6:])
                 if "error" in chunk:
                     raise self._error(502, chunk)
                 yield chunk
+        finally:
+            task = asyncio.ensure_future(res.aclose())  # not awaited for long: closing a dead connection can hang
+            await asyncio.wait({task}, timeout=5)
 
 
 def make_client() -> OpenRouter:
