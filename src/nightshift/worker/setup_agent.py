@@ -99,6 +99,27 @@ def known_causes(output: str) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+# A test command runs a test runner. `ls tests/` "passed" as one in multilspy's environment, proving nothing.
+TEST_RUNNER = re.compile(
+    r"\b(?:pytest|py\.test|unittest|nose2?|tox|nox|hatch\s+test|go\s+test|cargo\s+(?:test|nextest)"
+    r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test[\w:-]*|bun\s+test|jest|vitest|mocha|ava|karma|playwright\s+test"
+    r"|mvnw?\b.*\b(?:test|verify)\b|gradlew?\b.*\btest|dotnet\s+test|rspec|rake\s+(?:test|spec)|phpunit"
+    r"|ctest|make\s+(?:test|check)|meson\s+test|swift\s+test|mix\s+test|stack\s+test|cabal\s+test|deno\s+test"
+    r"|runtests|zig\s+build\s+test)\b",
+    re.I,
+)
+# A file that holds tests, for counting how much of the suite the test commands cover
+TEST_FILE = re.compile(
+    r"(?:^|/)test_[^/]+\.py$|_tests?\.py$|_test\.(?:go|rs|exs)$|\.(?:test|spec)\.[cm]?[jt]sx?$|_spec\.rb$"
+    r"|(?:^|/)[^/]*Tests?\.(?:java|kt|cs|swift)$|(?:^|/)tests?/[^/]+\.rs$"
+)
+
+
+def not_test_commands(commands: list[str]) -> list[str]:
+    """The commands that run no test runner (listing files, echoing, checking a version)."""
+    return [c for c in commands if not TEST_RUNNER.search(c)]
+
+
 Blocker = Literal["none", "services", "secrets", "gpu", "os", "network", "other"]
 Tool = Literal["pnpm", "yarn", "go", "rust"]
 assert set(Tool.__args__) == set(TOOLS)  # type: ignore[attr-defined]
@@ -130,6 +151,7 @@ class Attempt(BaseModel):
     tests: list[CommandResult] = []
     image: str = ""
     note: str = ""  # NightShift's reply when the agent's verdict was refused
+    coverage: dict[str, Any] = {}  # how many of the repo's test files the test commands cover (test_coverage)
 
     @property
     def passed(self) -> bool:
@@ -176,6 +198,7 @@ class Environment(BaseModel):
     detail: str = ""
     sources: list[str] = []
     attempts: list[str] = []  # one line per attempt
+    coverage: dict[str, Any] = {}  # {"files", "total", "left_out"}: how much of the suite the test commands run
     cost_usd: float = 0.0
 
     def text(self) -> str:
@@ -185,6 +208,8 @@ class Environment(BaseModel):
         lines = ["status: ready (these commands were run in the sandbox)", f"system_packages: {self.system_packages}"]
         lines += [f"tools: {self.tools}", "setup_commands:", *[f"  {c}" for c in self.setup_commands]]
         lines += ["test_commands and their result on the default branch:", *[f"  {t.line()}" for t in self.tests]]
+        if note := coverage_note(self.coverage):
+            lines.append(note)
         return "\n".join(lines)
 
 
@@ -198,7 +223,7 @@ For another Python version, use uv in the setup, e.g. `uv venv --python 3.11`.
 Where to look, most reliable first: CI workflows (they install and test on every push: copy their steps, translated for this container, dropping setup actions, services and sudo), dev container config, the contributing guide, the README, Dockerfiles (only to learn which system packages are needed; they are never built), toolchain files.
 
 - setup_commands install everything the tests need and must be safe to run again on top of an earlier install. Give one plain command per step, no `||` fallback chains: if a command fails you will see why and can change it. Prefer lock files (`uv sync --frozen`, `npm ci`, `pnpm install --frozen-lockfile`). Use CPU-only builds of GPU libraries, e.g. `uv pip install torch --torch-backend cpu`. A virtualenv is not active in the next command: call `.venv/bin/...` directly.
-- test_commands run the repo's main unit tests, the ones CI runs, without services. Leave out tests that need services, secrets, a GPU or outside network APIs. Use quiet flags. Each command must finish within 5 minutes here: for a large suite, pick the fast unit tests of the main package (one directory, or a -k selection), not everything. A command that times out is a failed attempt.
+- test_commands run the repo's main unit tests, the ones CI runs, without services. Leave out tests that need services, secrets, a GPU or outside network APIs. Use quiet flags. Each command must finish within 5 minutes here: for a large suite, pick the fast unit tests of the main package (one directory, or a -k selection), not everything. A command that times out is a failed attempt. Every test command runs a test runner (pytest, go test, npm test …): one that only lists or prints files is refused. NightShift counts how much of the suite they cover and tells the Planner what is left out.
 - status try: the environment to run next. status done: accept the last attempt, when the setup succeeded and the tests ran, and the failures left are the repo's own failing tests, not a missing tool, package or module. status blocked: the tests cannot run in this sandbox at all (they need a service, secrets, a GPU, another OS, or downloads keep failing); say which in blocker and what exactly in blocker_detail.
 - There is no root: install every language package inside the repo, never system-wide. Python into a .venv; Node without -g; Ruby with the gem directory on the same line, e.g. `GEM_HOME=$PWD/.gems gem install solargraph` (and `GEM_HOME=$PWD/.gems PATH=$PWD/.gems/bin:$PATH` before the commands that use it), since each command runs in a fresh shell.
 - A native extension that fails to compile almost always lacks a -dev system package. Find the compiler's real error above the "Results logged to" or "failed to build" line and add the package: yaml.h → libyaml-dev, ffi.h → libffi-dev, openssl → libssl-dev, zlib.h → zlib1g-dev, libxml → libxml2-dev, Python.h → python3-dev.
@@ -271,13 +296,64 @@ async def try_environment(full_name: str, commit: str, p: Proposal) -> Attempt:
         attempt.tests = await run_commands(
             box, p.test_commands, timeout=get_settings().setup_test_seconds, note="test, proving the environment"
         )
+        attempt.coverage = await test_coverage(box, p.test_commands)
     return attempt
+
+
+def coverage_note(cov: dict[str, Any]) -> str:
+    """One line on how much of the suite the test commands run, and what they leave out."""
+    if not cov or not cov.get("total"):
+        return ""
+    if cov["files"] >= cov["total"]:
+        return f"The test commands cover the whole suite ({cov['total']} test files)."
+    left = "; ".join(cov.get("left_out", []))
+    return (
+        f"The test commands cover {cov['files']} of the repo's {cov['total']} test files (approximately)"
+        + (f". Not run: {left}" if left else "")
+        + ". A change outside what they cover is not checked by them."
+    )
+
+
+async def test_coverage(box: Sandbox, commands: list[str]) -> dict[str, Any]:
+    """How many of the repo's test files the commands cover: a command naming no paths runs the whole suite
+    (`pytest`, `go test ./...`); one naming files or folders covers the test files under them. Approximate:
+    a `-k` selection or a filter inside a folder still counts the whole folder."""
+    tracked = (await box.exec("git ls-files")).stdout.splitlines()
+    tests = [f for f in tracked if TEST_FILE.search(f)]
+    if not tests:
+        return {}
+    dirs = {d for f in tracked for d in _parents(f)}
+    covered: set[str] = set()
+    for command in commands:
+        try:
+            words = shlex.split(command)
+        except ValueError:
+            words = command.split()
+        named = [w.rstrip("/").removeprefix("./") for w in words if not w.startswith("-")]
+        named = [w for w in named if w in dirs or w in tracked or w.split("::", 1)[0] in tracked]
+        if not named or "./..." in words:
+            return {"files": len(tests), "total": len(tests), "left_out": []}
+        for w in named:
+            path = w.split("::", 1)[0]
+            covered |= {t for t in tests if t == path or t.startswith(path + "/")}
+    groups: dict[str, int] = {}
+    for t in tests:
+        if t not in covered:
+            group = "/".join(t.split("/")[:2]) if t.count("/") >= 2 else t.rsplit("/", 1)[0] if "/" in t else "."
+            groups[group] = groups.get(group, 0) + 1
+    left = [f"{g}/ ({n} files)" for g, n in sorted(groups.items(), key=lambda x: -x[1])[:6]]
+    return {"files": len(covered), "total": len(tests), "left_out": left}
+
+
+def _parents(path: str) -> list[str]:
+    parts = path.split("/")[:-1]
+    return ["/".join(parts[: i + 1]) for i in range(len(parts))]
 
 
 def _environment(status: Literal["ready", "failed"], commit: str, a: Attempt, p: Proposal | None) -> Environment:
     return Environment(
         status=status, commit=commit, image=a.image, system_packages=a.system_packages, tools=a.tools,
-        setup_commands=a.setup_commands, test_commands=a.test_commands, tests=a.tests,
+        setup_commands=a.setup_commands, test_commands=a.test_commands, tests=a.tests, coverage=a.coverage,
         sources=p.sources if p else [],
         detail="" if status == "ready" else a.summary(),
     )  # fmt: skip
@@ -298,10 +374,11 @@ async def find_environment(
     settings = get_settings()
     attempts: list[Attempt] = []
     spent, asks, p, result = 0.0, 0, None, None
-    if recipe and recipe.get("passing"):
+    runs_tests = [c for c in (recipe or {}).get("passing", []) if TEST_RUNNER.search(c)]
+    if recipe and runs_tests:
         known = Proposal(
             status="try", reasoning="commands that worked in an earlier task here", system_packages=[], tools=[],
-            setup_commands=recipe.get("setup", []), test_commands=recipe["passing"], blocker="none",
+            setup_commands=recipe.get("setup", []), test_commands=runs_tests, blocker="none",
             blocker_detail="", sources=["an earlier NightShift task in this repo"],
         )  # fmt: skip
         await events.record(
@@ -342,6 +419,11 @@ async def find_environment(
             attempts.append(
                 Attempt(**_request(p), stage="setup", error="No test_commands: give the commands that run the tests.")
             )
+        elif bad := not_test_commands(p.test_commands):  # refused before it runs: an attempt it cannot pass
+            attempts.append(Attempt(**_request(p), stage="setup", error=(
+                f"Not run: these test_commands run no test runner: {'; '.join(bad)}. Each test command must run "
+                "tests (pytest, go test, npm test, jest, cargo test …), not list, print or inspect files."
+            )))  # fmt: skip
         else:
             await events.record(llm.run_id, "node_start", f"environment attempt {len(attempts) + 1}", node="setup")
             attempt = await try_environment(full_name, commit, p)

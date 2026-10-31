@@ -33,7 +33,7 @@ from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker.issue import fetch_issue
 from nightshift.worker.onboard import onboard
 from nightshift.worker.prcheck import PRCheckError, check_pr, fetch_pull, prcheck_run_id
-from nightshift.worker.setup_agent import ENVIRONMENT, Environment, setup_repo, setup_run_id
+from nightshift.worker.setup_agent import ENVIRONMENT, Environment, coverage_note, setup_repo, setup_run_id
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/api")
@@ -126,6 +126,7 @@ def _environment_view(env: Environment, at: datetime) -> dict[str, Any]:
         "sources": env.sources,
         "attempts": env.attempts,
         "cost_usd": env.cost_usd,
+        "coverage": coverage_note(env.coverage),  # how much of the suite the test commands run
     }
 
 

@@ -166,3 +166,56 @@ def test_a_build_past_its_limit_says_where_it_was_and_what_to_ask_for() -> None:
     msg = timeout_message(600, out + "docker build timed out after 630s")
     assert msg.startswith("the environment image build was stopped at its 10-minute limit")
     assert "Unpacking openjdk-17-jdk" in msg and "timed out after" not in msg and "-headless" in msg
+
+
+def test_a_test_command_must_run_a_test_runner() -> None:
+    """Commands from real environments: multilspy's `ls` "passed" as a test command, proving nothing."""
+    from nightshift.worker.setup_agent import not_test_commands
+
+    good = [
+        "./.venv/bin/python -m pytest tests/test_main.py -q -p no:cacheprovider",  # pydantic
+        "uv run --no-sync pytest opentelemetry-sdk/tests -q",  # opentelemetry-python
+        "find tests/multilspy -name 'test_*.py' | xargs .venv/bin/pytest -q",  # multilspy
+        "go test -race ./...", "npm test", "pnpm run test:unit", "cargo test --workspace", "./mvnw -q test",
+    ]  # fmt: skip
+    assert not_test_commands(good) == []
+    assert not_test_commands(["ls tests/multilspy", "echo ok", "python -c 'import multilspy'"]) == [
+        "ls tests/multilspy", "echo ok", "python -c 'import multilspy'"
+    ]  # fmt: skip
+
+
+async def test_a_proposal_without_real_test_commands_is_refused_before_it_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tried = _sandbox(monkeypatch, _attempt("tests", tests=[_result(True)]))
+    script = _Script(_proposal(test_commands=["ls tests"]), _proposal())
+    env = await find_environment(script, "o/r", "abc", "hints")  # type: ignore[arg-type]
+    assert env.status == "ready" and len(tried) == 1  # the `ls` proposal never ran
+    assert "Not run: these test_commands run no test runner: ls tests" in script.prompts[1]
+
+
+class _Box:
+    def __init__(self, files: list[str]) -> None:
+        self.files = files
+
+    async def exec(self, command: str, **kw: Any) -> Any:
+        return type("R", (), {"stdout": "\n".join(self.files)})()
+
+
+async def test_coverage_says_how_much_of_the_suite_runs() -> None:
+    from nightshift.worker.setup_agent import coverage_note, test_coverage
+
+    files = [
+        "pydantic/main.py", "tests/test_main.py", "tests/test_types.py", "tests/test_validators.py",
+        "tests/test_json.py", "tests/test_networks.py", "tests/mypy/test_mypy.py", "tests/conftest.py",
+    ]  # fmt: skip
+    box = _Box(files)
+    pydantic = "./.venv/bin/python -m pytest tests/test_main.py tests/test_types.py -q"
+    narrow = await test_coverage(box, [pydantic])  # type: ignore[arg-type]
+    assert (narrow["files"], narrow["total"]) == (2, 6)
+    assert narrow["left_out"][0] == "tests/ (3 files)" and "tests/mypy/ (1 files)" in narrow["left_out"]
+    assert "cover 2 of the repo's 6 test files" in coverage_note(narrow)
+    whole = await test_coverage(box, ["uv run pytest -q"])  # type: ignore[arg-type]
+    assert whole["files"] == whole["total"] == 6 and "whole suite" in coverage_note(whole)
+    folder = await test_coverage(box, ["pytest tests/mypy -q"])  # type: ignore[arg-type]
+    assert folder["files"] == 1
