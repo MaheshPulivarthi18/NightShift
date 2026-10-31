@@ -7,6 +7,8 @@ publicly. Every call that changes state is guarded in web/common.py.
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
@@ -31,7 +33,22 @@ from nightshift.worker.task import mark_stale_runs
 log = structlog.get_logger()
 
 APP_DIR = Path(__file__).parent / "static" / "app"  # built with `cd frontend && npm install && npm run build`
+SOURCE_DIR = Path(__file__).resolve().parents[3]  # the checkout this server runs from: src/nightshift/web -> root
 NOT_BUILT = "The NightShift app is not built yet. Run: cd frontend && npm install && npm run build\n"
+
+
+def checkout_commit(folder: Path = SOURCE_DIR) -> str | None:
+    """The commit the checkout is at now, or None outside a git checkout."""
+    try:
+        out = subprocess.run(["git", "-C", str(folder), "rev-parse", "HEAD"], capture_output=True, text=True,
+                             timeout=5, check=False)  # fmt: skip
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+RUNNING = checkout_commit()  # the code this server loaded; a pull or merge after it needs a restart
+_latest: tuple[float, str | None] = (0.0, None)
 
 
 async def _tidy_up() -> None:
@@ -72,6 +89,17 @@ async def index() -> HTMLResponse | PlainTextResponse:
     if not page.exists():
         return PlainTextResponse(NOT_BUILT, status_code=503)
     return HTMLResponse(page.read_text())
+
+
+@app.get("/api/version")
+async def version() -> dict[str, object]:
+    """The commit the server runs and the one its checkout is at now: when they differ, the page asks for a
+    restart (changes need one, and nothing else shows it)."""
+    global _latest
+    if time.monotonic() - _latest[0] > 30:
+        _latest = (time.monotonic(), await asyncio.to_thread(checkout_commit))
+    latest = _latest[1]
+    return {"running": RUNNING, "latest": latest, "old": bool(RUNNING and latest and latest != RUNNING)}
 
 
 @app.get("/health")

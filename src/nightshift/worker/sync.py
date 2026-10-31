@@ -208,10 +208,14 @@ async def _sync_questions(repos: list[str] | None) -> tuple[int, int]:
 
 
 async def sync_loop() -> None:
-    """Sync now and then every `sync_minutes`; with 0, only when asked."""
+    """Sync now and then every `sync_minutes`; with 0, only when asked. Each round also checks new incoming
+    PRs on the repos that opted in."""
     minutes = get_settings().sync_minutes
     if minutes <= 0:
         return
+    from nightshift.worker.autocheck import autocheck_once
+
     while True:
         await sync_once()
+        await autocheck_once()  # incoming PRs on repos that opted in
         await asyncio.sleep(minutes * 60)

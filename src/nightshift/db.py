@@ -53,6 +53,8 @@ class Repo(Base):
     last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # "maintainer": backlog triage report. "contributor": where an outsider can usefully help.
     role: Mapped[str] = mapped_column(String(20), default="contributor", server_default="contributor")
+    # Check others' open PRs here on every background sync (worker/autocheck.py); a maintainer's opt-in.
+    auto_check: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     # Bumped when the fetched fields change, so old repos get one full refetch.
     fetch_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -154,6 +156,8 @@ class PRCheck(Base):
     error: Mapped[str | None] = mapped_column(Text)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     review_url: Mapped[str | None] = mapped_column(String(300))  # the review the operator posted from it
+    auto: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # started by the sync
+    dismissed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # not to be posted
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
