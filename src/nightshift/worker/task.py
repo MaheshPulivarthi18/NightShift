@@ -215,6 +215,8 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
         # An independent check of the plan against the code; must-fix findings send it back to the Planner once.
         # A plan with nothing to code (it asks the maintainers first) has nothing to check.
         pcheck = plancheck.PlanCheck(summary="Not checked: the plan asks questions before any code.", findings=[])
+        rechecked: list[plancheck.Addressed] = []
+        open_findings: list[str] = []  # must-fix findings the revised plan still misses, for Gate 1
         if plan.actionable:
             await events.record(task.run_id, "node_start", "plan check", node="plan_check")
             draft = planner.to_markdown(plan, title=f"{full_name}#{number} {issue.title}", warnings=[])
@@ -232,9 +234,24 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
             )  # fmt: skip
             inputs["plan_check"] = plancheck.as_note(musts)
             plan = await planner.make_plan(llm, planner.plan_prompt(**inputs))
-            await events.record(
-                task.run_id, events.FIXED, "Revised plan ready: it addresses the plan check (checked once, not again)"
-            )
+            revised_draft = planner.to_markdown(plan, title=f"{full_name}#{number} {issue.title}", warnings=[])
+            rechecked = await plancheck.recheck(llm, musts, revised_draft, avoid=family(llm.last_model))
+            still = [f for f, r in zip(musts, rechecked, strict=True) if not r.addressed]
+            if still:  # warned at Gate 1, not re-planned again: one revision is the cap
+                await events.record(
+                    task.run_id, "warning",
+                    f"The revised plan still does not address {len(still)} of {len(musts)} must-fix findings",
+                )  # fmt: skip
+                open_findings = [
+                    f"Plan check: the revised plan does not address `{f.location}`: {f.problem} ({r.how})"
+                    for f, r in zip(musts, rechecked, strict=True) if not r.addressed
+                ]  # fmt: skip
+            else:
+                await events.record(
+                    task.run_id,
+                    events.FIXED,
+                    f"Revised plan re-checked: it addresses all {len(musts)} must-fix findings",
+                )
 
         # Run the setup now, before Gate 1, so a plan whose commands cannot work is caught before any paid run.
         # A failure goes back to the Planner once. Success also saves the repo image the run will start from.
@@ -254,6 +271,7 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
                 await events.record(task.run_id, events.FIXED, "The revised setup commands work in the sandbox")
         checks = ["setup commands ran successfully in the sandbox"] if not setup_error else []
         warnings = [f"setup failed in the sandbox: {setup_error[-600:]}"] if setup_error else []
+        warnings += open_findings
         repro_checks, repro_warnings = reproduction_note(repro)
         checks += repro_checks
         warnings += repro_warnings
@@ -269,7 +287,7 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
         warnings += [f"{w}. Check it before approving" for w in issue.possible(settings.github_login or None)]
         markdown = planner.to_markdown(
             plan, title=f"{full_name}#{number} {issue.title}", warnings=warnings, checks=checks, note=note.strip(),
-            plan_check=plancheck.to_markdown(pcheck, revised),
+            plan_check=plancheck.to_markdown(pcheck, revised, rechecked),
         )  # fmt: skip
         (task_dir(full_name, task.id) / "plan.md").write_text(markdown)
         await _save(
@@ -285,7 +303,11 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
                 "reproduced": repro.model_dump() if repro else None,
                 "planning_note": note.strip(),
                 "relevant_files": l2_paths,  # for the context check after the run
-                "plan_check": {**pcheck.model_dump(mode="json"), "revised": revised},
+                "plan_check": {
+                    **pcheck.model_dump(mode="json"),
+                    "revised": revised,
+                    "recheck": [r.model_dump() for r in rechecked],
+                },  # fmt: skip
                 "environment": {"system_packages": env.system_packages, "tools": env.tools}
                 if env.status == "ready"
                 else {},
@@ -699,7 +721,10 @@ async def run_task(task_id: int) -> Task:
         if pc := plan.get("plan_check"):
             musts = [f for f in pc.get("findings", []) if f.get("severity") == "must"]
             replanned = " Re-planned once for its must-fix findings." if pc.get("revised") else ""
-            checks.append(step("plan", not musts or bool(pc.get("revised")), 0, 0, pc.get("summary", "") + replanned))
+            # Passed when nothing was must-fix, or the revision addressed every must-fix finding on re-check
+            # (plans made before the re-check: the revision alone)
+            fixed = all(r.get("addressed") for r in pc["recheck"]) if pc.get("recheck") else bool(pc.get("revised"))
+            checks.append(step("plan", not musts or fixed, 0, 0, pc.get("summary", "") + replanned))
         result["checks"] = checks
 
         async def checkpoint() -> None:

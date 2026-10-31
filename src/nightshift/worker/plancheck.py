@@ -147,15 +147,46 @@ async def check_plan(llm: LLMGateway, box: Sandbox, *, issue: str, plan: str, av
     return PlanCheck(summary="The plan check did not finish within its step limit.", findings=[])
 
 
+class Addressed(BaseModel):
+    addressed: bool = Field(description="True if the revised plan fixes this finding")
+    how: str = Field(description="One sentence: where the revised plan fixes it, or what is still missing")
+
+
+class Recheck(BaseModel):
+    findings: list[Addressed] = Field(description="One entry per finding, in the order given")
+
+
+RECHECK_SYSTEM = """An independent check of a plan for fixing a GitHub issue found must-fix problems, and the Planner revised the plan. For each finding, say whether the revised plan addresses it: the plan now changes what the finding says it missed, or explains with a reason why the finding does not apply. A plan that only mentions the finding without changing anything does not address it. Judge from the plan text; do not invent code."""
+
+
+async def recheck(llm: LLMGateway, findings: list[Finding], plan: str, avoid: str | None) -> list[Addressed]:
+    """Whether the revised plan addresses each must-fix finding: one short call with no code reading, so the
+    revised plan does not reach Gate 1 unchecked (it is not re-planned again: one revision is the cap)."""
+    listed = "\n".join(f"<finding n={i}>\n{f.location}: {f.problem}\n</finding>" for i, f in enumerate(findings, 1))
+    out = await llm.parse(
+        agent="plan_checker", cfg=get_settings().plan_checker, system=RECHECK_SYSTEM,
+        user=f"{listed}\n\n<revised_plan>\n{plan}\n</revised_plan>", schema=Recheck,
+        cache_key_parts=("recheck",), label="re-check of the revised plan", route=RouteHint(avoid=avoid),
+    )  # fmt: skip
+    unanswered = [Addressed(addressed=False, how="The re-check gave no answer for this finding.")] * len(findings)
+    return (out.findings + unanswered)[: len(findings)]
+
+
 def as_note(findings: list[Finding]) -> str:
     """The findings as the Planner's input for its second plan."""
     return "\n".join(f"- [{f.severity}] {f.location}: {f.problem} (evidence: {f.evidence})" for f in findings)
 
 
-def to_markdown(check: PlanCheck, revised: bool) -> list[str]:
+def to_markdown(check: PlanCheck, revised: bool, rechecked: list[Addressed] | None = None) -> list[str]:
     out = ["## Independent plan check", "", check.summary]
     if revised:
         out += ["", "The plan was revised once to address the must-fix findings below."]
+    if rechecked:
+        done = sum(r.addressed for r in rechecked)
+        out += [f"Re-checked after the revision: {done} of {len(rechecked)} addressed."]
+        out += [f"- {'addressed' if r.addressed else '**not addressed**'}: {f.problem} {r.how}"
+                for f, r in zip(check.must(), rechecked, strict=False)]  # fmt: skip
+        out.append("")
     for f in check.findings:
         out.append(
             f"- **{f.severity}** ({f.kind.replace('_', ' ')}) `{f.location}`: {f.problem} Evidence: {f.evidence}"

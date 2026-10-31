@@ -161,9 +161,13 @@ found under "Found by you".
 
 ### Planning and the checks
 
-- [ ] **P1. The revised plan is not checked again.** The plan check sends must-fix findings back once and the new
+- [x] **P1. The revised plan is not checked again.** The plan check sends must-fix findings back once and the new
       plan goes to Gate 1 unchecked (the log says so now). Option: re-check only the earlier must-fix findings,
       at a fraction of the cost.
+      Done: after the revision, one short call (no code reading, ~$0.001) marks each must-fix finding addressed or
+      not, with where; the log says so, the plan shows it, the Checks ladder's plan row passes only if all are
+      addressed, and Gate 1 warns about any that are not (no second revision). Live: laya #50's revised plan,
+      addressed, with the steps that fix it.
 - [ ] **P2. Tune the scope check from real runs.** Size limits (400 / 1,000 / 2,500 changed lines) are a first
       guess. A lock file the plan did not name sends the change back; a dependency upgrade that truly needs it
       should be able to ask you instead of re-planning.
