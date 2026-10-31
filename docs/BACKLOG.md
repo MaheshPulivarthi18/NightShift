@@ -166,8 +166,11 @@ found under "Found by you".
 - [ ] **L1. Understanding check before publishing** (product direction): before Gate 2, you explain the change
       in your own words, or answer two or three questions about it, so you can defend it as repos like sarama
       require. Nothing is published without it on repos whose policy asks for it.
-- [ ] **L2. A chat thread through the whole life of an issue** (proposed: explain, diagnose a failure, gather
-      evidence, revise, raise and post the PR from one thread with action cards). Not started; a mock-up first.
+- [x] **L2. A chat thread through the whole life of an issue** (proposed: explain, diagnose a failure, gather
+      evidence, revise, raise and post the PR from one thread with action cards). Done: the chat knows the task's
+      state (stage, why it stopped, the review's comments) and proposes its next step as a card (plan, approve and
+      run, continue from where it stopped, start over, plan again, Gate 2, archive); a card runs only on a click,
+      through the task page's own endpoints, and only if the task's state still allows it.
 - [x] **L3. Revising keeps no history.** Revising task 72 cleared its diff and results from the database (the last
       attempt survives only in `reports/…/diff.patch`). Keep each attempt: its diff, checks, review and cost.
       Fixed with resume: revising keeps every attempt (summary on the task, diff in its folder) and, by default,

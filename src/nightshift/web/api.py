@@ -19,7 +19,8 @@ from sqlalchemy import func, select
 
 from nightshift import outcomes
 from nightshift.catalog import ModelConfigError
-from nightshift.chat import chat_turn, get_or_create_chat, load_messages
+from nightshift.chat import ACTIONS as CHAT_ACTIONS
+from nightshift.chat import card, chat_turn, get_or_create_chat, load_messages, task_for, task_state
 from nightshift.config import get_settings
 from nightshift.db import Control, Item, LLMCall, PRCheck, Repo, RepoContext, Report, Run, RunEvent, session_scope
 from nightshift.github import GitHubClient, GitHubError
@@ -603,7 +604,9 @@ def _history(messages: list[Any], repo: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for m in messages:
         texts = [b["text"] for b in m.content if b.get("type") == "text"]
-        tools = [f"{b['name']} {_tool_arg(b.get('input', {}))}" for b in m.content if b.get("type") == "tool_use"]
+        uses = [b for b in m.content if b.get("type") == "tool_use"]
+        tools = [f"{b['name']} {_tool_arg(b.get('input', {}))}" for b in uses if b["name"] != "propose_action"]
+        cards = [b.get("input", {}) for b in uses if b["name"] == "propose_action"]
         if m.role == "user" and texts:
             out.append({"role": "user", "text": "\n".join(texts)})
         elif m.role == "assistant":
@@ -611,6 +614,7 @@ def _history(messages: list[Any], repo: str) -> list[dict[str, Any]]:
                 out.append({"role": "tools", "tools": tools})
             if texts:
                 out.append({"role": "assistant", "html": render_markdown("\n\n".join(texts), repo)})
+            out += [{"role": "action", **card(c)} for c in cards if c.get("action") in CHAT_ACTIONS]
     return out
 
 
@@ -619,6 +623,7 @@ async def chat(owner: str, name: str, number: int) -> dict[str, Any]:
     repo = await _repo(f"{owner}/{name}")
     item = await _item(repo, number)
     conv = await get_or_create_chat(repo, number)
+    state = task_state(await task_for(repo.id, number))
     async with session_scope() as s:
         spent = (
             await s.execute(
@@ -639,6 +644,9 @@ async def chat(owner: str, name: str, number: int) -> dict[str, Any]:
         "body_html": render_markdown(item.body[:3000], repo.full_name),
         "history": _history(await load_messages(conv.id), repo.full_name),
         "cost_usd": round(float(spent), 4),
+        # The task the cards act on, and what its state allows now (a card from an earlier state is stale)
+        "task": state["task"],
+        "allowed": state["allowed"],
     }
 
 

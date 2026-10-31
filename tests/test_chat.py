@@ -124,3 +124,58 @@ async def test_chat_turn_runs_a_tool_and_saves_history(
     chat = await chat_mod.get_or_create_chat(repo, 7)
     saved = await chat_mod.load_messages(chat.id)
     assert [m.role for m in saved] == ["user", "assistant", "user", "assistant"]
+
+
+def _task(status: str, **kw: Any) -> Any:
+    from nightshift.db import Task
+
+    return Task(id=5, repo_id=1, issue_number=7, status=status, base_commit="abc", issue={},
+                plan=kw.pop("plan", {"actionable": True}), result=kw.pop("result", {}), **kw)  # fmt: skip
+
+
+def test_the_task_state_decides_which_steps_can_be_proposed() -> None:
+    assert chat_mod.allowed_actions(None) == ["plan"]
+    assert chat_mod.allowed_actions(_task("planned")) == ["approve_and_run", "archive"]
+    assert chat_mod.allowed_actions(_task("planned", plan={"actionable": False})) == ["plan_again", "archive"]
+    assert chat_mod.allowed_actions(_task("needs_operator", diff="+x")) == ["continue", "start_over", "archive"]
+    assert chat_mod.allowed_actions(_task("needs_operator")) == ["start_over", "archive"]  # nothing to continue
+    assert "review_and_publish" in chat_mod.allowed_actions(_task("ready", diff="+x"))
+    assert chat_mod.allowed_actions(_task("working")) == []
+
+
+def test_a_proposal_the_state_does_not_allow_goes_back_to_the_model() -> None:
+    text, err = chat_mod.proposal(_task("planned"), {"action": "continue", "note": "x", "why": "y"})
+    assert err and "not possible now (the task is planned)" in text and "approve_and_run" in text
+    text, err = chat_mod.proposal(_task("needs_operator", diff="+x"), {"action": "continue", "why": "y"})
+    assert err and "needs a note" in text
+    text, err = chat_mod.proposal(
+        _task("needs_operator", diff="+x"), {"action": "continue", "note": "fix f", "why": "y"}
+    )
+    assert not err and "runs only if they click it" in text
+
+
+async def test_the_chat_proposes_continuing_a_task_that_stopped_at_review(
+    repo_and_item: tuple[Repo, Item], models: Any
+) -> None:
+    from nightshift.db import Task
+
+    repo, item = repo_and_item
+    issue = {"severity": "major", "path": "calc.py", "problem": "add_floats still subtracts"}
+    review = {"round": 2, "verdict": "changes_needed", "summary": "Float path missed.", "issues": [issue]}
+    checks = [{"check": "review", "ok": False, "round": 2, "seconds": 9, "detail": "Float path missed."}]
+    async with session_scope() as s:
+        s.add(Task(repo_id=repo.id, issue_number=7, status="needs_operator", base_commit="abc", issue={},
+                   plan={"actionable": True}, diff="+x", result={"reviews": [review], "checks": checks}))  # fmt: skip
+    args = '{"action": "continue", "note": "Apply the same fix to add_floats.", "why": "The review asked for it."}'
+    fake = FakeOpenRouter(chunks=[
+        [_chunk({"tool_calls": [{"index": 0, "id": "tu1", "function": {"name": "propose_action", "arguments": args}}]},
+                "tool_calls", USAGE)],
+        [_chunk({"content": "Click continue to run it."}, "stop", USAGE)],
+    ])  # fmt: skip
+    events = [ev async for ev in chat_mod.chat_turn(repo, item, "Fix what the review said", client=fake)]  # type: ignore[arg-type]
+
+    assert {"type": "action", "action": "continue", "note": "Apply the same fix to add_floats.",
+            "why": "The review asked for it."} in events  # fmt: skip
+    task_block = fake.bodies[0]["messages"][0]["content"][2]["text"]  # the task's state, sent every turn
+    assert '"stopped_at": "review"' in task_block and "add_floats still subtracts" in task_block
+    assert "runs only if they click it" in fake.bodies[1]["messages"][-1]["content"]
