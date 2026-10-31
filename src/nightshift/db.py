@@ -153,6 +153,7 @@ class PRCheck(Base):
     markdown: Mapped[str] = mapped_column(Text, default="")
     error: Mapped[str | None] = mapped_column(Text)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    review_url: Mapped[str | None] = mapped_column(String(300))  # the review the operator posted from it
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 

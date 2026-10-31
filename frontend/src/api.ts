@@ -288,10 +288,24 @@ export interface PRCheckRow {
   run_id: string;
   created_at: string;
   error: string | null;
+  review_url: string | null; // the review posted from this check
 }
 
 export interface PRCheckView extends PRCheckRow {
   html: string;
+}
+
+export type ReviewEvent = "COMMENT" | "REQUEST_CHANGES" | "APPROVE";
+
+// A check as a review on its PR: the draft to edit before posting, or what was posted.
+export interface ReviewDraft {
+  body: string;
+  event: ReviewEvent;
+  events: ReviewEvent[];
+  attribution_line: string;
+  warnings: string[];
+  review_url: string | null;
+  posted?: boolean;
 }
 
 export interface ModelsPage {
@@ -502,6 +516,8 @@ export const api = {
   prChecks: () => call<PRCheckRow[]>("/pr-checks"),
   prCheck: (id: number) => call<PRCheckView>(`/pr-checks/${id}`),
   checkPr: (url: string) => call<{ run_id: string }>("/pr-checks", { url }),
+  reviewPr: (id: number, confirm: boolean, edits: { body?: string; event?: ReviewEvent; attribution?: boolean } = {}) =>
+    call<ReviewDraft>(`/pr-checks/${id}/review`, { confirm, ...edits }),
   run: (id: number) => call<{ status: string }>(`/tasks/${id}/run`, {}),
   permission: (id: number, allow: boolean) => call<TaskDetail>(`/tasks/${id}/permission`, { allow }),
   revise: (id: number, note: string, latest: boolean, mode: "continue" | "restart" = "continue") =>
