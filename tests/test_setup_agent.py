@@ -123,7 +123,16 @@ def test_env_image_rules() -> None:
     assert env_image_name([], []) == get_settings().sandbox_image
     assert env_image_name(["libpq-dev"], []) == env_image_name(["libpq-dev", "libpq-dev"], [])
     text = dockerfile("nightshift-sandbox:3", ["libpq-dev"], ["rust"])
-    assert "curl libpq-dev" in text and "RUSTUP_HOME" in text and text.rstrip().endswith("USER worker")
+    lines = text.splitlines()
+    # Toolchain layers first (curl for its installer), then the repo's packages: images needing the same
+    # toolchain share those layers; downloads are kept in BuildKit's cache between builds
+    curl = next(i for i, x in enumerate(lines) if x.endswith("install -y --no-install-recommends curl"))
+    rust = next(i for i, x in enumerate(lines) if "rustup" in x)
+    pkgs = next(i for i, x in enumerate(lines) if x.endswith("--no-install-recommends libpq-dev"))
+    assert curl < rust < pkgs and "type=cache,target=/var/cache/apt" in lines[pkgs]
+    assert "RUSTUP_HOME" in text and text.rstrip().endswith("USER worker")
+    same_tool = dockerfile("nightshift-sandbox:3", ["libssl-dev"], ["rust"]).splitlines()
+    assert same_tool[: rust + 1] == lines[: rust + 1]  # shared toolchain layers whatever the packages
 
 
 RECIPE = {"setup": ["uv sync"], "tests": ["pytest -q", "pytest slow -q"], "passing": ["pytest -q"]}
@@ -148,3 +157,65 @@ async def test_a_recipe_that_broke_is_the_agents_first_attempt(monkeypatch: pyte
     env = await find_environment(llm, "o/r", "abc", "hints", recipe=RECIPE)  # type: ignore[arg-type]
     assert env.status == "ready" and env.setup_commands == ["uv sync --upgrade"]
     assert "worked in an earlier task" in llm.prompts[0] and "lockfile out of date" in llm.prompts[0]
+
+
+def test_a_build_past_its_limit_says_where_it_was_and_what_to_ask_for() -> None:
+    from nightshift.sandbox.envimage import timeout_message
+
+    out = "#7 [3/4] RUN apt-get install openjdk-17-jdk\n#7 112.4 Unpacking openjdk-17-jdk (17.0.13)\n"
+    msg = timeout_message(600, out + "docker build timed out after 630s")
+    assert msg.startswith("the environment image build was stopped at its 10-minute limit")
+    assert "Unpacking openjdk-17-jdk" in msg and "timed out after" not in msg and "-headless" in msg
+
+
+def test_a_test_command_must_run_a_test_runner() -> None:
+    """Commands from real environments: multilspy's `ls` "passed" as a test command, proving nothing."""
+    from nightshift.worker.setup_agent import not_test_commands
+
+    good = [
+        "./.venv/bin/python -m pytest tests/test_main.py -q -p no:cacheprovider",  # pydantic
+        "uv run --no-sync pytest opentelemetry-sdk/tests -q",  # opentelemetry-python
+        "find tests/multilspy -name 'test_*.py' | xargs .venv/bin/pytest -q",  # multilspy
+        "go test -race ./...", "npm test", "pnpm run test:unit", "cargo test --workspace", "./mvnw -q test",
+    ]  # fmt: skip
+    assert not_test_commands(good) == []
+    assert not_test_commands(["ls tests/multilspy", "echo ok", "python -c 'import multilspy'"]) == [
+        "ls tests/multilspy", "echo ok", "python -c 'import multilspy'"
+    ]  # fmt: skip
+
+
+async def test_a_proposal_without_real_test_commands_is_refused_before_it_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tried = _sandbox(monkeypatch, _attempt("tests", tests=[_result(True)]))
+    script = _Script(_proposal(test_commands=["ls tests"]), _proposal())
+    env = await find_environment(script, "o/r", "abc", "hints")  # type: ignore[arg-type]
+    assert env.status == "ready" and len(tried) == 1  # the `ls` proposal never ran
+    assert "Not run: these test_commands run no test runner: ls tests" in script.prompts[1]
+
+
+class _Box:
+    def __init__(self, files: list[str]) -> None:
+        self.files = files
+
+    async def exec(self, command: str, **kw: Any) -> Any:
+        return type("R", (), {"stdout": "\n".join(self.files)})()
+
+
+async def test_coverage_says_how_much_of_the_suite_runs() -> None:
+    from nightshift.worker.setup_agent import coverage_note, test_coverage
+
+    files = [
+        "pydantic/main.py", "tests/test_main.py", "tests/test_types.py", "tests/test_validators.py",
+        "tests/test_json.py", "tests/test_networks.py", "tests/mypy/test_mypy.py", "tests/conftest.py",
+    ]  # fmt: skip
+    box = _Box(files)
+    pydantic = "./.venv/bin/python -m pytest tests/test_main.py tests/test_types.py -q"
+    narrow = await test_coverage(box, [pydantic])  # type: ignore[arg-type]
+    assert (narrow["files"], narrow["total"]) == (2, 6)
+    assert narrow["left_out"][0] == "tests/ (3 files)" and "tests/mypy/ (1 files)" in narrow["left_out"]
+    assert "cover 2 of the repo's 6 test files" in coverage_note(narrow)
+    whole = await test_coverage(box, ["uv run pytest -q"])  # type: ignore[arg-type]
+    assert whole["files"] == whole["total"] == 6 and "whole suite" in coverage_note(whole)
+    folder = await test_coverage(box, ["pytest tests/mypy -q"])  # type: ignore[arg-type]
+    assert folder["files"] == 1

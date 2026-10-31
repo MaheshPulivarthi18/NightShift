@@ -16,9 +16,11 @@ from sqlalchemy import select
 
 from nightshift.config import model_id
 from nightshift.db import LLMCall, Repo, Task, session_scope
+from nightshift.health.brief import ai_rules
 from nightshift.router import CHOOSABLE, agent_routes, choices
 from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker import task as worker
+from nightshift.worker import understanding
 from nightshift.worker.prcheck import PRCheckError
 from nightshift.worker.publish import PublishError
 
@@ -161,7 +163,14 @@ async def get_task(task_id: int) -> dict[str, Any]:
         else [],
         "baseline": res.get("baseline", []),
         "check": res.get("check"),
+        "understanding": understanding.view(res),
+        "ai_rules": ai_rules(understanding.pr_rules(res.get("brief", ""))),
         "checks": res.get("checks", []),
+        "permission": res.get("permission") if t.status == "needs_operator" else None,
+        # Earlier attempts, kept when the task was revised; where the next run picks up, if it continues
+        "attempts": res.get("attempts", []),
+        "resume": {k: res["resume"][k] for k in ("stopped_at", "todo")} if res.get("resume") else None,
+        "can_continue": bool(t.diff or res.get("partial_diff")),
         "context_check": res.get("context_check"),
         "reviews": [
             {"round": rv["round"], "verdict": rv["verdict"], "html": _md(rv["markdown"])}
@@ -229,13 +238,16 @@ class Revision(BaseModel):
     setup_commands: list[str] = []
     test_commands: list[str] = []
     run: bool = True
+    mode: worker.Mode = "continue"  # pick up where the last attempt stopped, or "restart" from the plan
 
 
 @router.post("/tasks/{task_id}/revise", dependencies=[Guard])
 async def revise(task_id: int, body: Revision) -> dict[str, Any]:
     """Send a ready or stopped task back with a correction (optionally on the latest commit), and run it."""
     try:
-        await worker.revise(task_id, body.note, body.setup_commands or None, body.test_commands or None, body.latest)
+        await worker.revise(
+            task_id, body.note, body.setup_commands or None, body.test_commands or None, body.latest, body.mode
+        )
     except worker.TaskError as e:
         raise HTTPException(409, str(e)) from e
     if body.run:
@@ -271,6 +283,10 @@ async def replan(task_id: int, body: Replan) -> dict[str, str]:
 
 class Confirm(BaseModel):
     confirm: bool = False
+
+
+class Fresh(BaseModel):
+    fresh: bool = False  # a new set of questions
 
 
 @router.post("/tasks/{task_id}/claim", dependencies=[Guard])
@@ -370,6 +386,43 @@ class Publish(BaseModel):
     remember: bool = False  # keep the attribution and branch prefix for this repo
     replies: dict[str, str] | None = None  # follow-up: the operator's edits to the drafted replies, by comment id
     post_replies: bool = False  # follow-up: post the replies after pushing
+
+
+class PermissionIn(BaseModel):
+    allow: bool  # keep the regenerated files the Coder asked about, or have them restored
+
+
+@router.post("/tasks/{task_id}/permission", dependencies=[Guard])
+async def permission(task_id: int, body: PermissionIn) -> dict[str, Any]:
+    """Answer the Coder's question about regenerated files, then continue the run from where it stopped."""
+    try:
+        await worker.answer_permission(task_id, body.allow)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+    _background(f"task-{task_id}", worker.run_task(task_id))
+    return await get_task(task_id)
+
+
+class Answers(BaseModel):
+    answers: list[str]
+
+
+@router.post("/tasks/{task_id}/understanding", dependencies=[Guard])
+async def understanding_questions(task_id: int, body: Fresh) -> dict[str, Any]:
+    """The understanding check's questions about this change (written on the first call, or with `fresh`)."""
+    try:
+        return await understanding.ask(task_id, fresh=body.fresh)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+
+
+@router.post("/tasks/{task_id}/understanding/answers", dependencies=[Guard])
+async def understanding_answers(task_id: int, body: Answers) -> dict[str, Any]:
+    """Grade the contributor's answers; every attempt is kept on the task."""
+    try:
+        return await understanding.answer(task_id, body.answers)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
 
 
 @router.post("/tasks/{task_id}/publish", dependencies=[Guard])

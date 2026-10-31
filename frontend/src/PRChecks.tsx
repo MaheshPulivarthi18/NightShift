@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { api, PRCheckRow, PRCheckView } from "./api";
+import { api, PRCheckRow, PRCheckView, ReviewDraft, ReviewEvent } from "./api";
 import { Html, Log, StatusBadge, Title, ago, money, usePoll } from "./ui";
 
 // Check any pull request as a careful maintainer would: guidelines, evidence, run it, review it.
@@ -12,7 +12,7 @@ export function PRChecks() {
           <h1>PR checks</h1>
           <p className="muted">
             Checks a pull request's guidelines and evidence, runs it in the sandbox (its tests must fail without its change and
-            pass with it; the linked issue's case too), and reviews it. Nothing is posted.
+            pass with it; the linked issue's case too), and reviews it. Nothing is posted unless you post the review yourself.
           </p>
         </div>
         <NewCheck onStarted={reload} />
@@ -105,6 +105,107 @@ export function PRCheckPage({ id, embedded = false }: { id: number; embedded?: b
           <Html html={c.html} />
         </article>
       )}
+      {c.status === "done" && <PostReview c={c} onPosted={reload} />}
     </div>
+  );
+}
+
+const EVENT_LABELS: Record<ReviewEvent, string> = {
+  COMMENT: "Comment",
+  REQUEST_CHANGES: "Request changes",
+  APPROVE: "Approve",
+};
+
+// The report as a review on the PR, under your name: drafted from the report, edited here, posted on confirm.
+function PostReview({ c, onPosted }: { c: PRCheckView; onPosted: () => void }) {
+  const [draft, setDraft] = useState<ReviewDraft | null>(null);
+  const [body, setBody] = useState("");
+  const [event, setEvent] = useState<ReviewEvent>("COMMENT");
+  const [attribution, setAttribution] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const target = `${c.repo}#${c.number}`;
+
+  const open = () => {
+    setBusy(true);
+    setMsg(null);
+    api.reviewPr(c.id, false).then(
+      (r) => (setDraft(r), setBody(r.body), setEvent(r.event)),
+      (e: Error) => setMsg(e.message),
+    ).finally(() => setBusy(false));
+  };
+  const recheck = (ev: ReviewEvent) => {
+    setEvent(ev);
+    api.reviewPr(c.id, false, { body, event: ev }).then((r) => setDraft(r), (e: Error) => setMsg(e.message));
+  };
+  const post = () => {
+    setBusy(true);
+    setMsg(null);
+    api.reviewPr(c.id, true, { body, event, attribution }).then(
+      (r) => (setDraft(r), onPosted()),
+      (e: Error) => setMsg(e.message),
+    ).finally(() => setBusy(false));
+  };
+
+  return (
+    <section className="gate">
+      <header>
+        <h2>Post as a review on GitHub</h2>
+        <p className="muted">
+          Posts this report on <a href={c.url} target="_blank" rel="noreferrer">{target}</a> as a review under your name, on the
+          commit that was checked. Read and edit it first: it speaks for you.
+        </p>
+      </header>
+      {c.review_url && !draft?.posted && (
+        <p className="ok">Posted: <a href={c.review_url} target="_blank" rel="noreferrer">{c.review_url}</a></p>
+      )}
+      {!draft && (
+        <div className="actions">
+          <button className="ghost" onClick={open} disabled={busy}>{busy ? "Drafting…" : "Draft the review"}</button>
+          {msg && <span className="error">{msg}</span>}
+        </div>
+      )}
+      {draft?.posted && draft.review_url && (
+        <p className="ok">Posted: <a href={draft.review_url} target="_blank" rel="noreferrer">{draft.review_url}</a></p>
+      )}
+      {draft && !draft.posted && (
+        <div className="gate-result">
+          {draft.warnings.map((w) => (
+            <p key={w} className="warn">{w}</p>
+          ))}
+          <div className="publish-form">
+            <label className="full">
+              <span>Review</span>
+              <textarea className="mono" rows={18} value={body} onChange={(e) => setBody(e.target.value)} />
+            </label>
+            <div className="actions">
+              {draft.events.map((ev) => (
+                <label key={ev} className="check">
+                  <input type="radio" name={`event-${c.id}`} checked={event === ev} onChange={() => recheck(ev)} />
+                  <span>{EVENT_LABELS[ev]}</span>
+                </label>
+              ))}
+            </div>
+            {draft.attribution_line && (
+              <label className="check">
+                <input type="checkbox" checked={attribution} onChange={(e) => setAttribution(e.target.checked)} />
+                <span>End with the line "{draft.attribution_line}"</span>
+              </label>
+            )}
+          </div>
+          <div className="confirm">
+            <label>
+              <span>Type <b className="mono">{target}</b> to post this review under your name</span>
+              <input className="mono" value={typed} onChange={(e) => setTyped(e.target.value)} />
+            </label>
+            <button className="danger" disabled={typed !== target || busy || (!body.trim() && event !== "APPROVE")} onClick={post}>
+              {busy ? "Posting…" : `Post review (${EVENT_LABELS[event]})`}
+            </button>
+          </div>
+          {msg && <p className="error">{msg}</p>}
+        </div>
+      )}
+    </section>
   );
 }

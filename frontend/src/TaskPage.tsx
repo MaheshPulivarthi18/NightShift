@@ -278,15 +278,44 @@ function AttachPr({ task, onChange }: { task: TaskDetail; onChange: () => void }
 
 // Send a finished or stopped task back with a correction: the note joins the approved plan, and the run
 // starts again (from the same commit, or the latest one). A published task's PR and claim are kept.
+// The Coder needs a lock or generated file the plan did not name (a dependency upgrade re-locks): you decide.
+function PermissionPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const p = task.permission!;
+  const answer = (allow: boolean) => {
+    setBusy(true);
+    api.permission(task.id, allow).then(onChange, (e: Error) => (setMsg(e.message), setBusy(false)));
+  };
+  return (
+    <section className="gate">
+      <header>
+        <span className="gate-mark">Needs you</span>
+        <h2>Keep the regenerated files?</h2>
+      </header>
+      <p>The change also rewrote {p.files.map((f) => <code key={f}>{f} </code>)}, which the plan does not name. The Coder says why:</p>
+      <blockquote className="muted">{p.reason}</blockquote>
+      <p className="muted small-print">Either way the run continues from where it stopped. See the files in the Diff tab.</p>
+      <div className="actions">
+        <button className="primary" disabled={busy} onClick={() => answer(true)}>Allow and continue</button>
+        <button disabled={busy} onClick={() => answer(false)}>Restore them and continue</button>
+        {msg && <span className="error">{msg}</span>}
+      </div>
+    </section>
+  );
+}
+
 function RevisePanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   const [note, setNote] = useState("");
   const [latest, setLatest] = useState(false);
+  const [mode, setMode] = useState<"continue" | "restart">(task.can_continue ? "continue" : "restart");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const stopped = task.checks.filter((c) => !c.ok).at(-1)?.check;
   const send = () => {
     setBusy(true);
     api
-      .revise(task.id, note.trim(), latest)
+      .revise(task.id, note.trim(), latest, mode)
       .then(onChange, (e: Error) => setMsg(e.message))
       .finally(() => setBusy(false));
   };
@@ -302,6 +331,22 @@ function RevisePanel({ task, onChange }: { task: TaskDetail; onChange: () => voi
         <textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)}
           placeholder="e.g. Split the README paragraph into a short list; keep the example." />
       </label>
+      {task.can_continue && (
+        <div className="revise-mode" role="radiogroup" aria-label="Where the run starts">
+          <label className="check">
+            <input type="radio" checked={mode === "continue"} onChange={() => setMode("continue")} />
+            <span>
+              <b>Continue from where it stopped</b>
+              {stopped ? ` (at ${stopped})` : ""}: keeps the change and the baseline; the Coder fixes only what failed
+              and what your note asks. Fewer tokens, minutes faster.
+            </span>
+          </label>
+          <label className="check">
+            <input type="radio" checked={mode === "restart"} onChange={() => setMode("restart")} />
+            <span><b>Start over</b> from the plan: for when the approach itself was wrong.</span>
+          </label>
+        </div>
+      )}
       <div className="actions">
         <label className="check">
           <input type="checkbox" checked={latest} onChange={(e) => setLatest(e.target.checked)} />
@@ -318,8 +363,15 @@ function RevisePanel({ task, onChange }: { task: TaskDetail; onChange: () => voi
 
 function ActionPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   if (task.status === "planned") return <Gate1 task={task} onChange={onChange} />;
-  if (task.status === "ready") return <Gate2 task={task} onChange={onChange} />;
+  if (task.status === "ready")
+    return (
+      <>
+        {!task.pr_url && <UnderstandingCheck task={task} onChange={onChange} />}
+        <Gate2 task={task} onChange={onChange} />
+      </>
+    );
   if (task.status === "approved") return <RunPanel task={task} onChange={onChange} />;
+  if (task.status === "needs_operator" && task.permission) return <PermissionPanel task={task} onChange={onChange} />;
   return null;
 }
 
@@ -538,6 +590,95 @@ function RunPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }
         </button>
         {msg && <span className="error">{msg}</span>}
       </div>
+    </section>
+  );
+}
+
+// Before the first publish: can you explain this change to its reviewers? It warns, never blocks.
+function UnderstandingCheck({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
+  const u = task.understanding;
+  const [answers, setAnswers] = useState<string[]>(() => u?.last?.answers ?? []);
+  const [busy, setBusy] = useState<"ask" | "grade" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(!u?.passed);
+  const run = (what: "ask" | "grade", call: () => Promise<unknown>) => {
+    setBusy(what);
+    setError(null);
+    call().then(
+      () => (setBusy(null), onChange()),
+      (e: Error) => (setError(e.message), setBusy(null)),
+    );
+  };
+  const ask = (fresh: boolean) =>
+    run("ask", () => api.understandingQuestions(task.id, fresh).then(() => setAnswers([])));
+  const grade = () => run("grade", () => api.understandingAnswers(task.id, u!.questions.map((_, i) => answers[i] ?? "")));
+  const status = !u ? "not taken" : u.passed ? "passed" : u.attempts ? "not passed yet" : "questions ready";
+  return (
+    <section className={`gate calm understand${u?.passed ? " passed" : ""}`}>
+      <header onClick={() => setOpen(!open)} className="understand-h">
+        <span className="gate-mark">Before you publish</span>
+        <h2>Can you explain this change?</h2>
+        <span className={`understand-status ${u?.passed ? "ok-text" : "dim"}`}>{status}</span>
+      </header>
+      {open && (
+        <>
+          <p className="muted">
+            Reviewers will ask why the bug happened, why the fix works and what the test proves. Answer three questions in
+            your own words; NightShift checks the answers against the code. It does not stop you publishing.
+          </p>
+          {task.ai_rules.length > 0 && (
+            <div className="ai-rules">
+              <b>This repo's rules on AI</b>
+              <ul>{task.ai_rules.map((r) => <li key={r}>{r}</li>)}</ul>
+            </div>
+          )}
+          {!u ? (
+            <button className="primary" onClick={() => ask(false)} disabled={busy !== null}>
+              {busy === "ask" ? "Writing questions…" : "Start the check"}
+            </button>
+          ) : (
+            <ol className="understand-qs">
+              {u.questions.map((q, i) => {
+                const g = u.last?.grades[i];
+                return (
+                  <li key={i}>
+                    <p className="q">{q.question}</p>
+                    <p className="mono dim small-print">{q.about}</p>
+                    <textarea
+                      rows={3}
+                      value={answers[i] ?? ""}
+                      onChange={(e) => setAnswers((a) => Object.assign([...a], { [i]: e.target.value }))}
+                      placeholder="In your own words"
+                      aria-label={`Answer ${i + 1}`}
+                    />
+                    {g && (
+                      <div className={`grade grade-${g.verdict}`}>
+                        <b>{g.verdict}</b> {g.feedback}
+                        {q.expects && (
+                          <details>
+                            <summary>What a good answer covers</summary>
+                            <ul>{q.expects.map((x) => <li key={x}>{x}</li>)}</ul>
+                          </details>
+                        )}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+          {u && (
+            <div className="understand-actions">
+              <button className="primary" onClick={grade} disabled={busy !== null || u.questions.some((_, i) => !(answers[i] ?? "").trim())}>
+                {busy === "grade" ? "Checking…" : u.attempts ? "Check again" : "Check my answers"}
+              </button>
+              <button onClick={() => ask(true)} disabled={busy !== null}>{busy === "ask" ? "Writing…" : "New questions"}</button>
+              {u.attempts > 0 && <span className="dim">{u.attempts} attempt{u.attempts > 1 ? "s" : ""}</span>}
+            </div>
+          )}
+          {error && <p className="error">{error}</p>}
+        </>
+      )}
     </section>
   );
 }
@@ -868,6 +1009,21 @@ function Checks({ task }: { task: TaskDetail }) {
           </ol>
         </details>
       )}
+      {task.attempts.length > 0 && (
+        <details className="chk-log">
+          <summary>Earlier attempts ({task.attempts.length})</summary>
+          <ol>
+            {task.attempts.map((a) => (
+              <li key={a.n} className={a.status === "ready" || a.status === "published" ? "pass" : "fail"}>
+                <span className="mono dim">#{a.n}</span>
+                <b>{a.stopped_at ? `stopped at ${a.stopped_at}` : a.status}</b>
+                <span>{a.lines} diff lines · {money(a.cost_usd)}{a.error ? ` · ${a.error.slice(0, 120)}` : ""}</span>
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
+      {task.resume && <p className="muted">The next run continues from where the last attempt stopped ({task.resume.stopped_at}).</p>}
       <Verification task={task} />
     </div>
   );

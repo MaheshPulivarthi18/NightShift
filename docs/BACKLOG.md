@@ -5,7 +5,7 @@ and the move of every page into the React app; extended 2026-10-31 with what the
 task, the multilspy setup and the 20-repo comparison showed. Tick items off as they land; add the UI bugs you
 found under "Found by you".
 
-**Next up, in order:** the understanding check before publishing (L1), the image build limit (S1).
+**Next up, in order:** the PR checker's strictness (benchmark round 2), then P1 to P4 (planning and checks).
 
 ## Found by you
 
@@ -87,7 +87,9 @@ found under "Found by you".
 4. [x] **Toolchains on demand in the sandbox** (Bun for ai-job-search #765, Rust, Go). Done: the Setup agent's environment images (system packages; pnpm, yarn, Go, Rust).
 5. [ ] **Repo recipes in the UI:** see and edit each repo's saved setup and test commands.
 6. [x] **Architecture map view** (the L1 data exists; show it per repo). Done: the repo's Map tab (canvas).
-7. [ ] **Track record:** PRs opened, merged, time to merge; estimated vs actual cost per task.
+7. [x] **Track record:** PRs opened, merged, time to merge; estimated vs actual cost per task. Done: the Track
+       record page (`#/record`): outcomes from GitHub, median time to merge, cost per PR and per merged PR,
+       attempts and the understanding check; earlier PRs can be added by link.
 8. [ ] **Frontend tests** (vitest); there are none yet.
 
 ## Found 2026-10-28 to 2026-10-31
@@ -137,24 +139,44 @@ found under "Found by you".
 
 ### Repo setup
 
-- [ ] **S1. The environment image build ran 20 silent minutes** before timing out (multilspy, attempt 1 of 3; 40 of
+- [x] **S1. The environment image build ran 20 silent minutes** before timing out (multilspy, attempt 1 of 3; 40 of
       the setup's 43 minutes). Its output is now on the log; also lower the limit (5 to 10 minutes), and cache
       package layers across images.
-- [ ] **S2. Setup agent speed** (proposed, not built): attach the log files a failure names, keep the sandbox
+      Done: the build streams to the log; its limit is a setting (`NIGHTSHIFT_IMAGE_BUILD_SECONDS`, 10 minutes);
+      a build stopped at the limit tells the Setup agent where it was and to ask for smaller packages; downloads
+      stay in BuildKit's cache between builds (a second image with one more package: 2 s), and toolchain layers
+      come first so images needing the same toolchain share them.
+- [x] **S2. Setup agent speed** (proposed, not built): attach the log files a failure names, keep the sandbox
       between attempts instead of rebuilding, and a rule table for known failures (no pip in a uv venv, missing
       `-dev` packages).
-- [ ] **S3. A "test command" must run tests.** multilspy's environment counts `ls tests/multilspy` as a passing
+      Done: known causes (no pip in a uv venv, a missing C header and its -dev package, pg_config, a missing
+      toolchain, no root, the Python version, no disk) are named in the attempt for the agent; the end of each log
+      file a failed setup command names is attached; and after each slow setup step that succeeds the sandbox is
+      saved, so the next attempt starting with the same steps resumes there (tested: 4.6 s instead of re-running).
+- [x] **S3. A "test command" must run tests.** multilspy's environment counts `ls tests/multilspy` as a passing
       test command; require a test runner (pytest, go test, jest …) and say which parts of the suite were left out
       (multilspy ran only the Python language-server tests).
+      Done: a proposal whose test commands run no test runner is refused before it runs (and a remembered
+      recipe's non-test commands are dropped); once the tests pass, NightShift counts how many of the repo's test
+      files they cover and which folders they leave out, says so to the Planner and the PR checker, and shows it
+      on the Knowledge tab.
 
 ### Planning and the checks
 
-- [ ] **P1. The revised plan is not checked again.** The plan check sends must-fix findings back once and the new
+- [x] **P1. The revised plan is not checked again.** The plan check sends must-fix findings back once and the new
       plan goes to Gate 1 unchecked (the log says so now). Option: re-check only the earlier must-fix findings,
       at a fraction of the cost.
-- [ ] **P2. Tune the scope check from real runs.** Size limits (400 / 1,000 / 2,500 changed lines) are a first
+      Done: after the revision, one short call (no code reading, ~$0.001) marks each must-fix finding addressed or
+      not, with where; the log says so, the plan shows it, the Checks ladder's plan row passes only if all are
+      addressed, and Gate 1 warns about any that are not (no second revision). Live: laya #50's revised plan,
+      addressed, with the steps that fix it.
+- [x] **P2. Tune the scope check from real runs.** Size limits (400 / 1,000 / 2,500 changed lines) are a first
       guess. A lock file the plan did not name sends the change back; a dependency upgrade that truly needs it
       should be able to ask you instead of re-planning.
+      Done: limits are a setting (`NIGHTSHIFT_SCOPE_LIMITS`), now 250 / 600 / 2,500 from the 20 benchmark PRs
+      maintainers merged (non-test lines: median 8, 90% under 190, largest 376). A lock or generated file the Coder
+      truly needs can be asked for (`keep_generated` on submit): the run stops, you allow or refuse, and it continues
+      from where it stopped.
 - [ ] **P3. Show regenerated files as a summary,** not a diff: task 72 (laya #50) re-locked ~630 lines in each of
       two lock files; a reviewer, human or model, needs "these packages changed versions", not the lines.
 - [ ] **P4. Long installs eat the task's 30 minutes** (task 72 stopped at the time limit). Count setup and the
@@ -163,13 +185,23 @@ found under "Found by you".
 
 ### Task lifecycle and the UI
 
-- [ ] **L1. Understanding check before publishing** (product direction): before Gate 2, you explain the change
+- [x] **L1. Understanding check before publishing** (product direction): before Gate 2, you explain the change
       in your own words, or answer two or three questions about it, so you can defend it as repos like sarama
-      require. Nothing is published without it on repos whose policy asks for it.
-- [ ] **L2. A chat thread through the whole life of an issue** (proposed: explain, diagnose a failure, gather
-      evidence, revise, raise and post the PR from one thread with action cards). Not started; a mock-up first.
-- [ ] **L3. Revising keeps no history.** Revising task 72 cleared its diff and results from the database (the last
+      require. It warns and never blocks (agreed 2026-10-25; PRD FR-16). Done: "Can you explain this change?"
+      above Gate 2: three questions about the diff (the cause, why the fix works, what the test proves), your
+      answers graded against the code with feedback, the repo's AI rules shown, every attempt kept; Gate 2 warns
+      until it is passed. About $0.002 a check (Luna).
+- [x] **L2. A chat thread through the whole life of an issue** (proposed: explain, diagnose a failure, gather
+      evidence, revise, raise and post the PR from one thread with action cards). Done: the chat knows the task's
+      state (stage, why it stopped, the review's comments) and proposes its next step as a card (plan, approve and
+      run, continue from where it stopped, start over, plan again, Gate 2, archive); a card runs only on a click,
+      through the task page's own endpoints, and only if the task's state still allows it.
+- [x] **L3. Revising keeps no history.** Revising task 72 cleared its diff and results from the database (the last
       attempt survives only in `reports/…/diff.patch`). Keep each attempt: its diff, checks, review and cost.
+      Fixed with resume: revising keeps every attempt (summary on the task, diff in its folder) and, by default,
+      continues from where it stopped: the change applied, the baseline reused on the same commit, and the
+      Coder given only what failed (the review's comments, the regressions, the check's problems). "Start over"
+      begins from the plan.
 - [ ] **L4. A long sidebar.** With 24 repos the sidebar needs search, pinning, or grouping by "has work".
 - [ ] **L5. Say when the server runs old code.** Changes need a restart of `nightshift serve`, and nothing on the
       page shows it; show the running version next to the latest.

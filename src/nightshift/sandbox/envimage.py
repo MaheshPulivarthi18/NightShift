@@ -43,18 +43,34 @@ def check_request(packages: list[str], tools: list[str]) -> None:
         raise SandboxError(f"unknown tools: {', '.join(unknown)} (available: {', '.join(TOOLS)})")
 
 
+# Downloaded packages are kept in BuildKit's cache between builds (the slim base deletes them after every
+# install), so an image with a different package set reuses the downloads of earlier ones.
+APT_CACHE = (
+    "--mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,target=/var/lib/apt,sharing=locked"
+)
+
+
+def _apt(packages: list[str]) -> str:
+    return (
+        f"RUN {APT_CACHE} rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update "
+        "&& apt-get install -y --no-install-recommends " + " ".join(map(shlex.quote, packages))
+    )
+
+
 def dockerfile(base: str, packages: list[str], tools: list[str]) -> str:
-    packages = sorted(set(packages) | ({"curl"} if NEEDS_CURL & set(tools) else set()))
+    """Toolchains first, each its own layer in a fixed order, then the repo's packages: images that need the
+    same toolchain share those layers whatever their packages, so only the package layer is built again."""
+    tools = sorted(set(tools))
+    curl_first = bool(NEEDS_CURL & set(tools))
     lines = [f"FROM {base}", "USER root"]
-    if packages:
-        lines.append(
-            "RUN apt-get update && apt-get install -y --no-install-recommends "
-            + " ".join(map(shlex.quote, packages))
-            + " && rm -rf /var/lib/apt/lists/*"
-        )
+    if curl_first:
+        lines.append(_apt(["curl"]))
     if "rust" in tools:
         lines.append("ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo")
-    lines += [f"RUN {TOOLS[t]}" for t in sorted(set(tools))]
+    lines += [f"RUN {TOOLS[t]}" for t in tools]
+    rest = sorted(set(packages) - ({"curl"} if curl_first else set()))
+    if rest:
+        lines.append(_apt(rest))
     lines.append("USER worker")
     return "\n".join(lines) + "\n"
 
@@ -76,9 +92,23 @@ async def ensure_env_image(packages: list[str], tools: list[str]) -> str:
     content = dockerfile(get_settings().sandbox_image, packages, tools).encode()
     what = "build the environment image: " + ", ".join([*packages, *tools])
     args = ("build", "--progress=plain", "--tag", tag, "-")
-    res = await docker_shown(*args, stdin=content, timeout=1200, command=what, note="environment image")
-    if not res.ok and NETWORK_ERROR.search(res.tail(4000)):
-        res = await docker_shown(*args, stdin=content, timeout=1200, command=what, note="again after a network error")
+    limit = get_settings().image_build_seconds
+    res = await docker_shown(*args, stdin=content, timeout=limit, command=what, note="environment image")
+    if not res.ok and not res.timed_out and NETWORK_ERROR.search(res.tail(4000)):
+        res = await docker_shown(*args, stdin=content, timeout=limit, command=what, note="again after a network error")
+    if res.timed_out:
+        raise SandboxError(timeout_message(limit, res.tail(6000)))
     if not res.ok:
         raise SandboxError(f"building the environment image failed (exit {res.code}):\n{res.tail()}")
     return tag
+
+
+def timeout_message(limit: int, output: str) -> str:
+    """For the Setup agent's next attempt: where the build was when it was stopped, and what to ask for instead."""
+    lines = [x.strip() for x in output.splitlines() if x.strip() and "timed out after" not in x]
+    where = "\n".join(lines[-4:]) or "(no output)"
+    return (
+        f"the environment image build was stopped at its {limit // 60}-minute limit. It was at:\n{where}\n"
+        "Ask for fewer or smaller packages (-headless or -dev variants, no -doc or desktop stacks), or a toolchain "
+        "from the tools list instead of a distribution package."
+    )

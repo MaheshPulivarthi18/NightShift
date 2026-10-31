@@ -145,3 +145,10 @@ def test_what_a_pr_is_decides_whether_its_tests_must_fail_without_it() -> None:
     fix = Report(pr=_pr())
     prcheck._findings(check.model_copy(update={"problems": check.problems[:1]}), fix, None, intent="fix")
     assert fix.must == ["The targeted test PASSES without the fix, so it does not reproduce the issue."]
+
+
+def test_the_review_drops_the_title_link_and_cost() -> None:
+    body = prcheck.review_body(Report(pr=_pr(), must=["Fix X."], cost_usd=0.43).markdown())
+    assert body.startswith("**Needs work before review.**\n\n## Must fix")
+    assert "https://github.com/o/r/pull/5" not in body and "$" not in body
+    assert body.endswith(f"at {'h' * 7}._")

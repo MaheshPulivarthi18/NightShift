@@ -3,6 +3,7 @@ import { api, Overview, RepoRow, TaskSummary } from "./api";
 import { Board } from "./Board";
 import { Chat } from "./Chat";
 import { Compare } from "./Compare";
+import { TrackRecord } from "./TrackRecord";
 import { Home, needsYou } from "./Home";
 import { Job, Jobs } from "./Jobs";
 import { Models } from "./Models";
@@ -38,6 +39,7 @@ function route(hash: string): Route {
     return { page: "repo", repo, full: true, el: <Workspace repo={repo} tab={tab} sel={parts[4] ?? null} /> };
   }
   if (parts[0] === "settings") return { page: "settings", el: <Settings /> };
+  if (parts[0] === "record") return { page: "record", el: <TrackRecord /> };
   if (parts[0] === "compare")
     return { page: "compare", el: <Compare initial={new URLSearchParams(query).get("open")} /> };
   if (parts[0] === "tasks" && parts[1]) return { page: "", el: <TaskPage id={Number(parts[1])} /> };
@@ -82,6 +84,7 @@ function Sidebar({ page, repo }: { page: string; repo?: string }) {
         Overview<span className={`count${needs.length ? " attn" : ""}`}>{needs.length || ""}</span>
       </a>
       <a className={`nav${page === "compare" ? " on" : ""}`} href="#/compare">Where to contribute</a>
+      <a className={`nav${page === "record" ? " on" : ""}`} href="#/record">Track record</a>
       <a className={`nav${page === "settings" ? " on" : ""}`} href="#/settings">Settings</a>
       <div className="side-label">Repos</div>
       {(repos ?? []).map((r) => {

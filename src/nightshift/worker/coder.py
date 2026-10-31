@@ -37,7 +37,7 @@ Work like a careful contributor:
 2. Write the test first: one that reproduces the issue, placed and written like the repo's existing tests. It must fail on the current code.
 3. Write the smallest fix that makes it pass, following the code's existing style and patterns.
 4. Check every other code path the change affects: call change_context to see the callers of what you changed and code elsewhere that builds the same data. Fix the ones that need it, or be sure they do not.
-5. Call submit with a summary and the targeted test command. Code then checks the change stays inside the plan (no lock or generated files it does not name, no change far bigger than planned), and proves the test fails without your source changes and passes with them. If it reports problems, fix them and submit again. The full suites run once the Reviewer approves; a regression comes back to you.
+5. Call submit with a summary and the targeted test command. Code then checks the change stays inside the plan (no lock or generated files it does not name, no change far bigger than planned), and proves the test fails without your source changes and passes with them. If it reports problems, fix them and submit again. The full suites run once the Reviewer approves; a regression comes back to you. If the scope check refuses a lock or generated file your change truly needs (a dependency upgrade re-locks), submit with keep_generated naming it and why: the developer decides.
 
 Rules:
 - Change only what the issue needs. No unrelated refactors, formatting changes, renames or new dependencies.
@@ -127,6 +127,17 @@ TOOLS: list[ToolParam] = [
                     "type": "string",
                     "description": "Runs only the new test from the repo root; empty for a docs change",
                 },
+                "keep_generated": {
+                    "type": "object",
+                    "description": "Only after the scope check refused lock or generated files the plan does not name, "
+                    "when the change truly needs them (a dependency upgrade): the files and why. The run stops "
+                    "and NightShift asks the developer.",
+                    "properties": {
+                        "files": {"type": "array", "items": {"type": "string"}},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["files", "reason"],
+                },
             },
             "required": ["summary", "targeted_test_command"],
         },
@@ -205,6 +216,7 @@ class CoderRun:
     scope: Scope = field(default_factory=Scope)  # the plan's files and size: what submit's scope check allows
     checks: list[dict[str, Any]] = field(default_factory=list)  # every check that ran, for the task's Checks
     round: int = 1  # the review round this work belongs to
+    permission: dict[str, Any] | None = None  # set when the Coder asks the developer to keep generated files
     model: str = ""  # the model that took the last step
     max_steps: int = 0  # 0: settings.coder_max_steps; an escalation adds steps
 
@@ -279,6 +291,8 @@ class CoderRun:
                     reproduction=self.reproduction,
                 )  # fmt: skip
             self._log_checks(self.check, time.monotonic() - started)
+            if (asked := self._asks_to_keep(self.check, args)) is not None:
+                return asked
             if not self.check.passed:
                 if self.check.scope and self.check.scope.problems:
                     await events.record(self.llm.run_id, events.CAUGHT, "Scope: " + "; ".join(self.check.scope.problems)
@@ -286,6 +300,19 @@ class CoderRun:
                 raise ToolError(self.check.report())
             return self.check.report()
         raise ToolError(f"unknown tool {name}")
+
+    def _asks_to_keep(self, c: FixCheck, args: dict[str, Any]) -> str | None:
+        """When the only scope problem is generated files the Coder says it needs, stop and ask the developer.
+        A change over the size limit is never kept this way."""
+        keep = args.get("keep_generated") or {}
+        sc = c.scope
+        if not sc or not sc.generated or sc.lines > sc.limit or not str(keep.get("reason", "")).strip():
+            return None
+        if not set(sc.generated) <= set(keep.get("files") or []):
+            return None
+        self.permission = {"files": sc.generated, "reason": str(keep["reason"]).strip()}
+        self.stopped = "the Coder asks to keep regenerated files: " + ", ".join(sc.generated)
+        return "NightShift asks the developer whether to keep them. Stop here; the run continues with their answer."
 
     def _log_checks(self, c: FixCheck, seconds: float) -> None:
         """What one submit checked: scope first; the test only when the scope held."""
@@ -321,7 +348,7 @@ class CoderRun:
             {"type": "text", "text": self.context, "cache_control": {"type": "ephemeral"}},
         ]
         self.messages.append({"role": "user", "content": [{"type": "text", "text": instruction}]})
-        self.check, self.stopped, idle = None, None, 0
+        self.check, self.stopped, idle, self.permission = None, None, 0, None
         while True:
             if self.steps >= (limit := self.max_steps or settings.coder_max_steps):
                 self.stopped = f"step limit ({limit}) reached"
@@ -364,5 +391,5 @@ class CoderRun:
                 text, is_error = await self.tool(str(block.name), args)
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": text, "is_error": is_error})
             self.messages.append({"role": "user", "content": results})
-            if self.check is not None and self.check.passed:
+            if (self.check is not None and self.check.passed) or self.permission:
                 return

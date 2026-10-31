@@ -30,6 +30,7 @@ export interface RepoEnvironment {
   sources: string[];
   attempts: string[];
   cost_usd: number;
+  coverage: string; // how much of the suite the test commands run, and what they leave out
 }
 
 // The report's listed issues, asked about on GitHub again: the ones someone has taken since.
@@ -37,6 +38,31 @@ export interface LiveCheck {
   checked: number;
   taken: { number: number; why: string }[];
   at: string;
+}
+
+// What happened to the pull requests made with NightShift
+export interface RecordPR {
+  repo: string;
+  number: number;
+  url: string;
+  task_id: number;
+  title: string;
+  outcome: "merged" | "approved" | "changes requested" | "waiting" | "closed" | "unknown";
+  opened: string | null;
+  days_to_merge: number | null;
+  days_open: number | null;
+  cost_usd: number;
+  imported: boolean; // added by hand: no cost recorded
+  attempts: number;
+  understood: boolean | null; // passed the understanding check; null = not taken
+}
+export interface TrackRecord {
+  summary: {
+    prs: number; merged: number; approved: number; changes_requested: number; waiting: number; closed: number;
+    unknown: number; accepted: number; merge_rate: number | null; median_days_to_merge: number | null;
+    median_cost_usd: number | null; total_cost_usd: number; cost_per_merged_usd: number | null; with_cost: number;
+  };
+  prs: RecordPR[];
 }
 
 // One watched repo on the Compare page, from its latest contributor report (no pulse: no report yet).
@@ -96,10 +122,14 @@ export interface JobDetail {
   stoppable: boolean;
 }
 
+export type ChatAction = "plan" | "approve_and_run" | "continue" | "start_over" | "plan_again" | "review_and_publish" | "archive";
+export interface ChatCard { action: ChatAction; note: string; why: string }
+
 export type ChatTurn =
   | { role: "user"; text: string }
   | { role: "assistant"; html: string }
-  | { role: "tools"; tools: string[] };
+  | { role: "tools"; tools: string[] }
+  | ({ role: "action" } & ChatCard);
 
 export interface ChatView {
   repo: string;
@@ -107,6 +137,9 @@ export interface ChatView {
   body_html: string;
   history: ChatTurn[];
   cost_usd: number;
+  // The task the chat's cards act on, and what its state allows now
+  task: { id: number; status: string; stopped_at: string | null; error: string | null; pr_url: string | null } | null;
+  allowed: ChatAction[];
 }
 
 export type Stage = "plan" | "gate1" | "work" | "gate2" | "done" | "stopped" | "closed";
@@ -159,6 +192,20 @@ export interface CheckStep {
   detail: string;
 }
 
+// Can the contributor explain the change? Questions before the first answers; points and grades after.
+export interface Understanding {
+  questions: { question: string; about: string; expects?: string[] }[];
+  last: {
+    answers: string[];
+    grades: { verdict: "understood" | "partly" | "missed"; feedback: string }[];
+    passed: boolean;
+    at: string;
+  } | null;
+  attempts: number;
+  passed: boolean;
+  cost_usd: number;
+}
+
 export interface TaskDetail extends TaskSummary {
   issue_url: string | null;
   run_id: string;
@@ -172,7 +219,13 @@ export interface TaskDetail extends TaskSummary {
   claim_url: string | null;
   baseline: CommandResult[];
   check: FixCheck | null;
+  understanding: Understanding | null;
+  ai_rules: string[]; // the repo's PR rules about AI use
   checks: CheckStep[];
+  permission: { files: string[]; reason: string } | null; // the Coder asks to keep regenerated files
+  attempts: { n: number; status: string; stopped_at: string | null; error: string | null; cost_usd: number; lines: number; at: string }[];
+  resume: { stopped_at: string; todo: string } | null; // where the queued run picks up
+  can_continue: boolean; // the last attempt left a change to continue from
   // Did the planning context hold the files the fix changed? Null for tasks planned before it was kept.
   context_check: { changed: string[]; relevant: string[]; planned: string[]; missed: string[]; new: string[] } | null;
   reviews: { round: number; verdict: string; html: string }[];
@@ -235,10 +288,24 @@ export interface PRCheckRow {
   run_id: string;
   created_at: string;
   error: string | null;
+  review_url: string | null; // the review posted from this check
 }
 
 export interface PRCheckView extends PRCheckRow {
   html: string;
+}
+
+export type ReviewEvent = "COMMENT" | "REQUEST_CHANGES" | "APPROVE";
+
+// A check as a review on its PR: the draft to edit before posting, or what was posted.
+export interface ReviewDraft {
+  body: string;
+  event: ReviewEvent;
+  events: ReviewEvent[];
+  attribution_line: string;
+  warnings: string[];
+  review_url: string | null;
+  posted?: boolean;
 }
 
 export interface ModelsPage {
@@ -409,6 +476,11 @@ export const api = {
   runReport: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/run`, {}),
   removeRepo: (repo: string) => call<RepoRow[]>(`/repos/${repo}/remove`, {}),
   setupRepo: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/setup`, {}),
+  understandingQuestions: (id: number, fresh = false) => call<Understanding>(`/tasks/${id}/understanding`, { fresh }),
+  understandingAnswers: (id: number, answers: string[]) =>
+    call<Understanding>(`/tasks/${id}/understanding/answers`, { answers }),
+  trackRecord: () => call<TrackRecord>("/track-record"),
+  addToRecord: (url: string) => call<TrackRecord>("/track-record", { url }),
   compare: () => call<CompareRow[]>("/compare"),
   refreshCompare: (staleDays = 7) => call<{ queued: string[]; already: boolean }>("/compare/refresh", { stale_days: staleDays }),
   reportLive: (repo: string, runId: string) => call<LiveCheck>(`/repos/${repo}/report/live?run_id=${runId}`),
@@ -444,8 +516,12 @@ export const api = {
   prChecks: () => call<PRCheckRow[]>("/pr-checks"),
   prCheck: (id: number) => call<PRCheckView>(`/pr-checks/${id}`),
   checkPr: (url: string) => call<{ run_id: string }>("/pr-checks", { url }),
+  reviewPr: (id: number, confirm: boolean, edits: { body?: string; event?: ReviewEvent; attribution?: boolean } = {}) =>
+    call<ReviewDraft>(`/pr-checks/${id}/review`, { confirm, ...edits }),
   run: (id: number) => call<{ status: string }>(`/tasks/${id}/run`, {}),
-  revise: (id: number, note: string, latest: boolean) => call<TaskDetail>(`/tasks/${id}/revise`, { note, latest }),
+  permission: (id: number, allow: boolean) => call<TaskDetail>(`/tasks/${id}/permission`, { allow }),
+  revise: (id: number, note: string, latest: boolean, mode: "continue" | "restart" = "continue") =>
+    call<TaskDetail>(`/tasks/${id}/revise`, { note, latest, mode }),
   claim: (id: number, confirm: boolean) => call<{ result: string }>(`/tasks/${id}/claim`, { confirm }),
   publish: (id: number, confirm: boolean, edits: PublishEdits = {}) =>
     call<GateInfo>(`/tasks/${id}/publish`, { confirm, ...edits }),
