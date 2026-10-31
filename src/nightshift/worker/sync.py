@@ -32,6 +32,8 @@ log = structlog.get_logger()
 PR_STATES_SECONDS = 300
 _pr_states: dict[tuple[str, int], tuple[float, str]] = {}  # (repo, number) -> (fetched at, OPEN|MERGED|CLOSED)
 _pr_heads: dict[tuple[str, int], str] = {}  # (repo, number) -> the PR's latest commit, from the same query
+# (repo, number) -> GitHub's merge state: BEHIND (needs the base merged in), DIRTY (conflicts), CLEAN, BLOCKED, ...
+_pr_merge: dict[tuple[str, int], str] = {}
 status: dict[str, Any] = {"at": None, "running": False, "checked": 0, "with_feedback": 0, "error": None}
 
 
@@ -53,7 +55,7 @@ async def pr_states(repo: str, numbers: list[int], *, fresh: bool = False) -> di
     if not missing:
         return known
     owner, name = repo.split("/", 1)
-    fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ state headRefOid }}" for n in missing)
+    fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ state headRefOid mergeStateStatus }}" for n in missing)
     gh = GitHubClient()
     try:
         query = f"query($o: String!, $n: String!) {{ repository(owner: $o, name: $n) {{ {fields} }} }}"
@@ -68,6 +70,8 @@ async def pr_states(repo: str, numbers: list[int], *, fresh: bool = False) -> di
             _pr_states[(repo, n)] = (now, pr["state"])
             if pr.get("headRefOid"):
                 _pr_heads[(repo, n)] = pr["headRefOid"]
+            if pr.get("mergeStateStatus"):
+                _pr_merge[(repo, n)] = pr["mergeStateStatus"]
             known[n] = pr["state"]
     return known
 
@@ -154,6 +158,7 @@ async def sync_once(repos: list[str] | None = None) -> dict[str, Any]:
                     "pr_state": state,
                     "open": open_,
                     "ci": ci,
+                    "merge_state": _pr_merge.get((repo, n)) if state == "OPEN" else None,
                 }
                 if state == "MERGED" and not (t.result or {}).get("fixed_comment_url"):
                     before = ((t.result or {}).get("sync") or {}).get("issue_open")

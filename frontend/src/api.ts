@@ -162,6 +162,7 @@ export interface TaskSummary {
   feedback: number; // unanswered review feedback on its open PR, or replies to its question, from the sync
   ci_failing: string[]; // CI jobs failing on its open PR, from the sync: a red PR waits on its author
   fixed_open: boolean; // its PR merged and the issue is still open: a "fixed by" comment is offered
+  merge_state?: string | null; // GitHub's merge state of its open PR: BEHIND, DIRTY (conflicts), CLEAN, BLOCKED…
   asking: boolean; // a plan that asks the maintainers before any code
   asked: boolean; // and the question is posted on the issue
 }
@@ -402,6 +403,7 @@ export interface RepoItem {
   feedback?: number;
   ci_failing?: string[];
   fixed_open?: boolean;
+  merge_state?: string | null;
   asking?: boolean;
   asked?: boolean;
 }
@@ -539,6 +541,8 @@ export const api = {
   revise: (id: number, note: string, latest: boolean, mode: "continue" | "restart" = "continue") =>
     call<TaskDetail>(`/tasks/${id}/revise`, { note, latest, mode }),
   claim: (id: number, confirm: boolean) => call<{ result: string }>(`/tasks/${id}/claim`, { confirm }),
+  fixCi: (id: number) => call<TaskDetail>(`/tasks/${id}/fix-ci`, {}),
+  updateBranch: (id: number, confirm: boolean) => call<{ result: string }>(`/tasks/${id}/update-branch`, { confirm }),
   fixedComment: (id: number, body: { confirm?: boolean; text?: string; dismiss?: boolean }) =>
     call<{ result: string }>(`/tasks/${id}/fixed-comment`, body),
   publish: (id: number, confirm: boolean, edits: PublishEdits = {}) =>
