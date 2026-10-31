@@ -130,6 +130,8 @@ class Settings(BaseSettings):
     sandbox_image: str = "nightshift-sandbox:3"
     # Background sync of your published PRs' feedback (worker/sync.py): minutes between runs; 0 = only Sync now.
     sync_minutes: int = 60
+    # Repos with auto_check: new open PRs checked per repo per sync, newest first (each costs about $0.15)
+    auto_check_per_sync: int = 3
     watchlist_max: int = 30  # repos on the watchlist; adding one past it is refused (CLI and web)
     sandbox_cpus: float = 2.0
     sandbox_memory: str = "4g"
