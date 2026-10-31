@@ -252,8 +252,9 @@ once, L4 sidebar search, L5 a banner when the server runs old code.
 
 ### Reliability and data
 
-- [ ] **R1. Tests share the development database.** They no longer leave rows or containers behind, but a separate
-      test database (or schema) would make that impossible rather than cleaned up.
+- [x] **R1. Tests share the development database.** They no longer leave rows or containers behind, but a separate
+      test database (or schema) would make that impossible rather than cleaned up. Fixed: tests use
+      `nightshift_test` (or `NIGHTSHIFT_TEST_DATABASE_URL`), created and migrated when the run starts.
 - [ ] **R2. A backup before destructive actions.** `watch remove --purge` and data wipes have no undo; take a
       `pg_dump` first (the last one is from 2026-10-27).
 - [ ] **R3. Network trouble is reported as each command's own failure.** One flaky connection failed five reports

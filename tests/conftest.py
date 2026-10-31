@@ -1,13 +1,63 @@
+"""Tests use their own database, `nightshift_test` beside the dev one (or NIGHTSHIFT_TEST_DATABASE_URL),
+created and migrated when the run starts: the dev database holds real tasks, runs and spend, and tests once
+deleted real run events and hit the real daily cap."""
+
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from fake_openrouter import models  # noqa: F401  (the fixed model catalog fixture)
 
-from nightshift import outcomes
-from nightshift.db import Item
+
+def _test_database_url() -> str:
+    from nightshift.config import Settings
+
+    url = (
+        os.environ.get("NIGHTSHIFT_TEST_DATABASE_URL") or Settings().database_url.rsplit("/", 1)[0] + "/nightshift_test"
+    )
+    if url == Settings().database_url:
+        raise RuntimeError("The test database must not be the dev database.")
+    return url
+
+
+# before anything reads the settings (they are cached): every test, and the app under test, use this database
+os.environ["NIGHTSHIFT_DATABASE_URL"] = _test_database_url()
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Create the test database if needed and bring it to the latest migration. No Postgres: the tests that
+    need one skip themselves."""
+    import asyncio
+
+    import psycopg
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy.engine import make_url
+
+    url = make_url(os.environ["NIGHTSHIFT_DATABASE_URL"])
+    plain = url.set(drivername="postgresql")
+    try:
+        admin = psycopg.connect(plain.set(database="postgres").render_as_string(hide_password=False),
+                                autocommit=True, connect_timeout=3)  # fmt: skip
+    except psycopg.OperationalError:
+        return
+    with admin:
+        if not admin.execute("select 1 from pg_database where datname = %s", (url.database,)).fetchone():
+            admin.execute(f'create database "{url.database}"')
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    command.upgrade(Config(os.path.join(root, "alembic.ini")), "head")
+
+    from nightshift.health.graph import setup_checkpointer
+
+    asyncio.run(setup_checkpointer())  # LangGraph's own tables, as `nightshift db-setup` makes them
+
+
+from fake_openrouter import models  # noqa: F401, E402  (the fixed model catalog fixture)
+
+from nightshift import outcomes  # noqa: E402  (after the database is chosen)
+from nightshift.db import Item  # noqa: E402
 
 NOW = datetime(2026, 10, 20, tzinfo=UTC)
 
