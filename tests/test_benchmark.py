@@ -31,3 +31,18 @@ def test_the_verdict_is_scored_against_the_maintainers() -> None:
 
 def test_an_empty_run_says_so() -> None:
     assert "| Verdict matches the maintainers | none yet |" in to_markdown("o/r", [], 90)
+
+
+def test_a_pr_closed_by_a_bot_is_the_repos_policy_and_not_scored() -> None:
+    """pydantic auto-closes PRs whose author is not assigned to the issue: no code check can agree or disagree."""
+    cases = [
+        _case(1, "merged", False),
+        _case(2, "closed", True, closed_by="github-actions[bot]"),
+        _case(3, "closed", True, closed_by="Viicos"),
+    ]
+    s = summary(cases)
+    assert (s["checked"], s["scored"], s["by_policy"], s["policy_blocked"]) == (3, 2, 1, 1)
+    assert (s["agree"], s["closed_blocked"], s["closed"]) == (2, 1, 1)
+    md = to_markdown("o/r", cases, 90)
+    assert "| Verdict matches the maintainers | 2 of 2 (100%) |" in md
+    assert "closed by github-actions[bot] | none | · blocked" in md

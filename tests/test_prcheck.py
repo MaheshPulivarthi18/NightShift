@@ -127,3 +127,21 @@ def test_tests_that_could_not_run_are_not_blamed_on_the_pr() -> None:
 def test_a_referenced_issue_is_not_a_closed_one() -> None:
     pr = _pr(body="Refs #4417. Partial fix.")
     assert prcheck.linked_issue_number(pr) is None and prcheck.referenced_issue_number(pr) == 4417
+
+
+def test_what_a_pr_is_decides_whether_its_tests_must_fail_without_it() -> None:
+    """pydantic benchmark: benchmark, refactor and test-only PRs were blocked for tests that pass both ways."""
+    check = FixCheck(
+        passed=False, test_files=["tests/t.py"], source_files=["a.py"],
+        problems=["the targeted test PASSES without the fix, so it does not reproduce the issue",
+                  "the issue's reproduction still fails with the PR, so the issue is not fixed",
+                  "these passed before the change and fail now: pytest -q"],
+    )  # fmt: skip
+    report = Report(pr=_pr())
+    prcheck._findings(check, report, None, intent="refactor")
+    assert report.must == ["These passed before the change and fail now: pytest -q."]  # a regression still blocks
+    assert "The PR's tests pass with and without its source changes, as a refactor should." in report.passed
+    assert any(s.startswith("The checker's reproduction of the linked issue still fails") for s in report.should)
+    fix = Report(pr=_pr())
+    prcheck._findings(check.model_copy(update={"problems": check.problems[:1]}), fix, None, intent="fix")
+    assert fix.must == ["The targeted test PASSES without the fix, so it does not reproduce the issue."]

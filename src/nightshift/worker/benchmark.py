@@ -4,7 +4,8 @@ compare its verdict with what they did.
     nightshift bench pydantic/pydantic --merged 10 --closed 10
 
 Cases are outside contributors' PRs closed in the last `days` that change code (no bots, drafts or reverts):
-the most recent `merged` ones and the most recent `closed` (unmerged) ones, at most PER_AUTHOR from one
+the most recent `merged` ones and the most recent `closed` (unmerged) ones a maintainer closed (not a bot's
+stale or policy rule, not the author withdrawing it), at most PER_AUTHOR from one
 author and one per issue, so one contributor's series or five competing PRs for one bug do not make up the
 sample. Each is checked as it was decided (its head, on the base it was written on), so a merged PR's final,
 reviewed code is expected to be "ready" and a closed one to need work. A closed PR can be closed for reasons
@@ -55,6 +56,7 @@ class Case(BaseModel):
     changes_requested: bool = False  # a maintainer asked for changes before the decision
     ci: str = "none"  # passed | failed | none: the PR's own checks on its final head
     closing_note: str = ""  # a closed PR: the maintainer's last comment
+    closed_by: str = ""  # who closed it; a bot means the repo's policy (pydantic: author not assigned), not code
     verdict: str = ""
     blocked: bool | None = None  # the checker's "must fix" list was not empty
     must: list[str] = []
@@ -64,8 +66,13 @@ class Case(BaseModel):
     error: str = ""
 
     @property
+    def by_policy(self) -> bool:
+        """Closed by a bot: an automated rule decided, not a maintainer reading the code."""
+        return self.outcome == "closed" and self.closed_by.endswith("[bot]")
+
+    @property
     def agrees(self) -> bool | None:
-        if self.blocked is None:
+        if self.blocked is None or self.by_policy:
             return None
         return self.blocked == (self.outcome == "closed")
 
@@ -128,6 +135,11 @@ async def _case(
         ci=await _ci(gh, full_name, pr["head"]["sha"]),
     )  # fmt: skip
     if outcome == "closed":
+        events = await gh.rest_get(f"/repos/{full_name}/issues/{n}/events?per_page=100")
+        closed = [e for e in events if e.get("event") == "closed"]
+        case.closed_by = ((closed[-1].get("actor") or {}).get("login") or "") if closed else ""
+        if case.by_policy or case.closed_by == login:
+            return None  # closed by a bot (stale, policy) or withdrawn by its author: no maintainer judged the code
         comments = await gh.rest_get(f"/repos/{full_name}/issues/{n}/comments?per_page=100")
         said = [c for c in comments if c.get("author_association") in MAINTAINERS]
         case.closing_note = " ".join((said[-1].get("body") or "").split())[:300] if said else ""
@@ -185,12 +197,17 @@ def _write(full_name: str, cases: list[Case], data_path: Path, md_path: Path, da
 
 
 def summary(cases: list[Case]) -> dict[str, Any]:
-    done = [c for c in cases if c.blocked is not None]
+    checked = [c for c in cases if c.blocked is not None]
+    policy = [c for c in checked if c.by_policy]
+    done = [c for c in checked if not c.by_policy]  # scored: merged, and closed by a person
     merged = [c for c in done if c.outcome == "merged"]
     closed = [c for c in done if c.outcome == "closed"]
     blocked = [c for c in done if c.blocked]
     return {
-        "checked": len(done),
+        "checked": len(checked),
+        "scored": len(done),
+        "by_policy": len(policy),
+        "policy_blocked": sum(bool(c.blocked) for c in policy),
         "failed_to_check": sum(bool(c.error) for c in cases),
         "agree": sum(bool(c.agrees) for c in done),
         "merged_ready": sum(not c.blocked for c in merged),
@@ -201,8 +218,8 @@ def summary(cases: list[Case]) -> dict[str, Any]:
         "blocked": len(blocked),
         "ci_failed": sum(c.ci == "failed" for c in done),
         "ci_failed_blocked": sum(c.ci == "failed" and bool(c.blocked) for c in done),
-        "minutes": round(sum(c.seconds for c in done) / 60 / max(len(done), 1), 1),
-        "cost_usd": round(sum(c.cost_usd for c in done) / max(len(done), 1), 3),
+        "minutes": round(sum(c.seconds for c in checked) / 60 / max(len(checked), 1), 1),
+        "cost_usd": round(sum(c.cost_usd for c in checked) / max(len(checked), 1), 3),
     }
 
 
@@ -222,9 +239,11 @@ def to_markdown(full_name: str, cases: list[Case], days: int) -> str:
         "| | |",
         "| --- | --- |",
         f"| Checked | {s['checked']} of {len(cases)}{unchecked} |",
-        f"| Verdict matches the maintainers | {_pct(s['agree'], s['checked'])} |",
+        f"| Verdict matches the maintainers | {_pct(s['agree'], s['scored'])} |",
         f"| Merged PRs it called ready | {_pct(s['merged_ready'], s['merged'])} |",
-        f"| Closed PRs it blocked | {_pct(s['closed_blocked'], s['closed'])} |",
+        f"| PRs a maintainer closed, that it blocked | {_pct(s['closed_blocked'], s['closed'])} |",
+        f"| Closed by a bot (the repo's policy, not scored) | {s['by_policy']}, of which it blocked "
+        f"{s['policy_blocked']} |",
         f"| Its blocks that maintainers also rejected | {_pct(s['blocks_right'], s['blocked'])} |",
         f"| PRs whose own CI failed, that it blocked | {_pct(s['ci_failed_blocked'], s['ci_failed'])} |",
         f"| Time per PR | {s['minutes']} min |",
@@ -238,12 +257,13 @@ def to_markdown(full_name: str, cases: list[Case], days: int) -> str:
     ]  # fmt: skip
     for c in cases:
         decided = c.outcome + (" after changes" if c.changes_requested and c.outcome == "merged" else "")
+        decided += f" by {c.closed_by}" if c.outcome == "closed" and c.closed_by else ""
         if c.error:
             checker, why = "could not check", c.error
         elif c.blocked is None:
             checker, why = "not run yet", ""
         else:
-            mark = "✓" if c.agrees else "✗"
+            mark = "·" if c.agrees is None else "✓" if c.agrees else "✗"
             checker = f"{mark} {'blocked' if c.blocked else 'ready'}"
             why = "; ".join(c.must) if c.blocked else (f"closed: {c.closing_note}" if c.outcome == "closed" else "")
         why = why.replace("|", "\\|").replace("\n", " ")[:400]
