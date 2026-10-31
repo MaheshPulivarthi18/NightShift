@@ -119,6 +119,29 @@ async def save_recipe(repo_id: int, commit: str, setup: list[str], tests: list[C
             s.add(RepoContext(repo_id=repo_id, kind=RECIPE, commit=commit, data=data))
 
 
+OVER_EXPECTED = 1.5  # tortoise-orm #2390: $4.55 for a medium task expected at $2.50
+
+
+async def cost_warning(task: Task) -> str | None:
+    """Gate 2's note when a task cost over OVER_EXPECTED times what its planned size is expected to: which agent spent
+    most, so a costly pattern (many review rounds on an expensive model) is seen before it repeats."""
+    expected = planner.SIZE_COST.get((task.plan or {}).get("size", ""), 0.0)
+    spent = await task_cost(task)
+    if not expected or spent <= OVER_EXPECTED * expected:
+        return None
+    async with session_scope() as s:
+        rows = (
+            await s.execute(
+                select(LLMCall.agent, func.count(), func.coalesce(func.sum(LLMCall.cost_usd), 0.0))
+                .where(LLMCall.run_id == task.run_id)
+                .group_by(LLMCall.agent)
+                .order_by(func.sum(LLMCall.cost_usd).desc())
+            )
+        ).all()
+    top = f"; most of it {rows[0][0]} (${rows[0][2]:.2f} over {rows[0][1]} calls)" if rows else ""
+    return f"This task cost ${spent:.2f}, {spent / expected:.1f}x the ${expected:.2f} expected for its size{top}."
+
+
 async def task_cost(task: Task) -> float:
     async with session_scope() as s:
         q = select(func.coalesce(func.sum(LLMCall.cost_usd), 0.0)).where(LLMCall.run_id == task.run_id)
@@ -798,7 +821,8 @@ async def run_task(task_id: int) -> Task:
                 rules=result.get("brief", ""),
                 change_context=pack,
                 avoid=family(coder.model),
-                prefer=chosen.get("reviewer"),
+                # the operator's pick at Gate 1 wins; else rounds after the first go to the follow-up model
+                prefer=chosen.get("reviewer") or (settings.reviewer_followup or None if round_no > 1 else None),
                 sources=await _docs_sources(box, plan["markdown"]) if coder.kind == "docs" else "",
             )
             reviews.append(
@@ -1030,6 +1054,8 @@ async def gate2(
 
     if understood := gate_warning(task.result):  # warns, never blocks (the agreed product rule)
         warnings.append(understood)
+    if over := await cost_warning(task):
+        warnings.append(over)
     warnings += policy_warnings
 
     prepared = await publish.prepare(repo, task, task_dir(repo.full_name, task.id) / "publish", branch=branch)

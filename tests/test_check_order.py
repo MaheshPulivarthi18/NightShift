@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from sqlalchemy import delete, select
 
+from nightshift.config import get_settings
 from nightshift.db import Repo, RunEvent, Task, session_scope
 from nightshift.worker import reviewer
 from nightshift.worker import task as worker
@@ -57,6 +58,7 @@ async def test_suites_run_after_approval_and_a_regression_goes_back(
     approved: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     order: list[str] = []
+    prefers: list[str | None] = []
 
     async def prepare_repo(*args: Any, **kwargs: Any) -> tuple[Box, bool]:
         return Box(), True
@@ -75,6 +77,7 @@ async def test_suites_run_after_approval_and_a_regression_goes_back(
 
     async def review(llm: Any, **kwargs: Any) -> reviewer.Review:
         order.append("review")
+        prefers.append(kwargs.get("prefer"))
         assert "suites" not in order[-2:]  # the Reviewer sees the change before the slow suites run
         return reviewer.Review(verdict="approve", summary="Looks right.", solves_issue=True,
                                test_reproduces_issue=True, related=[], issues=[])  # fmt: skip
@@ -109,6 +112,8 @@ async def test_suites_run_after_approval_and_a_regression_goes_back(
     done = await worker.run_task(approved)
 
     assert order == ["baseline", "coder", "review", "suites", "coder", "review", "suites"]
+    # the first review on the reviewer's own models; later rounds on the cheaper follow-up model
+    assert prefers == [None, get_settings().reviewer_followup]
     assert done.status == "ready"
     checks = [(c["check"], c["ok"], c["round"]) for c in done.result["checks"]]
     assert checks == [
@@ -122,3 +127,25 @@ async def test_suites_run_after_approval_and_a_regression_goes_back(
     assert caught == ["Full suites found regressions (these passed before the change and fail now: pytest): "
                       "sent back to the Coder"]  # fmt: skip
     assert not [e for e in logged if e.kind in ("warning", "error")]  # handled, so nothing reads as broken
+
+
+async def test_gate_2_says_when_a_task_cost_far_more_than_expected(approved: int) -> None:
+    from nightshift.db import LLMCall
+
+    async with session_scope() as s:
+        task = await s.get(Task, approved)
+        assert task is not None
+        task.plan = {**task.plan, "size": "medium"}  # expected $2.50
+        task.cost_usd = 4.55
+        sol, sonnet = "openai/gpt-5.6-sol", "anthropic/claude-sonnet-5.5"
+        s.add_all([LLMCall(run_id=task.run_id, agent="reviewer", model=sol, cost_usd=2.65),
+                   LLMCall(run_id=task.run_id, agent="coder", model=sonnet, cost_usd=1.90)])  # fmt: skip
+    try:
+        async with session_scope() as s:
+            task = await s.get(Task, approved)
+        note = await worker.cost_warning(task)  # type: ignore[arg-type]
+        assert note == ("This task cost $4.55, 1.8x the $2.50 expected for its size; "
+                        "most of it reviewer ($2.65 over 1 calls).")  # fmt: skip
+    finally:
+        async with session_scope() as s:
+            await s.execute(delete(LLMCall).where(LLMCall.run_id == f"task-{approved}"))

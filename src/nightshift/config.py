@@ -87,6 +87,9 @@ class Settings(BaseSettings):
     planner: AgentModel = AgentModel(model=SONNET, ladder=[OPUS], effort="medium", max_tokens=12000)
     coder: AgentModel = AgentModel(model=SONNET, ladder=[OPUS], effort="medium", max_tokens=16000)
     reviewer: AgentModel = AgentModel(model=SOL, ladder=[SONNET, OPUS], effort="high", max_tokens=20000)
+    # The reviewer's model from the second round on, when it mostly checks that its own comments were fixed:
+    # tortoise-orm #2390 spent $2.65 of its $4.55 on 11 review calls to Sol. Empty keeps the reviewer's models.
+    reviewer_followup: str = TERRA
     pr_writer: AgentModel = AgentModel(model=SONNET, ladder=[TERRA], effort="low", max_tokens=4000)
     # PR checker (maintainer side): proposes how to run a PR's tests and the linked issue's reproduction.
     pr_checker: AgentModel = AgentModel(model=SONNET, ladder=[OPUS], effort="medium", max_tokens=8000)
