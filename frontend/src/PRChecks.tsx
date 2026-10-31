@@ -127,7 +127,7 @@ function Marks({ c, onChange }: { c: PRCheckView; onChange: () => void }) {
         {c.findings.map((f) => (
           <div key={f.id} className="row-flex mark-row">
             <span className={`badge ${f.kind === "must" ? "must" : ""}`}>{f.kind === "must" ? "must" : "should"}</span>
-            <span className="grow">{f.text}</span>
+            <span className="grow"><Title text={f.text} /></span>
             <button className={`small ${f.mark === "right" ? "primary" : "ghost"}`} onClick={() => mark(f, "right")} aria-pressed={f.mark === "right"}>Right</button>
             <button className={`small ${f.mark === "wrong" ? "danger" : "ghost"}`} onClick={() => mark(f, "wrong")} aria-pressed={f.mark === "wrong"}>Wrong</button>
           </div>

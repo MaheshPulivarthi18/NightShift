@@ -163,7 +163,7 @@ function WorktreePanel({ task, onChange }: { task: TaskDetail; onChange: () => v
       <div className="panel-h"><h2>{wt.edited ? "You edited this change" : "The change on your disk"}</h2></div>
       <div className="panel-b">
         <div className="row-flex">
-          <span className="grow mono small-print">{wt.path}</span>
+          <span className="grow mono small-print wt-path">{wt.path}</span>
           <button className="ghost small" onClick={copy}>Copy path</button>
           <a className="small" href={`vscode://file${wt.path}`}>Open in VS Code</a>
         </div>

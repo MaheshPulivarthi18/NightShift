@@ -201,3 +201,11 @@ async def test_findings_are_marked_right_or_wrong(client: httpx.AsyncClient) -> 
     finally:
         async with session_scope() as s:
             await s.execute(delete(Repo).where(Repo.full_name == name))
+
+
+async def test_the_page_is_never_served_from_a_stale_cache(client: httpx.AsyncClient) -> None:
+    """A rebuilt frontend names new asset files; a cached index.html kept loading the old ones."""
+    page = await client.get("/")
+    if page.status_code == 503:  # pragma: no cover - the frontend is not built here
+        pytest.skip("frontend not built")
+    assert page.headers["cache-control"] == "no-cache"
