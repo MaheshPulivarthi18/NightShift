@@ -121,4 +121,6 @@ Agents: `planner`, `coder`, `reviewer`, `setup`, `pr_writer`, `pr_checker`, `cha
 | The web app shows an old UI | Rebuild it: `cd frontend && npm run build` |
 | Docker runs out of disk | Remove old sandbox images: `docker image ls nightshift-repo/*`, keep the newest per repo |
 
-To remove a repo and everything stored about it: `uv run nightshift watch remove owner/repo --purge`.
+To remove a repo and everything stored about it: `uv run nightshift watch remove owner/repo --purge`. It dumps the database
+to `backups/` first and stops if it cannot. To back up any time: `uv run nightshift backup`; to restore a dump:
+`docker exec -i nightshift-postgres-1 pg_restore --clean -U nightshift -d nightshift < backups/<file>.dump`.

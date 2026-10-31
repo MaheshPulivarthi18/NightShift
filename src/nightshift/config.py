@@ -157,6 +157,7 @@ class Settings(BaseSettings):
     embedding_dim: int = 384
 
     reports_dir: str = "reports"
+    backups_dir: str = "backups"  # database dumps taken before a purge (`nightshift backup`)
 
 
 @lru_cache
