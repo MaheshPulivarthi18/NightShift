@@ -495,6 +495,31 @@ def _attempt_record(task: Task, folder: Path) -> dict[str, Any] | None:
     }  # fmt: skip
 
 
+async def answer_permission(task_id: int, allow: bool) -> Task:
+    """The developer's answer when the Coder asked to keep regenerated files: allowed, they join the plan's
+    allowed files; refused, the Coder is told to restore them. Either way the run continues from where it stopped."""
+    task, _ = await load_task(task_id)
+    asked = task.result.get("permission")
+    if task.status != "needs_operator" or not asked:
+        raise TaskError(f"Task {task_id} is not waiting for an answer about regenerated files.")
+    files = ", ".join(asked["files"])
+    if allow:
+        plan = {**task.plan, "allowed_generated": sorted({*task.plan.get("allowed_generated", []), *asked["files"]})}
+        await _save(task, plan=plan)
+        note = f"The developer allowed the change to regenerate {files} ({asked['reason']}). Submit again."
+    else:
+        restore = f"`git checkout {task.base_commit[:12]} -- <file>`"
+        note = f"The developer wants {files} kept as on the base commit: restore them with {restore} and find a way "
+        note += "that does not need them."
+    await revise(task_id, note)  # continue: the change, the baseline and the reason it stopped are kept
+    task, _ = await load_task(task_id)
+    result = {k: v for k, v in task.result.items() if k != "permission"}
+    if result.get("resume"):  # the developer's answer is what the resumed run works on, not the scope refusal
+        result["resume"] = {**result["resume"], "todo": note}
+    await _save(task, result=result)
+    return task
+
+
 # ---------- work ----------
 
 
@@ -714,8 +739,9 @@ async def run_task(task_id: int) -> Task:
                 "anything the developer's revision note in the plan asks, then call submit.\n\n" + resume["todo"]
             )
         coder.scope = Scope(
-            planned=[f["path"] for f in plan.get("files_to_change", [])], size=plan.get("size", "medium")
-        )
+            planned=[f["path"] for f in plan.get("files_to_change", [])], size=plan.get("size", "medium"),
+            allowed=plan.get("allowed_generated", []),
+        )  # fmt: skip
         # The Checks: each gate as it runs, cheapest first (verify.py), saved as it goes so the page shows it live.
         checks = coder.checks
         if pc := plan.get("plan_check"):
@@ -736,6 +762,12 @@ async def run_task(task_id: int) -> Task:
             coder.round = round_no
             await events.record(task.run_id, "node_start", f"coder round {round_no}", node="coder")
             await coder.work(instruction, deadline)
+            if coder.permission:  # a question for the developer, not a failure of the model
+                result["permission"] = coder.permission
+                why = (f"The Coder asks to keep regenerated files ({', '.join(coder.permission['files'])}): "
+                       f"{coder.permission['reason']}")  # fmt: skip
+                await events.record(task.run_id, events.CAUGHT, why + ". Waiting for the developer")
+                break
             await _coder_outcome(task, coder)
             failed = coder.check is None or not coder.check.passed
             if failed and not escalated and time.monotonic() < deadline and coder.escalate():

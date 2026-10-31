@@ -197,6 +197,7 @@ export interface TaskDetail extends TaskSummary {
   understanding: Understanding | null;
   ai_rules: string[]; // the repo's PR rules about AI use
   checks: CheckStep[];
+  permission: { files: string[]; reason: string } | null; // the Coder asks to keep regenerated files
   attempts: { n: number; status: string; stopped_at: string | null; error: string | null; cost_usd: number; lines: number; at: string }[];
   resume: { stopped_at: string; todo: string } | null; // where the queued run picks up
   can_continue: boolean; // the last attempt left a change to continue from
@@ -475,6 +476,7 @@ export const api = {
   prCheck: (id: number) => call<PRCheckView>(`/pr-checks/${id}`),
   checkPr: (url: string) => call<{ run_id: string }>("/pr-checks", { url }),
   run: (id: number) => call<{ status: string }>(`/tasks/${id}/run`, {}),
+  permission: (id: number, allow: boolean) => call<TaskDetail>(`/tasks/${id}/permission`, { allow }),
   revise: (id: number, note: string, latest: boolean, mode: "continue" | "restart" = "continue") =>
     call<TaskDetail>(`/tasks/${id}/revise`, { note, latest, mode }),
   claim: (id: number, confirm: boolean) => call<{ result: string }>(`/tasks/${id}/claim`, { confirm }),

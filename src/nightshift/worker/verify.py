@@ -28,6 +28,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from nightshift.config import get_settings
 from nightshift.sandbox.docker import ExecResult, Sandbox
 
 _TEST_RE = re.compile(
@@ -42,8 +43,6 @@ _GENERATED_RE = re.compile(
     r"|Pipfile\.lock|Cargo\.lock|go\.sum|composer\.lock|Gemfile\.lock|flake\.lock)$|\.lock$|requirements[^/]*\.lock$"
     r"|(^|/)(vendor|dist|build|third_party)/|\.min\.(js|css)$"
 )
-# Changed lines (tests and generated files left out) past which a change is out of scope for the plan's size.
-SIZE_LIMITS = {"small": 400, "medium": 1000, "large": 2500}
 PATCH = "/tmp/ns-source.patch"
 REPRO_DIR = "/tmp/nightshift-repro"  # outside the repo, so the script is never part of the change
 # Build and test output that is never part of a change, even in a repo whose .gitignore misses it.
@@ -138,6 +137,7 @@ class Scope(BaseModel):
 
     planned: list[str] = []
     size: str = "medium"
+    allowed: list[str] = []  # lock or generated files the developer allowed when the Coder asked (keep_generated)
 
 
 class ScopeCheck(BaseModel):
@@ -161,10 +161,11 @@ async def numstat(box: Sandbox, base: str) -> dict[str, int]:
 
 def check_scope(lines: dict[str, int], scope: Scope) -> ScopeCheck:
     """Gate 1: free, so it runs before any test. Problems go back to the Coder."""
-    planned = set(scope.planned)
+    planned = set(scope.planned) | set(scope.allowed)
     generated = [p for p in lines if is_generated_path(p) and p not in planned]
     counted = sum(n for p, n in lines.items() if not is_test_path(p) and not is_generated_path(p))
-    limit = SIZE_LIMITS.get(scope.size, SIZE_LIMITS["medium"])
+    limits = get_settings().scope_limits
+    limit = limits.get(scope.size, limits.get("medium", 600))
     check = ScopeCheck(
         lines=counted,
         limit=limit,
@@ -174,7 +175,10 @@ def check_scope(lines: dict[str, int], scope: Scope) -> ScopeCheck:
     if generated:
         check.problems.append(
             "these lock, vendored or built files changed but the plan does not name them; restore them with "
-            "`git checkout <base> -- <file>` (an install or a lock run probably rewrote them): " + ", ".join(generated)
+            "`git checkout <base> -- <file>` (an install or a lock run probably rewrote them): "
+            + ", ".join(generated)
+            + ". If the change truly needs them (a dependency upgrade), call submit again with keep_generated naming "
+            "them and why: NightShift asks the developer"
         )
     if counted > limit:
         check.problems.append(

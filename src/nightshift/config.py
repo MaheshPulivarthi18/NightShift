@@ -114,6 +114,10 @@ class Settings(BaseSettings):
     setup_test_seconds: int = 300  # per test command while finding an environment: big suites must be scoped
     # An environment image build past this is stopped: one ran 20 silent minutes (multilspy) before this limit
     image_build_seconds: int = 600
+    # Changed lines (tests and generated files left out) past which a change is out of scope for the plan's size.
+    # Outside contributors' PRs maintainers merged (pydantic, opentelemetry-python, 20): median 8, 90% under 190,
+    # largest 376, so these only catch a change that grew far past its plan.
+    scope_limits: dict[str, int] = {"small": 250, "medium": 600, "large": 2500}
 
     # Task sandboxes (Docker). Build the base image with `nightshift sandbox build`.
     sandbox_image: str = "nightshift-sandbox:3"
