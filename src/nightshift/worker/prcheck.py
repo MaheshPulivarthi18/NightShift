@@ -491,6 +491,11 @@ def prcheck_run_id(repo_id: int, number: int) -> str:
     return f"prcheck-{repo_id}-{number}-{uuid.uuid4().hex[:6]}"
 
 
+# Jobs that judge rather than test: a benchmark slowing or coverage dropping is the maintainers' call, not broken
+# code (pydantic #14104 failed only CodSpeed). Their failures are advice.
+ADVISORY_JOB = re.compile(r"codspeed|codecov|coverage|coveralls|benchmark|performance|perf\b|bundle ?size", re.I)
+
+
 async def check_ci(pr: PullRequest, report: Report) -> None:
     """The PR's own CI is evidence the sandbox may lack (it runs the whole suite, on every platform): a job that
     fails on the PR and not on its base is a must-fix; one failing on both is the base branch's, so advice."""
@@ -503,9 +508,13 @@ async def check_ci(pr: PullRequest, report: Report) -> None:
     if head["state"] == "none":
         return
     already = set((base or {}).get("failed", []))
-    new = [j for j in head["failed"] if j not in already]
+    new = [j for j in head["failed"] if j not in already and not ADVISORY_JOB.search(j)]
     if new:
         report.must.append(f"CI fails on this PR at {pr.head_sha[:7]}: {', '.join(new[:8])}.")
+    if judged := [j for j in head["failed"] if j not in already and ADVISORY_JOB.search(j)]:
+        report.should.append(
+            f"A benchmark or coverage job reports a failure: {', '.join(judged[:8])}. Check the numbers."
+        )
     if old := [j for j in head["failed"] if j in already]:
         report.should.append(f"CI also fails on the base branch, so not because of this PR: {', '.join(old[:8])}.")
     if head["pending"]:

@@ -205,3 +205,18 @@ async def test_the_prs_own_ci_is_evidence(monkeypatch: pytest.MonkeyPatch) -> No
     report = Report(pr=_pr())
     await prcheck.check_ci(_pr(), report)
     assert report.passed == ["CI passes on this PR (1 checks)."] and not report.must and not report.should
+
+
+async def test_a_benchmark_or_coverage_job_failing_is_advice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pydantic #14104 failed only "CodSpeed Performance Analysis": a judgement about speed, not broken code."""
+    head = "h" * 40
+    ci = _CI({head: [_run_("CodSpeed Performance Analysis", "failure"), _run_("codecov/patch", "failure"),
+                     _run_("test", "success")], "b" * 40: []}, {})  # fmt: skip
+    monkeypatch.setattr(prcheck, "GitHubClient", lambda: ci)
+    report = Report(pr=_pr())
+    await prcheck.check_ci(_pr(), report)
+    assert not report.must
+    assert report.should == [
+        "A benchmark or coverage job reports a failure: CodSpeed Performance Analysis, codecov/patch. "
+        "Check the numbers."
+    ]
