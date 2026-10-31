@@ -79,6 +79,10 @@ flowchart LR
   feedback, CI results and merges, and waits out a GitHub outage instead of failing every job.
 - **Resume, not restart:** a stopped or revised task continues from where it stopped, keeping its change
   and test baseline, so a fix that fails at review is not paid for again from the plan.
+- **Your copy of the change:** each task's change is also a git worktree on your disk
+  (`~/.nightshift/worktrees/`), never mounted into the sandbox. Open it in your editor or edit the fix by
+  hand: NightShift notices, and checks your edits with the same tests and review before they can be
+  published.
 
 ## Use
 

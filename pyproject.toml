@@ -49,7 +49,10 @@ dev = [
 asyncio_mode = "auto"
 pythonpath = ["tests"]
 testpaths = ["tests"]
-markers = ["real_outcomes: writes model outcomes to the database (and cleans up)"]
+markers = [
+    "real_outcomes: writes model outcomes to the database (and cleans up)",
+    "real_worktrees: makes git worktrees from a local origin repo",
+]
 
 [tool.ruff]
 line-length = 120

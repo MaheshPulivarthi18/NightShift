@@ -149,3 +149,20 @@ def budgets_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(get_settings(), "daily_budget_usd", 1_000_000.0)
     monkeypatch.setattr(get_settings(), "monthly_budget_usd", 1_000_000.0)
+
+
+@pytest.fixture(autouse=True)
+def no_worktrees(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest, tmp_path: Any) -> None:
+    """Runs write their change into a worktree cloned from GitHub; tests must not reach the network or the real
+    ~/.nightshift. A test about worktrees is marked real_worktrees and sets up its own origin."""
+    from nightshift.config import get_settings
+    from nightshift.worker import worktree
+
+    monkeypatch.setattr(get_settings(), "worktrees_dir", str(tmp_path / "nightshift"))
+    if "real_worktrees" in request.keywords:
+        return
+
+    async def off(*_: Any, **__: Any) -> Any:
+        raise worktree.WorktreeError("worktrees are off in tests")
+
+    monkeypatch.setattr(worktree, "ensure", off)

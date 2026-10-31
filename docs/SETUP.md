@@ -115,6 +115,8 @@ example `NIGHTSHIFT_CODER__MODEL`.
 | `NIGHTSHIFT_CODER_MAX_STEPS` | 60 | Tool steps the Coder may take in one attempt |
 | `NIGHTSHIFT_REVIEW_ROUNDS` | 2 | Times a fix may go back to the Coder after review before it stops for you |
 | `NIGHTSHIFT_SETUP_ATTEMPTS` | 5 | Install-and-test attempts the Setup agent makes before it reports the repo as blocked |
+| `NIGHTSHIFT_WORKTREES_DIR` | `~/.nightshift` | Where each task's change is kept as a git worktree you can open and edit (one shared clone per repo under `clones/`, one worktree per task under `worktrees/`) |
+| `NIGHTSHIFT_REPO_IMAGES_KEPT` | 2 | Sandbox images kept per repo; older ones are removed after each setup (Settings → Sandbox images) |
 | `NIGHTSHIFT_BACKUPS_DIR` | `backups` | Where `nightshift backup` and a purge write database dumps |
 | `NIGHTSHIFT_TEST_DATABASE_URL` | `…/nightshift_test` beside the main database | The database the tests use (created and migrated when they run); never the main one |
 | `NIGHTSHIFT_SANDBOX_CPUS` / `_MEMORY` / `_PIDS` | 2 / 4g / 1024 | Limits for each sandbox container |

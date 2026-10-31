@@ -182,7 +182,11 @@ async def get_task(task_id: int) -> dict[str, Any]:
         if (res.get("sync") or {}).get("kind") == "answers"
         else [],
         "baseline": res.get("baseline", []),
-        "timing": res.get("timing"),  # setup and baseline seconds: not counted in the Coder's time
+        "timing": res.get("timing"),
+        # the change as a checkout on your disk, and whether you edited it since it was checked
+        "worktree": {"path": res["worktree"]["path"], "edited": bool(await worker.handmade(r.full_name, t))}
+        if res.get("worktree")
+        else None,  # setup and baseline seconds: not counted in the Coder's time
         "check": res.get("check"),
         "understanding": understanding.view(res),
         "ai_rules": ai_rules(understanding.pr_rules(res.get("brief", ""))),

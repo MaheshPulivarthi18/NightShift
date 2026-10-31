@@ -132,3 +132,58 @@ async def test_the_next_run_applies_the_change_and_skips_the_baseline(
     assert "add_floats still subtracts." in instructions[0]
     assert "Fix the issue following the approved plan" not in instructions[0]
     assert "resume" not in done.result and done.result["baseline"][0]["seconds"] == 300  # reused, not rerun
+
+
+async def test_your_hand_edits_are_where_the_next_run_starts(
+    stopped_at_review: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mine = DIFF.replace("a + b", "b + a")
+    await worker.revise(stopped_at_review, "The developer edited the change by hand in its worktree.")
+    written: list[str] = []
+    instructions: list[str] = []
+
+    class Box:
+        async def write_file(self, path: str, content: str) -> None:
+            written.append(content)
+
+        async def exec(self, command: str, timeout: float | None = None, **kw: Any) -> Any:
+            return type("R", (), {"ok": True, "tail": lambda self, n=0: ""})()
+
+        async def remove(self) -> None:
+            pass
+
+    async def prepare_repo(*args: Any, **kwargs: Any) -> tuple[Box, bool]:
+        return Box(), True
+
+    async def work(self: CoderRun, instruction: str, deadline: float) -> None:
+        instructions.append(instruction)
+        self.check = FixCheck(passed=True, test_files=["tests/test_calc.py"], source_files=["calc.py"])
+
+    async def review(llm: Any, **kwargs: Any) -> reviewer.Review:
+        return reviewer.Review(verdict="approve", summary="Good.", solves_issue=True, test_reproduces_issue=True,
+                               related=[], issues=[])  # fmt: skip
+
+    async def check_suites(check: FixCheck, *args: Any) -> None:
+        check.suites_run, check.passed = True, True
+
+    async def nothing(*args: Any, **kwargs: Any) -> Any:
+        return None
+
+    async def same(*args: Any, **kwargs: Any) -> str:
+        return mine
+
+    async def handmade(full_name: str, task: Task) -> str:
+        return mine
+
+    for name, fake in [("prepare_repo", prepare_repo), ("ensure_env_image", nothing), ("save_recipe", nothing),
+                       ("change_context", nothing), ("diff", same), ("draft_pr", nothing),
+                       ("check_suites", check_suites), ("handmade", handmade)]:  # fmt: skip
+        monkeypatch.setattr(worker, name, fake)
+    monkeypatch.setattr(worker.archmap, "load_map", nothing)
+    monkeypatch.setattr(worker, "change_markdown", lambda *a, **k: ("", 0))
+    monkeypatch.setattr(worker.reviewer, "review", review)
+    monkeypatch.setattr(CoderRun, "work", work)
+
+    done = await worker.run_task(stopped_at_review)
+    assert done.status == "ready" and written[0] == mine  # your version went into the sandbox, not the last attempt
+    assert worker.HANDMADE in instructions[0] and "add_floats still subtracts." in instructions[0]
