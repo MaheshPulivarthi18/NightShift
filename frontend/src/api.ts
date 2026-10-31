@@ -222,7 +222,8 @@ export interface TaskDetail extends TaskSummary {
   claim_comment: string;
   actionable: boolean;
   claim_url: string | null;
-  lock_summaries: Record<string, string[]>; // regenerated lock files in the diff, as the packages they change
+  lock_summaries: Record<string, string[]>;
+  timing: { setup_seconds: number; baseline_seconds: number } | null; // before the Coder's time limit starts // regenerated lock files in the diff, as the packages they change
   fixed_comment: string; // the drafted "fixed by" comment, while fixed_open
   baseline: CommandResult[];
   check: FixCheck | null;
