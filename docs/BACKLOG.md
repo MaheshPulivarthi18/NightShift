@@ -5,7 +5,39 @@ and the move of every page into the React app; extended 2026-10-31 with what the
 task, the multilspy setup and the 20-repo comparison showed. Tick items off as they land; add the UI bugs you
 found under "Found by you".
 
-**Next up, in order:** the PR checker's strictness (benchmark round 2), then P1 to P4 (planning and checks).
+**Next up:** the plan below.
+
+## Plan, 2026-10-31: trustworthy for maintainers, productive for contributors
+
+From the evidence in "NightShift: is it useful?": contributors' pull requests are accepted (6 of 9 merged or
+approved, none rejected, median $0.75); the PR checker is right when it blocks but blocked only 3 of 10 PRs
+maintainers rejected, partly because the sandbox runs 3 of pydantic's 257 test files; a model call once hung
+15 minutes; one task cost $4.55. In order:
+
+**Maintainers**
+- [x] M1. A deadline on every model call (`NIGHTSHIFT_MODEL_CALL_SECONDS`, 300 s), then the next model.
+- [ ] M2. Ship the checker calibration with the benchmark, and say "not fully checked" when the plan or the
+      review could not run (the budget cap once made such checks read "ready").
+- [ ] M3. The PR's own CI as evidence: a failing CI job is a must-fix with its name (would have caught
+      opentelemetry-python #5237).
+- [ ] M4. Run the tests related to the change (beside or importing the changed modules), not only the
+      environment's narrow set.
+- [ ] M5. Incoming PRs for repos you maintain: checked automatically (opt-in per repo), listed in "Needs you",
+      the review posted only on your click.
+- [ ] M6. A third benchmark (a Go repo) after M3 and M4. Target: 8 of 10 merged PRs ready, 5 of 10 rejected blocked.
+- [ ] M7. The GitHub App, once M5 shows maintainers use the checks.
+
+**Contributors**
+- [ ] C1. Each repo's AI policy at Gate 2: the `Assisted-by:` trailer where the rules ask for it (OpenTelemetry);
+      "defend it yourself" repos (sarama) named beside the understanding check.
+- [ ] C2. A cost guard per task: review rounds after the first on a cheaper model; expected against actual cost at
+      Gate 2 (tortoise-orm: $2.65 of $4.55 was 11 review calls on Sol).
+- [ ] C3. CI status of published PRs on the task and in "Needs you" (shares M3's CI lookup).
+- [ ] C4. Fit with you (D5); C5. a drafted "fixed by #N" comment (D7); C6. lock-file churn as a package summary
+      (P3) and setup time apart from the Coder's (P4).
+
+**Reliability:** R1 a separate test database, R2 a backup before a purge, R3 "GitHub is unreachable" detected
+once, L4 sidebar search, L5 a banner when the server runs old code.
 
 ## Found by you
 

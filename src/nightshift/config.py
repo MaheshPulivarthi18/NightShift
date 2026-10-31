@@ -114,6 +114,10 @@ class Settings(BaseSettings):
     setup_test_seconds: int = 300  # per test command while finding an environment: big suites must be scoped
     # An environment image build past this is stopped: one ran 20 silent minutes (multilspy) before this limit
     image_build_seconds: int = 600
+    # One model request may take this long before it is given up and the next model on the route is tried.
+    # OpenRouter keeps a slow request alive with blank lines, so the read timeout alone never fires: a review
+    # call once hung over 15 minutes. Reviews usually take under a minute.
+    model_call_seconds: int = 300
     # Changed lines (tests and generated files left out) past which a change is out of scope for the plan's size.
     # Outside contributors' PRs maintainers merged (pydantic, opentelemetry-python, 20): median 8, 90% under 190,
     # largest 376, so these only catch a change that grew far past its plan.
