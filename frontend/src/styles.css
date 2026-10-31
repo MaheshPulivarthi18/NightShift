@@ -597,5 +597,26 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 .compare-grid td:nth-child(2) { white-space: normal; min-width: 220px; }
 .compare-grid td:nth-child(2) .verdict { display: inline-block; margin-top: 2px; }
 
+/* The understanding check before publishing */
+.understand-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; cursor: pointer; }
+.understand-h h2 { margin: 0; }
+.understand-status { margin-left: auto; font-size: 13px; }
+.ok-text { color: var(--ok); }
+.understand.passed { border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+.understand-qs { margin: 12px 0; padding-left: 20px; display: grid; gap: 16px; }
+.understand-qs .q { margin: 0 0 2px; font-weight: 500; }
+.understand-qs textarea { width: 100%; margin-top: 6px; font: inherit; }
+.grade { margin-top: 6px; padding: 8px 10px; border-radius: 6px; font-size: 13px; }
+.grade b { text-transform: capitalize; margin-right: 6px; }
+.grade-understood { background: var(--ok-soft); }
+.grade-understood b { color: var(--ok); }
+.grade-partly { background: var(--warn-soft); }
+.grade-partly b { color: var(--warn); }
+.grade-missed { background: var(--bad-soft); }
+.grade-missed b { color: var(--bad); }
+.grade details { margin-top: 6px; }
+.grade ul { margin: 4px 0 0; padding-left: 18px; }
+.understand-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
 .revise-mode { display: grid; gap: 6px; margin: 8px 0; font-size: 13.5px; }
 .revise-mode .check { align-items: flex-start; }

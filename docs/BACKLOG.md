@@ -5,7 +5,8 @@ and the move of every page into the React app; extended 2026-10-31 with what the
 task, the multilspy setup and the 20-repo comparison showed. Tick items off as they land; add the UI bugs you
 found under "Found by you".
 
-**Next up, in order:** the understanding check before publishing (L1), the image build limit (S1).
+**Next up, in order:** the image build limit (S1), keeping each revision's history (L3), the PR checker's
+strictness from the pydantic benchmark.
 
 ## Found by you
 
@@ -163,9 +164,12 @@ found under "Found by you".
 
 ### Task lifecycle and the UI
 
-- [ ] **L1. Understanding check before publishing** (product direction): before Gate 2, you explain the change
+- [x] **L1. Understanding check before publishing** (product direction): before Gate 2, you explain the change
       in your own words, or answer two or three questions about it, so you can defend it as repos like sarama
-      require. Nothing is published without it on repos whose policy asks for it.
+      require. It warns and never blocks (agreed 2026-10-25; PRD FR-16). Done: "Can you explain this change?"
+      above Gate 2: three questions about the diff (the cause, why the fix works, what the test proves), your
+      answers graded against the code with feedback, the repo's AI rules shown, every attempt kept; Gate 2 warns
+      until it is passed. About $0.002 a check (Luna).
 - [ ] **L2. A chat thread through the whole life of an issue** (proposed: explain, diagnose a failure, gather
       evidence, revise, raise and post the PR from one thread with action cards). Not started; a mock-up first.
 - [x] **L3. Revising keeps no history.** Revising task 72 cleared its diff and results from the database (the last
