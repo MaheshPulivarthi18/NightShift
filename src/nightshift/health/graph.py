@@ -114,7 +114,7 @@ async def fetch(state: HealthState) -> HealthState:
             # Items stored by an older fetcher lack newer fields: refetch everything once.
             since = repo.last_fetched_at if repo.fetch_version >= FETCH_VERSION else None
             repo_id, role = repo.id, repo.role
-        raw, truncated = await gh.fetch_items(
+        raw, truncated, gaps = await gh.fetch_items(
             state["repo"], since, settings.closed_lookback_days, settings.max_items_per_run
         )
     finally:
@@ -122,12 +122,13 @@ async def fetch(state: HealthState) -> HealthState:
     async with session_scope() as s:
         stored = await s.get(Repo, repo_id)
         assert stored is not None
-        changed = await upsert_items(s, stored, raw)
+        # A partial fetch does not move the "fetched up to" mark, so the next run asks for what was missed.
+        changed = await upsert_items(s, stored, raw, complete=not gaps)
         stored.fetch_version = FETCH_VERSION
     async with session_scope() as s:
         embedded = await refresh_embeddings(s, repo_id)
     log.info("fetched", repo=state["repo"], fetched=len(raw), changed=changed, embedded=embedded, truncated=truncated)
-    stats = {"fetched": len(raw), "changed": changed, "first_run": since is None, "truncated": truncated}
+    stats = {"fetched": len(raw), "changed": changed, "first_run": since is None, "truncated": truncated, "gaps": gaps}
     return {"repo_id": repo_id, "role": role, "stats": stats}
 
 

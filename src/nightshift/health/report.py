@@ -200,6 +200,7 @@ async def render_report(
             "so some issues or PRs were not analysed.",
             "",
         ]
+    out += _gaps_note(stats)
     skipped = stats.get("skipped_groups", 0) + stats.get("skipped_prs", 0)
     if skipped:
         out += [f"> {skipped} item(s) were skipped because the model declined or gave no usable answer.", ""]
@@ -353,6 +354,7 @@ async def render_contributor_report(
     ]
     if stats.get("truncated"):
         out += ["> **Partial data:** the fetch hit its item cap.", ""]
+    out += _gaps_note(stats)
     if stats.get("issues_not_scouted"):
         out += [
             f"> The {stats['issues_not_scouted']} least recently active free issues were not analysed (cap).",
@@ -472,3 +474,11 @@ async def render_contributor_report(
         f"Issues analysed: {stats.get('issues_scouted', 0)}.",
     ]
     return "\n".join(out) + "\n"
+
+
+def _gaps_note(stats: dict[str, Any]) -> list[str]:
+    """What GitHub did not return (it kept timing out on a list): the report says so instead of failing."""
+    gaps = stats.get("gaps") or []
+    if not gaps:
+        return []
+    return [f"> **Partial data:** {'; '.join(gaps)}. The next run asks for the rest.", ""]
