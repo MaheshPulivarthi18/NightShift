@@ -6,6 +6,8 @@ from typing import Any
 import httpx
 import pytest
 
+from nightshift import github
+from nightshift.config import get_settings
 from nightshift.github import GitHubClient, GitHubError, normalize_issue, normalize_pr
 
 ISSUE_NODE = {
@@ -240,9 +242,10 @@ async def test_nothing_returned_at_all_is_still_an_error(monkeypatch: pytest.Mon
         raise httpx.ConnectError("unreachable", request=request)
 
     client = GitHubClient(token="t", transport=httpx.MockTransport(handler))
-    with pytest.raises(GitHubError, match="GitHub returned nothing"):
+    with pytest.raises(GitHubError, match="GitHub is not reachable"):  # waited for, then said once
         await client.fetch_items("o/r", since=None, lookback_days=90, limit=10)
     await client.aclose()
+    github.outage["since"] = None
 
 
 async def test_rest_calls_retry_a_dropped_connection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -259,3 +262,29 @@ async def test_rest_calls_retry_a_dropped_connection(monkeypatch: pytest.MonkeyP
     client = GitHubClient(token="t", transport=httpx.MockTransport(handler))
     assert await client.canonical_name("o/r") == "o/r" and calls == 3
     await client.aclose()
+
+
+async def test_an_unreachable_github_is_waited_for_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No connection: the request waits for GitHub to answer again instead of failing (R3)."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) <= 3:  # the request, then the first two checks
+            raise httpx.ConnectError("nodename nor servname provided")
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(github, "PROBE_SECONDS", 0.01)
+    client = GitHubClient(token="t", transport=httpx.MockTransport(handler))
+    assert await client.rest_get("/repos/o/r") == {"ok": True}
+    assert calls == ["/repos/o/r", "/zen", "/zen", "/zen", "/repos/o/r"] and github.outage["since"] is None
+
+    calls.clear()
+    monkeypatch.setattr(get_settings(), "github_outage_seconds", 0.05)
+    down = GitHubClient(
+        token="t", transport=httpx.MockTransport(lambda r: (_ for _ in ()).throw(httpx.ConnectError("down")))
+    )
+    with pytest.raises(GitHubError, match="GitHub is not reachable"):
+        await down.graphql("query { viewer { login } }", {})
+    assert github.outage["since"] is not None  # shown in the app until GitHub answers
+    github.outage["since"] = None
