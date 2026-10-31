@@ -290,15 +290,22 @@ async def plan_check(
 
 async def _fetch_pr(box: Sandbox, pr: PullRequest) -> tuple[str, str, str]:
     """Fetch the PR without checking it out: GitHub's merge preview (what CI tests), or its head when it
-    conflicts with the base branch. Returns (the base commit it is compared with, its ref, a note)."""
-    merge = await box.exec(f"git fetch --quiet origin +refs/pull/{pr.number}/merge:refs/remotes/pr/merge")
-    if merge.ok:
+    conflicts with the base branch. A closed or merged PR is checked as it was decided: its head against the
+    base it was written on (its merge preview is gone or stale). Returns (base commit, its ref, a note)."""
+    merge = (
+        await box.exec(f"git fetch --quiet origin +refs/pull/{pr.number}/merge:refs/remotes/pr/merge")
+        if pr.state == "open"
+        else None
+    )
+    if merge is not None and merge.ok:
         base = (await box.exec("git rev-parse refs/remotes/pr/merge^1")).stdout.strip()
         return base, "refs/remotes/pr/merge", "the PR merged into the current base branch (GitHub's merge preview)"
     head = await box.exec(f"git fetch --quiet origin +refs/pull/{pr.number}/head:refs/remotes/pr/head")
     if not head.ok:
         raise SandboxError(f"cannot fetch the PR: {head.tail(400)}")
     base = (await box.exec(f"git merge-base refs/remotes/pr/head {shlex.quote(pr.base_sha)}")).stdout.strip()
+    if pr.state != "open":
+        return base, "refs/remotes/pr/head", f"the PR's head as it was {pr.state}, on the base it was written on"
     return base, "refs/remotes/pr/head", "the PR's own head: it does not merge cleanly into the current base branch"
 
 
