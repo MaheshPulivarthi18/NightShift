@@ -26,7 +26,8 @@ from nightshift.memory import get_or_create_repo
 from nightshift.sandbox.docker import prepare_repo
 from nightshift.worker.setup_agent import ensure_environment, setup_run_id
 
-BRIEF = "brief"  # RepoContext kind: the repo brief as text, at the commit it was written for
+BRIEF = "brief"  # RepoContext kind: the repo brief as text, at the commit it was written for; "edited": yours
+NOTES = "notes"  # RepoContext kind: your own notes about the repo, one row, read with the brief
 MAP_AND_BRIEF_USD = 0.5  # on top of the Setup agent's own budget
 
 
@@ -72,6 +73,28 @@ async def onboard(full_name: str, run_id: str | None = None) -> str:
         raise
     await events.finish_run(run_id, "stopped" if failed else "done", error="; ".join(failed)[:1000] or None)
     return run_id
+
+
+async def your_brief(repo_id: int, generated: str) -> str:
+    """The repo rules agents read: your edited brief if you wrote one, else the generated one, then your notes.
+    Planning, review, Publish and PR checks all go through here, so a correction made on the Knowledge tab
+    reaches every agent."""
+    async with session_scope() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(RepoContext)
+                    .where(RepoContext.repo_id == repo_id, RepoContext.kind.in_((BRIEF, NOTES)))
+                    .order_by(RepoContext.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+    edited = next((r.data.get("text") for r in rows if r.kind == BRIEF and r.data.get("edited")), None)
+    notes = next((r.data.get("text") for r in rows if r.kind == NOTES), None)
+    text = edited or generated
+    return f"{text}\n\nThe developer's own notes about this repo:\n{notes}" if notes else text
 
 
 def _interrupted(step: str) -> str:

@@ -47,6 +47,7 @@ from nightshift.sandbox.envimage import ensure_env_image
 from nightshift.worker import feedback, plancheck, planner, prwriter, publish, reviewer
 from nightshift.worker.coder import CoderRun
 from nightshift.worker.issue import IssueView, fetch_issue
+from nightshift.worker.onboard import your_brief
 from nightshift.worker.relevant import coverage, relevant_files
 from nightshift.worker.setup_agent import RECIPE, ensure_environment, environment_for, load_recipe
 from nightshift.worker.sync import pr_number
@@ -229,8 +230,9 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
         tracked = set((await box.exec("git ls-files")).stdout.splitlines())
 
         await events.record(task.run_id, "node_start", "plan", node="plan")
+        rules = await your_brief(repo.id, brief_text(brief))
         inputs = {
-            "repo": full_name, "brief": brief_text(brief), "architecture_map": archmap.to_markdown(amap),
+            "repo": full_name, "brief": rules, "architecture_map": archmap.to_markdown(amap),
             "environment": env.text(), "recipe": json.dumps(recipe, indent=1, sort_keys=True) if recipe else "",
             "issue": issue_text(issue), "relevant_files": l2, "note": note.strip(),
         }  # fmt: skip
@@ -336,7 +338,7 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
                 if env.status == "ready"
                 else {},
             },  # fmt: skip
-            result={"brief": brief_text(brief), "map_commit": amap["meta"]["commit"]},
+            result={"brief": rules, "map_commit": amap["meta"]["commit"]},
             cost_usd=await task_cost(task),
         )
         await events.finish_run(task.run_id, "done")

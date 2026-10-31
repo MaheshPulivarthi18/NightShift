@@ -450,6 +450,11 @@ export interface RepoKnowledge {
   recipe: { setup: string[]; tests: string[]; passing: string[] } | null;
   map: { commit: string; built_at: string; components: number; relationships: number } | null;
   brief: string | null;
+  brief_at: string | null;
+  brief_edited: boolean; // your version: every agent reads it instead of the generated one
+  notes: string; // your notes, read by every agent beside the brief
+  notes_at: string | null;
+  recipe_at: string | null;
   // The latest run that set the repo up: environment, then map, then brief.
   setup: { run_id: string; status: string; step: string | null; error: string | null; at: string } | null;
 }
@@ -494,6 +499,9 @@ export const api = {
   repoItems: (repo: string) => call<RepoItem[]>(`/repos/${repo}/items`),
   repoMap: (repo: string) => call<RepoMap>(`/repos/${repo}/map`),
   repoKnowledge: (repo: string) => call<RepoKnowledge>(`/repos/${repo}/knowledge`),
+  editBrief: (repo: string, text: string) => call<RepoKnowledge>(`/repos/${repo}/knowledge/brief`, { text }),
+  editNotes: (repo: string, text: string) => call<RepoKnowledge>(`/repos/${repo}/knowledge/notes`, { text }),
+  forget: (repo: string, piece: string) => call<RepoKnowledge>(`/repos/${repo}/knowledge/forget`, { piece }),
   repoStats: (repo: string) => call<RepoStats>(`/repos/${repo}/stats`),
   syncStatus: () => call<SyncStatus>("/sync"),
   replan: (id: number, answer: string) => call<{ status: string; repo: string }>(`/tasks/${id}/replan`, { answer }),
