@@ -21,8 +21,10 @@ maintainers rejected, partly because the sandbox runs 3 of pydantic's 257 test f
 - [x] M3. The PR's own CI as evidence: a job failing on the PR and not on its base is a must-fix, named; failing
       on both is advice. Done in #17. (opentelemetry-python #5237's failing job also failed on its base, so CI was
       not why it was rejected, as first assumed.)
-- [ ] M4. Run the tests related to the change (beside or importing the changed modules), not only the
-      environment's narrow set.
+- [x] M4. Run the tests related to the change (beside or importing the changed modules), not only the
+      environment's narrow set. Done: up to 15 test files (name match, then the same folder, then tests importing
+      the module) or the changed Go packages, with the environment's own runner, on the base and with the PR.
+      Live on pydantic #14153: 3 related files, 280 tests, beside the suite.
 - [ ] M5. Incoming PRs for repos you maintain: checked automatically (opt-in per repo), listed in "Needs you",
       the review posted only on your click.
 - [ ] M6. A third benchmark (a Go repo) after M3 and M4. Target: 8 of 10 merged PRs ready, 5 of 10 rejected blocked.

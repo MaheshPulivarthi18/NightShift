@@ -45,6 +45,7 @@ from nightshift.worker import publish, reviewer
 from nightshift.worker.issue import IssueView, fetch_issue
 from nightshift.worker.planner import Reproduction
 from nightshift.worker.prwriter import essential_lines
+from nightshift.worker.related_tests import related
 from nightshift.worker.setup_agent import Environment, environment_for
 from nightshift.worker.task import brief_text, issue_text, repo_conventions
 from nightshift.worker.verify import (
@@ -335,7 +336,12 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
         base_commit, target, how = await _fetch_pr(box, pr)
         await box.exec(f"git checkout --quiet --force --detach {shlex.quote(base_commit)}")
         report.environment = f"Environment: {', '.join(env.setup_commands) or 'none'}. Ran {how}."
-        baseline = await run_commands(box, env.test_commands, note="baseline, without the PR")
+        # The environment's suite is often a small part of the repo's tests: add the ones related to the change
+        extra, note = await related(box, pr.files, env.test_commands)
+        suites = [*env.test_commands, *([extra] if extra else [])]
+        if note:
+            report.environment += f" {note}"
+        baseline = await run_commands(box, suites, note="baseline, without the PR")
         patch = (await box.exec(f"git diff {shlex.quote(base_commit)} {target}")).stdout
         try:
             plan = await plan_check(llm, pr, issue, env, patch)
@@ -354,7 +360,7 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
                 if not (res := await box.exec(command, show=command, note="setup, with the PR")).ok:
                     report.must.append(f"Setup fails with this PR: `{command}`: {res.tail(300).strip()}")
                     return patch
-        check = await _verify(box, base_commit, plan, env, baseline, repro)
+        check = await _verify(box, base_commit, plan, suites, baseline, repro)
         report.verification = verification_summary(check)
         _findings(check, report, repro, plan.intent)
         pack, _ = change_markdown(await change_context(box, base_commit), budget_tokens=6000)
@@ -385,7 +391,7 @@ async def _verify(
     box: Sandbox,
     base: str,
     plan: CheckPlan,
-    env: Environment,
+    suites: list[str],
     baseline: list[CommandResult],
     repro: dict[str, str] | None,
 ) -> FixCheck:
@@ -397,7 +403,7 @@ async def _verify(
     else:
         check = FixCheck(passed=False, test_files=[f for f in names if is_test_path(f)],
                          source_files=[f for f in names if not is_test_path(f)])  # fmt: skip
-    await check_suites(check, box, env.test_commands, baseline)  # a PR check reports everything at once
+    await check_suites(check, box, suites, baseline)  # a PR check reports everything at once
     if repro and check.reproduction is None:
         check.reproduction = await run_reproduction(box, repro)
         if not check.reproduction.ok:
