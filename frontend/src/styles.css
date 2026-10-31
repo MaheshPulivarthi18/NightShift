@@ -617,3 +617,6 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 .grade details { margin-top: 6px; }
 .grade ul { margin: 4px 0 0; padding-left: 18px; }
 .understand-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.revise-mode { display: grid; gap: 6px; margin: 8px 0; font-size: 13.5px; }
+.revise-mode .check { align-items: flex-start; }

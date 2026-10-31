@@ -172,8 +172,12 @@ strictness from the pydantic benchmark.
       until it is passed. About $0.002 a check (Luna).
 - [ ] **L2. A chat thread through the whole life of an issue** (proposed: explain, diagnose a failure, gather
       evidence, revise, raise and post the PR from one thread with action cards). Not started; a mock-up first.
-- [ ] **L3. Revising keeps no history.** Revising task 72 cleared its diff and results from the database (the last
+- [x] **L3. Revising keeps no history.** Revising task 72 cleared its diff and results from the database (the last
       attempt survives only in `reports/…/diff.patch`). Keep each attempt: its diff, checks, review and cost.
+      Fixed with resume: revising keeps every attempt (summary on the task, diff in its folder) and, by default,
+      continues from where it stopped: the change applied, the baseline reused on the same commit, and the
+      Coder given only what failed (the review's comments, the regressions, the check's problems). "Start over"
+      begins from the plan.
 - [ ] **L4. A long sidebar.** With 24 repos the sidebar needs search, pinning, or grouping by "has work".
 - [ ] **L5. Say when the server runs old code.** Changes need a restart of `nightshift serve`, and nothing on the
       page shows it; show the running version next to the latest.
