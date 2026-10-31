@@ -5,7 +5,7 @@ and the move of every page into the React app; extended 2026-10-31 with what the
 task, the multilspy setup and the 20-repo comparison showed. Tick items off as they land; add the UI bugs you
 found under "Found by you".
 
-**Next up, in order:** the "is it free" gap (D1), GitHub timeouts and null bytes in reports (D2, D3), the
+**Next up, in order:** GitHub timeouts and null bytes in reports (D2, D3), the
 watchlist comparison (D4), the understanding check before publishing (L1), the image build limit (S1).
 
 ## Found by you
@@ -95,11 +95,15 @@ watchlist comparison (D4), the understanding check before publishing (L1), the i
 
 ### Discovery and reports
 
-- [ ] **D1. "Is it free" misses a fix PR that never names the issue.** redis-py #4454 was listed as a free starter
+- [x] **D1. "Is it free" misses a fix PR that never names the issue.** redis-py #4454 was listed as a free starter
       issue, but the reporter's PR #4455 (merged Oct 22) fixed it without mentioning it; only a maintainer's comment
       on a duplicate PR said "This fixes the same problem as #4455". Reports and the check before planning should
       also read maintainer comments on PRs that reference the issue for other PR numbers, and search the repo's
       recent PRs (open and merged since the issue was opened) for its key terms (here `TS.ALTER`, `labels`).
+      Fixed: two more sources. PRs named in comments (on the issue, and on referencing PRs closed unmerged) block
+      it when the comment says they do its work; PRs opened since the issue whose titles share its key terms are
+      possible matches, shown as a Gate 1 warning. Live: #4454 now reads "merged PR #4455 … does its work, says a
+      comment on #4462".
 - [ ] **D2. A null byte in GitHub text fails the whole report.** jaegertracing/jaeger: a PR body with `\u0000`
       cannot be stored in Postgres (`UntranslatableCharacter`). Strip null bytes from everything fetched from GitHub.
 - [ ] **D3. GitHub timeouts on large repos fail the whole report.** fastapi, starlette, django and instructor timed
