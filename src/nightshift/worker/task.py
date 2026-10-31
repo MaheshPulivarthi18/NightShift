@@ -17,6 +17,7 @@ task_minutes and coder_max_steps.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import shlex
@@ -44,7 +45,7 @@ from nightshift.memory import follow_rename, get_or_create_repo
 from nightshift.router import check_choice, family
 from nightshift.sandbox.docker import Sandbox, SandboxError, prepare_repo
 from nightshift.sandbox.envimage import ensure_env_image
-from nightshift.worker import feedback, plancheck, planner, prwriter, publish, reviewer
+from nightshift.worker import feedback, plancheck, planner, prwriter, publish, reviewer, worktree
 from nightshift.worker.coder import CoderRun
 from nightshift.worker.issue import IssueView, fetch_issue
 from nightshift.worker.onboard import your_brief
@@ -453,6 +454,8 @@ async def revise(
         for k, v in task.result.items()
         if k in ("brief", "map_commit", "pr_url", "claim_url", "published_diff", "branch")
     }
+    if mode == "continue" and task.result.get("worktree"):  # hand edits there are where the next run starts
+        keep["worktree"] = task.result["worktree"]
     if attempt := _attempt_record(task, task_dir(repo.full_name, task.id)):
         keep["attempts"] = [*task.result.get("attempts", []), attempt]
     if mode == "continue" and (resume := resume_point(task)):
@@ -654,7 +657,40 @@ async def archive(task_id: int, archived: bool) -> Task:
     if archived and task.status in ("planning", "working"):
         raise TaskError(f"Task {task_id} is {task.status}; archive it once it stops.")
     await _save(task, archived_at=datetime.now(UTC) if archived else None)
+    if archived:  # its checkout goes too; a run after unarchiving makes it again
+        _, repo = await load_task(task_id)
+        with contextlib.suppress(worktree.WorktreeError, OSError):
+            await worktree.remove(repo.full_name, task_id)
     return task
+
+
+HANDMADE = (
+    "The developer edited this change by hand in its worktree; the working tree holds their version. Keep their "
+    "edits: check them, and change only what breaks a test, the plan or the review."
+)
+
+
+async def handmade(full_name: str, task: Task) -> str:
+    """The developer's version of the change, when they edited the task's worktree since NightShift wrote it;
+    else empty."""
+    written = (task.result.get("worktree") or {}).get("written")
+    path = worktree.path_for(full_name, task.id)
+    try:
+        if await worktree.edited(path, written):
+            return await worktree.current(path)
+    except (worktree.WorktreeError, OSError) as e:
+        log.warning("worktree_read_failed", task=task.id, error=str(e)[:200])
+    return ""
+
+
+async def keep_in_worktree(full_name: str, task: Task, patch: str, result: dict[str, Any]) -> None:
+    """Write the change into the task's worktree, so it can be opened and edited; never fails the run."""
+    try:
+        path = await worktree.ensure(full_name, task.id, task.base_commit)
+        written = await worktree.write(full_name, path, task.base_commit, patch)
+        result["worktree"] = {"path": str(path), "written": written, "base": task.base_commit}
+    except (worktree.WorktreeError, OSError) as e:
+        log.warning("worktree_not_kept", task=task.id, error=str(e)[:200])
 
 
 async def run_task(task_id: int) -> Task:
@@ -709,6 +745,11 @@ async def run_task(task_id: int) -> Task:
                 f"{_minutes(result['timing']['baseline_seconds'])}; the Coder's {settings.task_minutes} minutes "
                 "start now",
             )  # fmt: skip
+        if edits := await handmade(repo.full_name, task):  # the developer's version is where this run starts
+            await events.record(task.run_id, events.FIXED, "Starting from your edits in the task's worktree")
+            todo = HANDMADE + (f"\n\n{resume['todo']}" if resume else "")
+            resume = {**(resume or {}), "diff": edits, "base": task.base_commit, "todo": todo,
+                      "stopped_at": "your edits"}  # fmt: skip
         if resume:  # pick up where the last attempt stopped: its change goes back in before the Coder starts
             await box.write_file(PUBLISHED_PATCH, resume["diff"])
             applied = await box.exec(f"git apply --3way --whitespace=nowarn {PUBLISHED_PATCH}")
@@ -895,6 +936,7 @@ async def run_task(task_id: int) -> Task:
             from_cached_image=cached,
         )
         (folder / "diff.patch").write_text(final_diff)
+        await keep_in_worktree(repo.full_name, task, final_diff, result)
         (folder / "verification.md").write_text(coder.check.report() if coder.check else "No verification ran.")
         (folder / "review.md").write_text("\n\n".join(r["markdown"] for r in reviews) or "No review ran.")
         await _save(
@@ -911,6 +953,7 @@ async def run_task(task_id: int) -> Task:
         # revise runs it again once the cause is fixed.
         if box:
             result["partial_diff"] = await diff(box, task.base_commit)
+            await keep_in_worktree(repo.full_name, task, result["partial_diff"], result)
         if coder and coder.check:
             result["check"] = coder.check.model_dump()
         why = f"{type(e).__name__}: {e}"
@@ -1126,6 +1169,9 @@ async def gate2(
     task, repo = await load_task(task_id)
     if task.status != "ready":
         raise TaskError(f"Task {task_id} is {task.status}; only a ready task can be published.")
+    if confirm and await handmade(repo.full_name, task):
+        raise TaskError("You edited the change in its worktree since it was checked. Run Check my edits first: "
+                        "only a checked change is published.")  # fmt: skip
     edits = {k: v for k, v in (edits or {}).items() if k in GATE2_EDITS and v is not None}
     if task.result.get("pr_url"):  # revised after publishing: the change goes onto that PR, not a new one
         return await _follow_up(task, repo, confirm=confirm, edits=edits, replies=replies, post_replies=post_replies)

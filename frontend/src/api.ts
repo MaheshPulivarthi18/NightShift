@@ -224,7 +224,8 @@ export interface TaskDetail extends TaskSummary {
   actionable: boolean;
   claim_url: string | null;
   lock_summaries: Record<string, string[]>;
-  timing: { setup_seconds: number; baseline_seconds: number } | null; // before the Coder's time limit starts // regenerated lock files in the diff, as the packages they change
+  timing: { setup_seconds: number; baseline_seconds: number } | null;
+  worktree: { path: string; edited: boolean } | null; // the change as a checkout on your disk // before the Coder's time limit starts // regenerated lock files in the diff, as the packages they change
   fixed_comment: string; // the drafted "fixed by" comment, while fixed_open
   baseline: CommandResult[];
   check: FixCheck | null;

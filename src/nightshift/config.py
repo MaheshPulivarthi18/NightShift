@@ -162,6 +162,7 @@ class Settings(BaseSettings):
     embedding_dim: int = 384
 
     reports_dir: str = "reports"
+    worktrees_dir: str = "~/.nightshift"  # each task's change as a checkout you can open (worker/worktree.py)
     backups_dir: str = "backups"  # database dumps taken before a purge (`nightshift backup`)
 
 

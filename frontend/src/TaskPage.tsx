@@ -75,6 +75,7 @@ export function TaskPage({ id, embedded = false }: { id: number; embedded?: bool
       </header>
 
       <ActionPanel task={task} onChange={load} />
+      {task.worktree && <WorktreePanel task={task} onChange={load} />}
       {task.fixed_open && <FixedPanel task={task} onChange={load} />}
       {task.status === "published" && (task.ci_failing.length > 0 || task.merge_state === "BEHIND" || task.merge_state === "DIRTY") && (
         <PrStatePanel task={task} onChange={load} />
@@ -143,6 +144,43 @@ const FEEDBACK = new Set(["published", "needs_operator", "failed"]);
 
 // What reviewers asked on the PR: read from GitHub on request; tick what to address, then one run makes
 // the changes on top of the PR, and Gate 2 pushes a follow-up commit with a drafted reply to each.
+/** The change as a checkout on your disk: open it in your editor, or change the fix by hand. Hand edits are
+ * checked before anything is published. */
+function WorktreePanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
+  const wt = task.worktree!;
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const copy = () => navigator.clipboard?.writeText(wt.path).then(() => setMsg("Path copied."), () => setMsg(wt.path));
+  const check = () => {
+    setBusy(true);
+    setMsg(null);
+    api.revise(task.id, "The developer edited the change by hand in its worktree; check their edits.", false)
+      .then(onChange, (e: Error) => setMsg(e.message)).finally(() => setBusy(false));
+  };
+  const idle = !["planning", "working"].includes(task.status);
+  return (
+    <section className={`panel${wt.edited ? " action" : ""}`}>
+      <div className="panel-h"><h2>{wt.edited ? "You edited this change" : "The change on your disk"}</h2></div>
+      <div className="panel-b">
+        <div className="row-flex">
+          <span className="grow mono small-print">{wt.path}</span>
+          <button className="ghost small" onClick={copy}>Copy path</button>
+          <a className="small" href={`vscode://file${wt.path}`}>Open in VS Code</a>
+        </div>
+        {wt.edited ? (
+          <div className="row-flex">
+            <span className="grow">Your edits are not checked yet: they run through the same tests and review before they can be published.</span>
+            <button disabled={busy || !idle} onClick={check}>{busy ? "Starting…" : "Check my edits"}</button>
+          </div>
+        ) : (
+          <p className="dim small-print">A git checkout of the task's base commit with its change. Edit it in your editor; NightShift notices and checks your edits before publishing.</p>
+        )}
+        {msg && <p className="dim">{msg}</p>}
+      </div>
+    </section>
+  );
+}
+
 /** The open PR needs its author: CI fails (revise from the failing jobs' output), or the base branch moved
  * on (merge it in on GitHub, never a rebase), or it conflicts with the base (revise on the latest commit). */
 function PrStatePanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
