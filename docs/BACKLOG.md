@@ -5,8 +5,8 @@ and the move of every page into the React app; extended 2026-10-31 with what the
 task, the multilspy setup and the 20-repo comparison showed. Tick items off as they land; add the UI bugs you
 found under "Found by you".
 
-**Next up, in order:** the image build limit (S1), keeping each revision's history (L3), the PR checker's
-strictness from the pydantic benchmark.
+**Next up, in order:** the PR checker's strictness (benchmark round 2), S2 (Setup agent speed), S3 (a test
+command must run tests).
 
 ## Found by you
 
@@ -138,9 +138,13 @@ strictness from the pydantic benchmark.
 
 ### Repo setup
 
-- [ ] **S1. The environment image build ran 20 silent minutes** before timing out (multilspy, attempt 1 of 3; 40 of
+- [x] **S1. The environment image build ran 20 silent minutes** before timing out (multilspy, attempt 1 of 3; 40 of
       the setup's 43 minutes). Its output is now on the log; also lower the limit (5 to 10 minutes), and cache
       package layers across images.
+      Done: the build streams to the log; its limit is a setting (`NIGHTSHIFT_IMAGE_BUILD_SECONDS`, 10 minutes);
+      a build stopped at the limit tells the Setup agent where it was and to ask for smaller packages; downloads
+      stay in BuildKit's cache between builds (a second image with one more package: 2 s), and toolchain layers
+      come first so images needing the same toolchain share them.
 - [ ] **S2. Setup agent speed** (proposed, not built): attach the log files a failure names, keep the sandbox
       between attempts instead of rebuilding, and a rule table for known failures (no pip in a uv venv, missing
       `-dev` packages).

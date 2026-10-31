@@ -112,6 +112,8 @@ class Settings(BaseSettings):
     setup_budget_usd: float = 1.0
     pr_check_budget_usd: float = 1.5  # per checked PR, the Setup agent included
     setup_test_seconds: int = 300  # per test command while finding an environment: big suites must be scoped
+    # An environment image build past this is stopped: one ran 20 silent minutes (multilspy) before this limit
+    image_build_seconds: int = 600
 
     # Task sandboxes (Docker). Build the base image with `nightshift sandbox build`.
     sandbox_image: str = "nightshift-sandbox:3"
