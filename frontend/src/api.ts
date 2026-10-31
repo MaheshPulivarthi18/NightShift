@@ -301,8 +301,16 @@ export interface PRCheckRow {
   dismissed: boolean; // not to be posted
 }
 
+export interface Finding {
+  id: string;
+  kind: "must" | "should";
+  text: string;
+  mark: "right" | "wrong" | null; // yours
+}
+
 export interface PRCheckView extends PRCheckRow {
   html: string;
+  findings: Finding[];
 }
 
 export type ReviewEvent = "COMMENT" | "REQUEST_CHANGES" | "APPROVE";
@@ -554,6 +562,9 @@ export const api = {
   dismissCheck: (id: number) => call<{ dismissed: boolean }>(`/pr-checks/${id}/dismiss`, {}),
   setAutoCheck: (repo: string, on: boolean) => call<RepoRow[]>(`/repos/${repo}/auto-check`, { on }),
   prCheck: (id: number) => call<PRCheckView>(`/pr-checks/${id}`),
+  markFinding: (id: number, finding: string, mark: "right" | "wrong" | null) =>
+    call<PRCheckView>(`/pr-checks/${id}/marks`, { finding, mark }),
+  findingAccuracy: () => call<{ marked: number; right: number; share: number | null }>("/pr-checks-accuracy"),
   checkPr: (url: string) => call<{ run_id: string }>("/pr-checks", { url }),
   reviewPr: (id: number, confirm: boolean, edits: { body?: string; event?: ReviewEvent; attribution?: boolean } = {}) =>
     call<ReviewDraft>(`/pr-checks/${id}/review`, { confirm, ...edits }),
