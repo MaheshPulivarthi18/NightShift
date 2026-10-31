@@ -152,3 +152,13 @@ def test_the_review_drops_the_title_link_and_cost() -> None:
     assert body.startswith("**Needs work before review.**\n\n## Must fix")
     assert "https://github.com/o/r/pull/5" not in body and "$" not in body
     assert body.endswith(f"at {'h' * 7}._")
+
+
+def test_a_check_that_could_not_run_is_never_ready() -> None:
+    """The spend cap once stopped the plan and the review, and those checks read "Ready for review"."""
+    report = Report(pr=_pr(), not_run=["The code review did not run: Daily budget reached."])
+    assert report.verdict == "Not fully checked"
+    assert "## Not checked\n\n- The code review did not run: Daily budget reached." in report.markdown()
+    blocked = Report(pr=_pr(), must=["These passed before the change and fail now: pytest -q."],
+                     not_run=["The code review did not run: timeout."])  # fmt: skip
+    assert blocked.verdict == "Needs work before review"  # what was found still blocks

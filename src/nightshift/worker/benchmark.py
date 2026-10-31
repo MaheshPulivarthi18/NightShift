@@ -59,6 +59,7 @@ class Case(BaseModel):
     closed_by: str = ""  # who closed it; a bot means the repo's policy (pydantic: author not assigned), not code
     verdict: str = ""
     blocked: bool | None = None  # the checker's "must fix" list was not empty
+    incomplete: bool = False  # part of the check could not run (a model error, the spend cap): not scored
     must: list[str] = []
     should: int = 0
     seconds: float = 0.0
@@ -72,7 +73,7 @@ class Case(BaseModel):
 
     @property
     def agrees(self) -> bool | None:
-        if self.blocked is None or self.by_policy:
+        if self.blocked is None or self.by_policy or (self.incomplete and not self.blocked):
             return None
         return self.blocked == (self.outcome == "closed")
 
@@ -181,6 +182,7 @@ async def run_benchmark(full_name: str, merged: int, closed: int, days: int, sta
             report = await check_pr(case.url)
             case.verdict, case.must, case.should = report.verdict, report.must, len(report.should)
             case.blocked, case.cost_usd = bool(report.must), report.cost_usd
+            case.incomplete = bool(report.not_run)
             case.error = ""
         except Exception as e:  # one PR that cannot be checked does not stop the rest
             case.error = f"{type(e).__name__}: {e}"[:500]
@@ -199,7 +201,8 @@ def _write(full_name: str, cases: list[Case], data_path: Path, md_path: Path, da
 def summary(cases: list[Case]) -> dict[str, Any]:
     checked = [c for c in cases if c.blocked is not None]
     policy = [c for c in checked if c.by_policy]
-    done = [c for c in checked if not c.by_policy]  # scored: merged, and closed by a person
+    partial = [c for c in checked if c.incomplete and not c.blocked and not c.by_policy]
+    done = [c for c in checked if not c.by_policy and c not in partial]  # scored: complete checks, by a person
     merged = [c for c in done if c.outcome == "merged"]
     closed = [c for c in done if c.outcome == "closed"]
     blocked = [c for c in done if c.blocked]
@@ -207,6 +210,7 @@ def summary(cases: list[Case]) -> dict[str, Any]:
         "checked": len(checked),
         "scored": len(done),
         "by_policy": len(policy),
+        "not_fully_checked": len(partial),
         "policy_blocked": sum(bool(c.blocked) for c in policy),
         "failed_to_check": sum(bool(c.error) for c in cases),
         "agree": sum(bool(c.agrees) for c in done),
@@ -238,7 +242,8 @@ def to_markdown(full_name: str, cases: list[Case], days: int) -> str:
         "",
         "| | |",
         "| --- | --- |",
-        f"| Checked | {s['checked']} of {len(cases)}{unchecked} |",
+        f"| Checked | {s['checked']} of {len(cases)}{unchecked}"
+        + (f"; {s['not_fully_checked']} not fully checked, not scored" if s["not_fully_checked"] else "") + " |",
         f"| Verdict matches the maintainers | {_pct(s['agree'], s['scored'])} |",
         f"| Merged PRs it called ready | {_pct(s['merged_ready'], s['merged'])} |",
         f"| PRs a maintainer closed, that it blocked | {_pct(s['closed_blocked'], s['closed'])} |",
@@ -264,7 +269,7 @@ def to_markdown(full_name: str, cases: list[Case], days: int) -> str:
             checker, why = "not run yet", ""
         else:
             mark = "·" if c.agrees is None else "✓" if c.agrees else "✗"
-            checker = f"{mark} {'blocked' if c.blocked else 'ready'}"
+            checker = f"{mark} {'blocked' if c.blocked else 'not fully checked' if c.incomplete else 'ready'}"
             why = "; ".join(c.must) if c.blocked else (f"closed: {c.closing_note}" if c.outcome == "closed" else "")
         why = why.replace("|", "\\|").replace("\n", " ")[:400]
         title = c.title.replace("|", "\\|")[:70]

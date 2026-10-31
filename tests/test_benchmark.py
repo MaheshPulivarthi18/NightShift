@@ -46,3 +46,11 @@ def test_a_pr_closed_by_a_bot_is_the_repos_policy_and_not_scored() -> None:
     md = to_markdown("o/r", cases, 90)
     assert "| Verdict matches the maintainers | 2 of 2 (100%) |" in md
     assert "closed by github-actions[bot] | none | · blocked" in md
+
+
+def test_a_check_that_could_not_run_is_not_scored() -> None:
+    cases = [_case(1, "merged", False), _case(2, "closed", False, incomplete=True), _case(3, "closed", True,
+             incomplete=True)]  # fmt: skip
+    s = summary(cases)
+    assert (s["scored"], s["not_fully_checked"], s["agree"]) == (2, 1, 2)  # a blocked one still counts
+    assert "· not fully checked" in to_markdown("o/r", cases, 90)

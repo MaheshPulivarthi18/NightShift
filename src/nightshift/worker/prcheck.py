@@ -188,6 +188,7 @@ class Report(BaseModel):
     must: list[str] = []
     should: list[str] = []
     passed: list[str] = []  # what was checked and is fine
+    not_run: list[str] = []  # checks that could not run (no environment, a model error, the spend cap)
     verification: str = ""
     review: str = ""
     environment: str = ""
@@ -197,6 +198,8 @@ class Report(BaseModel):
     def verdict(self) -> str:
         if self.must:
             return "Needs work before review"
+        if self.not_run:  # never "ready" on a check that did not happen (the spend cap once made such checks pass)
+            return "Not fully checked"
         return "Ready for a maintainer's review" if not self.should else "Ready for review, with suggestions"
 
     def markdown(self) -> str:
@@ -206,6 +209,8 @@ class Report(BaseModel):
             out += ["## Must fix", "", *[f"- {m}" for m in self.must], ""]
         if self.should:
             out += ["## Should fix", "", *[f"- {s}" for s in self.should], ""]
+        if self.not_run:
+            out += ["## Not checked", "", *[f"- {s}" for s in self.not_run], ""]
         if self.passed:
             out += ["## Checked and fine", "", *[f"- {p}" for p in self.passed], ""]
         if self.verification:
@@ -322,7 +327,7 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
     """Set up, run the base, run the PR, review it. Returns the diff."""
     env = await environment_for(llm, repo, pr.base_sha)
     if env.status != "ready":
-        report.should.append(f"Not run: the repo's environment is {env.status} ({env.blocker or env.detail}).")
+        report.not_run.append(f"Nothing was run: the repo's environment is {env.status} ({env.blocker or env.detail}).")
         return ""
     image = await ensure_env_image(env.system_packages, env.tools)
     box, _ = await prepare_repo(pr.repo, pr.base_sha, env.setup_commands, image=image)
@@ -335,7 +340,7 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
         try:
             plan = await plan_check(llm, pr, issue, env, patch)
         except MODEL_ERRORS as e:  # without it the suites are still compared
-            report.should.append(f"The PR's own tests and the issue's reproduction were not run: {_short(e)}")
+            report.not_run.append(f"The PR's own tests and the issue's reproduction were not run: {_short(e)}")
             plan = CheckPlan(targeted_command="")
         # The reproduction counts only if it fails without the PR: it runs on the base first.
         repro = plan.reproduction.model_dump() if plan.reproduction else None
@@ -361,7 +366,7 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
                 diff=patch, verification=check.report(), rules=rules, change_context=pack,
             )  # fmt: skip
         except MODEL_ERRORS as e:  # what was verified by running still stands
-            report.should.append(f"The code review did not run: {_short(e)}")
+            report.not_run.append(f"The code review did not run: {_short(e)}")
             return patch
         # Related code the Reviewer judged fine is noise in a report for a maintainer: keep what needs a change.
         report.review = reviewer.to_markdown(
