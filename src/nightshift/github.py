@@ -356,9 +356,12 @@ CI_FAILED = ("failure", "timed_out", "action_required", "startup_failure")
 CI_IGNORED = ("neutral", "skipped", "cancelled", "stale")  # not a verdict on the code
 
 
-# Jobs that judge rather than test: a benchmark slowing or coverage dropping is the maintainers' call, not broken
-# code (pydantic #14104 failed only CodSpeed). Their failures are advice.
-ADVISORY_JOB = re.compile(r"codspeed|codecov|coverage|coveralls|benchmark|performance|perf\b|bundle ?size", re.I)
+# Jobs that judge rather than test: a benchmark slowing, coverage dropping or a missing changelog entry is the
+# maintainers' call, not broken code (pydantic #14104 failed only CodSpeed; go-contrib #9980 merged with its
+# changelog job red). Their failures are advice.
+ADVISORY_JOB = re.compile(
+    r"codspeed|codecov|coverage|coveralls|benchmark|performance|perf\b|bundle ?size|changelog", re.I
+)
 
 
 async def ci_status(gh: GitHubClient, full_name: str, sha: str) -> dict[str, Any]:
