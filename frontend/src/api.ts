@@ -406,6 +406,17 @@ export interface RepoItem {
   asked?: boolean;
 }
 
+// Sandbox images on disk (sizes overlap: images share layers).
+export interface ImageUsage {
+  repos: { repo: string; images: number; size: number; newest: number }[];
+  other: { images: number; size: number };
+  total: number;
+  keep: number; // images kept per repo
+  removable: number; // repo images past that
+  error?: string;
+  removed?: string[];
+}
+
 export interface SyncStatus {
   at: string | null;
   running: boolean;
@@ -473,6 +484,8 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
 
 export const api = {
   overview: () => call<Overview>("/overview"),
+  images: () => call<ImageUsage>("/images"),
+  pruneImages: () => call<ImageUsage>("/images/prune", {}),
   version: () => call<{ running: string | null; latest: string | null; old: boolean }>("/version"),
   setKill: (killed: boolean) => call<Overview>("/control/kill", { killed }),
   repos: () => call<RepoRow[]>("/repos"),

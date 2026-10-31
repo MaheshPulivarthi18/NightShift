@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, Overview } from "./api";
+import { api, ImageUsage, Overview } from "./api";
 import { money, usePoll } from "./ui";
 
 // Run control and spend. Budgets, models and the rest are set in .env (see docs/SETUP.md).
@@ -23,6 +23,63 @@ export function savedTheme(): Theme {
   } catch {
     return "auto";
   }
+}
+
+const gb = (bytes: number) => `${(bytes / 1e9).toFixed(1)} GB`;
+
+/** Sandbox images on disk, per repo, and a clean-up that keeps what work still needs. */
+function Images() {
+  const [use, , reload] = usePoll<ImageUsage>(api.images, 60000, []);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const clean = () => {
+    setBusy(true);
+    setMsg(null);
+    api.pruneImages().then(
+      (r) => (setMsg(`Removed ${r.removed?.length ?? 0} images.`), reload()),
+      (e: Error) => setMsg(e.message),
+    ).finally(() => setBusy(false));
+  };
+  return (
+    <section className="panel">
+      <div className="panel-h">
+        <h2>Sandbox images</h2>
+        {use && !use.error && <span className="dim">{gb(use.total)} of their own, beside shared layers</span>}
+      </div>
+      <div className="panel-b">
+        {use?.error && <p className="dim">{use.error}</p>}
+        {use && !use.error && (
+          <>
+            <p className="dim">
+              Each repo keeps its newest {use.keep} images; older ones go after each setup. Clean up also removes
+              environment images no repo needs and images of removed repos. Sizes are what removing each image frees.
+            </p>
+            <table className="grid">
+              <thead><tr><th>Repo</th><th className="right">Images</th><th className="right">Newest</th><th className="right">Together</th></tr></thead>
+              <tbody>
+                {use.repos.map((r) => (
+                  <tr key={r.repo}>
+                    <td className="mono">{r.repo}</td>
+                    <td className="right">{r.images}</td>
+                    <td className="right">{gb(r.newest)}</td>
+                    <td className="right">{gb(r.size)}</td>
+                  </tr>
+                ))}
+                {use.other.images > 0 && (
+                  <tr><td className="dim">Environments, checkpoints and removed repos</td><td className="right">{use.other.images}</td><td /><td className="right">{gb(use.other.size)}</td></tr>
+                )}
+              </tbody>
+            </table>
+            <div className="row-flex">
+              <button className="ghost small" disabled={busy} onClick={clean}>{busy ? "Cleaning up…" : "Clean up"}</button>
+              {use.removable > 0 && <span className="dim">{use.removable} repo images are past the newest {use.keep}.</span>}
+              {msg && <span className="dim">{msg}</span>}
+            </div>
+          </>
+        )}
+      </div>
+    </section>
+  );
 }
 
 export function Settings() {
@@ -64,6 +121,7 @@ export function Settings() {
           <p className="dim">Daily and monthly caps, and per-task limits, are set in <span className="mono">.env</span> and checked before every model call. See <span className="mono">docs/SETUP.md</span>.</p>
         </div>
       </section>
+      <Images />
       <section className="panel">
         <div className="panel-h"><h2>Advanced</h2></div>
         <div className="panel-b links">
