@@ -219,8 +219,10 @@ once, L4 sidebar search, L5 a banner when the server runs old code.
       maintainers merged (non-test lines: median 8, 90% under 190, largest 376). A lock or generated file the Coder
       truly needs can be asked for (`keep_generated` on submit): the run stops, you allow or refuse, and it continues
       from where it stopped.
-- [ ] **P3. Show regenerated files as a summary,** not a diff: task 72 (laya #50) re-locked ~630 lines in each of
-      two lock files; a reviewer, human or model, needs "these packages changed versions", not the lines.
+- [x] **P3. Show regenerated files as a summary,** not a diff: task 72 (laya #50) re-locked ~630 lines in each of
+      two lock files; a reviewer, human or model, needs "these packages changed versions", not the lines. Done:
+      common lock formats are read as package changes (task 72: 631 lines -> 12 packages), for the Reviewer and
+      in the Diff tab.
 - [ ] **P4. Long installs eat the task's 30 minutes** (task 72 stopped at the time limit). Count setup and the
       baseline apart from the Coder's time, or reuse the repo image so they are not repeated.
 - [ ] Decide the Reviewer policy on error and fallback paths (from above, still open).

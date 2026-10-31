@@ -93,7 +93,7 @@ export function TaskPage({ id, embedded = false }: { id: number; embedded?: bool
         {tab === "Checks" && <Checks task={task} />}
         {tab === "Review" &&
           (task.reviews.length ? task.reviews.map((r) => <Html key={r.round} html={r.html} />) : <p className="muted">No review yet.</p>)}
-        {tab === "Diff" && <Diff text={task.diff} />}
+        {tab === "Diff" && <Diff text={task.diff} locks={task.lock_summaries} />}
         {tab === "PR" &&
           (task.pr ? (
             <article className="pr">
