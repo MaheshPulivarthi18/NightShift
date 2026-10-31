@@ -5,7 +5,7 @@ and the move of every page into the React app; extended 2026-10-31 with what the
 task, the multilspy setup and the 20-repo comparison showed. Tick items off as they land; add the UI bugs you
 found under "Found by you".
 
-**Next up, in order:** reports listing taken issues as free (D8), the understanding check before publishing (L1), the image build limit (S1).
+**Next up, in order:** the understanding check before publishing (L1), the image build limit (S1).
 
 ## Found by you
 
@@ -119,10 +119,14 @@ found under "Found by you".
       Done: the "Where to contribute" page (`#/compare`): every watched repo ranked (best first, merge rate,
       response time, starter issues), its AI rules, and its starter issues with a live "still free?" check;
       "Refresh stale reports" reruns missing or week-old reports two at a time.
-- [ ] **D8. Reports list taken issues as free.** redis-py's report listed 10 starter issues; the live check found
+- [x] **D8. Reports list taken issues as free.** redis-py's report listed 10 starter issues; the live check found
       9 taken (open PRs that close or name them, one assigned, one fixed by a PR named only in a comment). The report
       should run the live check's sources on its starter list before rendering it, and rank the comparison by
       live-checked counts.
+      Fixed: an open PR, even one that looks abandoned, never makes an issue a starter (it goes to "ask first",
+      naming the PR); a PR that names `#N` counts as linked; and every starter, then every "ask first" issue (up
+      to 15), is checked live on GitHub before the report is saved, taken ones moving to "Already being worked
+      on" with the reason. redis-py now lists one starter (#3141), the one that is free.
 - [ ] **D5. Fit with you.** Ranking by stack fit needs a profile: languages, frameworks and past PRs (from your
       GitHub), so "fit" is not typed in by hand.
 - [ ] **D6. Show a repo's AI policy where it matters.** sarama: "explain and defend the changes … without relying

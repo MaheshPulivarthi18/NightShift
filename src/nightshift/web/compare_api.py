@@ -21,7 +21,7 @@ from sqlalchemy import select
 
 from nightshift.db import Item, Repo, Report, session_scope
 from nightshift.health.graph import run_health_report
-from nightshift.health.report import starters
+from nightshift.health.report import asks_first, is_opportunity, starters
 from nightshift.web.api import _iso
 from nightshift.web.common import Guard
 
@@ -67,7 +67,7 @@ def _row(repo: Repo, report: Report | None, titles: dict[int, str]) -> dict[str,
             }
             for o in start
         ],  # fmt: skip
-        ask_first=sum(1 for o in f.get("opportunities", []) if o.get("needs_maintainer_ok") and o.get("actionable")),
+        ask_first=sum(1 for o in f.get("opportunities", []) if is_opportunity(o) and asks_first(o)),
         ai_rules=[r for r in (f.get("brief") or {}).get("pr_rules", []) if AI_RULE.search(r)],
     )
     return row
