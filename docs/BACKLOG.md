@@ -5,7 +5,7 @@ and the move of every page into the React app; extended 2026-10-31 with what the
 task, the multilspy setup and the 20-repo comparison showed. Tick items off as they land; add the UI bugs you
 found under "Found by you".
 
-**Next up, in order:** the PR checker's strictness (benchmark round 2), S3 (a test command must run tests).
+**Next up, in order:** the PR checker's strictness (benchmark round 2), then P1 to P4 (planning and checks).
 
 ## Found by you
 
@@ -151,9 +151,13 @@ found under "Found by you".
       toolchain, no root, the Python version, no disk) are named in the attempt for the agent; the end of each log
       file a failed setup command names is attached; and after each slow setup step that succeeds the sandbox is
       saved, so the next attempt starting with the same steps resumes there (tested: 4.6 s instead of re-running).
-- [ ] **S3. A "test command" must run tests.** multilspy's environment counts `ls tests/multilspy` as a passing
+- [x] **S3. A "test command" must run tests.** multilspy's environment counts `ls tests/multilspy` as a passing
       test command; require a test runner (pytest, go test, jest …) and say which parts of the suite were left out
       (multilspy ran only the Python language-server tests).
+      Done: a proposal whose test commands run no test runner is refused before it runs (and a remembered
+      recipe's non-test commands are dropped); once the tests pass, NightShift counts how many of the repo's test
+      files they cover and which folders they leave out, says so to the Planner and the PR checker, and shows it
+      on the Knowledge tab.
 
 ### Planning and the checks
 

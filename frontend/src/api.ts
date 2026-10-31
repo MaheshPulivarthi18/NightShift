@@ -30,6 +30,7 @@ export interface RepoEnvironment {
   sources: string[];
   attempts: string[];
   cost_usd: number;
+  coverage: string; // how much of the suite the test commands run, and what they leave out
 }
 
 // The report's listed issues, asked about on GitHub again: the ones someone has taken since.
