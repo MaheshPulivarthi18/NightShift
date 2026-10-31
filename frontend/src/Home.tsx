@@ -31,8 +31,10 @@ export function SyncBar() {
   return (
     <span className="sync">
       <span className="status">
-        <span className={`dot ${st?.error ? "bad" : st?.at ? "ok" : ""}`} />
-        {running ? "Checking GitHub…" : st?.error ? "Last check failed" : st?.at ? `Checked GitHub ${ago(st.at)}` : "Not checked yet"}
+        <span className={`dot ${st?.error || st?.github_down_since ? "bad" : st?.at ? "ok" : ""}`} />
+        {st?.github_down_since
+          ? `GitHub unreachable since ${ago(st.github_down_since)}: jobs wait for it`
+          : running ? "Checking GitHub…" : st?.error ? "Last check failed" : st?.at ? `Checked GitHub ${ago(st.at)}` : "Not checked yet"}
       </span>
       <button className="ghost small" onClick={now} disabled={!!running}>Sync now</button>
     </span>
