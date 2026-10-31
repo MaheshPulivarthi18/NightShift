@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import contextlib
 import hashlib
 import json
 import re
@@ -493,6 +494,10 @@ async def prepare_repo(
         await box.commit(tag, base)
         await _drop_checkpoints(full_name)  # this setup is saved whole now
         log.info("sandbox_image_saved", repo=full_name, image=tag)
+        from nightshift.sandbox.images import prune_repo  # it imports this module
+
+        with contextlib.suppress(Exception):  # disk hygiene never fails a setup
+            await prune_repo(full_name)
         return box, False
     except BaseException:
         await box.remove()

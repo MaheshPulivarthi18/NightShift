@@ -274,6 +274,12 @@ async def post_claim(repo: Repo, task: Task, text: str) -> str:
     return out.strip().splitlines()[-1]
 
 
+async def update_branch(repo: Repo, number: int) -> None:
+    """Merge the base branch into the PR's branch, on GitHub, with your gh login. Never a rebase: that would
+    rewrite the branch reviewers have read."""
+    await _run("gh", "pr", "update-branch", str(number), "--repo", repo.full_name)
+
+
 async def post_comment(repo: Repo, number: int, text: str) -> str:
     """Post a comment on an issue with your gh login. Returns the comment URL."""
     out = await _run("gh", "issue", "comment", str(number), "--repo", repo.full_name, "--body-file", "-", stdin=text)
