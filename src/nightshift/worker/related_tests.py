@@ -92,7 +92,7 @@ def related_command(test_commands: list[str], python_tests: list[str], go: dict[
                     continue
                 files = " ".join(shlex.quote(t) for t in inside)
                 return f"{prefix}{m.group(1)} {files} -q -p no:cacheprovider"
-    if go and any(re.search(r"\bgo\s+test\b", c) for c in test_commands):
+    if go:  # a repo with a go.mod: its suite may run through make (`make test-short`), but `go test` always works
         parts = [
             f"go test {' '.join(pkgs)}" if not root else f"(cd {shlex.quote(root)} && go test {' '.join(pkgs)})"
             for root, pkgs in go.items()
@@ -107,7 +107,8 @@ async def related(box: Sandbox, changed: list[str], test_commands: list[str]) ->
     go: dict[str, list[str]] = {}
     if any(f.endswith(".go") for f in changed):
         tracked = (await box.exec("git ls-tree -r --name-only HEAD")).stdout.splitlines()
-        go = go_packages(changed, [t for t in tracked if posixpath.basename(t) == "go.mod"])
+        if modules := [t for t in tracked if posixpath.basename(t) == "go.mod"]:
+            go = go_packages(changed, modules)
     command = related_command(test_commands, python_tests, go)
     if command and python_tests:
         shown = ", ".join(python_tests[:6]) + (" …" if len(python_tests) > 6 else "")

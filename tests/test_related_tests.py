@@ -65,6 +65,7 @@ def test_go_runs_the_changed_packages_from_their_modules() -> None:
         "go test . && (cd exporters/autoexport && go test .) && (cd instrumentation/net/http/otelhttp && "
         "go test . ./internal)"
     )
+    assert related_command(["make test-short"], [], go) is not None  # the suite runs through make
     assert go_packages(["a/b.go"]) == {"": ["./a"]}  # one module at the root
 
 
