@@ -1,8 +1,12 @@
 # Backlog
 
 Collected 2026-10-24 after the first live PR ([microsoft/multilspy#169](https://github.com/microsoft/multilspy/pull/169))
-and the move of every page into the React app. Tick items off as they land; add the UI bugs you found
-under "Found by you".
+and the move of every page into the React app; extended 2026-10-31 with what the repo workspace, the laya #50
+task, the multilspy setup and the 20-repo comparison showed. Tick items off as they land; add the UI bugs you
+found under "Found by you".
+
+**Next up, in order:** GitHub timeouts and null bytes in reports (D2, D3), the
+watchlist comparison (D4), the understanding check before publishing (L1), the image build limit (S1).
 
 ## Found by you
 
@@ -76,10 +80,107 @@ under "Found by you".
 
 1. [ ] **Screenshot evidence** (the PRD's "web evidence first"): Playwright in the sandbox, before and
        after images in the PR.
-2. [ ] **PR watcher:** follow published PRs (#169) for reviews, CI and merges; draft replies for approval.
-3. [ ] **Free issues across the watchlist:** one live-checked list of issues nobody has taken.
+2. [x] **PR watcher:** follow published PRs (#169) for reviews, CI and merges; draft replies for approval. Done:
+       background sync (at startup and every `NIGHTSHIFT_SYNC_MINUTES`, plus "Sync now") brings review feedback and
+       replies to asked questions into "Needs you"; replies are drafted and posted only on confirm. CI status on the
+       PR is still not shown.
+3. [ ] **Free issues across the watchlist:** one live-checked list of issues nobody has taken. Part of D4.
 4. [x] **Toolchains on demand in the sandbox** (Bun for ai-job-search #765, Rust, Go). Done: the Setup agent's environment images (system packages; pnpm, yarn, Go, Rust).
 5. [ ] **Repo recipes in the UI:** see and edit each repo's saved setup and test commands.
-6. [ ] **Architecture map view** (the L1 data exists; show it per repo).
+6. [x] **Architecture map view** (the L1 data exists; show it per repo). Done: the repo's Map tab (canvas).
 7. [ ] **Track record:** PRs opened, merged, time to merge; estimated vs actual cost per task.
 8. [ ] **Frontend tests** (vitest); there are none yet.
+
+## Found 2026-10-28 to 2026-10-31
+
+### Discovery and reports
+
+- [x] **D1. "Is it free" misses a fix PR that never names the issue.** redis-py #4454 was listed as a free starter
+      issue, but the reporter's PR #4455 (merged Oct 22) fixed it without mentioning it; only a maintainer's comment
+      on a duplicate PR said "This fixes the same problem as #4455". Reports and the check before planning should
+      also read maintainer comments on PRs that reference the issue for other PR numbers, and search the repo's
+      recent PRs (open and merged since the issue was opened) for its key terms (here `TS.ALTER`, `labels`).
+      Fixed: two more sources. PRs named in comments (on the issue, and on referencing PRs closed unmerged) block
+      it when the comment says they do its work; PRs opened since the issue whose titles share its key terms are
+      possible matches, shown as a Gate 1 warning. Live: #4454 now reads "merged PR #4455 … does its work, says a
+      comment on #4462".
+- [ ] **D2. A null byte in GitHub text fails the whole report.** jaegertracing/jaeger: a PR body with `\u0000`
+      cannot be stored in Postgres (`UntranslatableCharacter`). Strip null bytes from everything fetched from GitHub.
+- [ ] **D3. GitHub timeouts on large repos fail the whole report.** fastapi, starlette, django and instructor timed
+      out (`GitHubTimeout`/`ReadTimeout`, after up to 31 minutes), kafka-go lost the connection. Retry a timed-out
+      page with a smaller page size and backoff, and finish with what was fetched, saying what is missing.
+- [ ] **D4. Compare the watchlist: "where should I contribute first?"** Today that took 20 CLI reports and a
+      script. One page ranking watched repos on outside-PR merge rate and response time (last 90 days), PRs left
+      unanswered, free starter issues by size, and the repo's AI policy; with "report all" running a few at a time
+      and showing progress. Includes enhancement 3 (free issues across the watchlist).
+- [ ] **D5. Fit with you.** Ranking by stack fit needs a profile: languages, frameworks and past PRs (from your
+      GitHub), so "fit" is not typed in by hand.
+- [ ] **D6. Show a repo's AI policy where it matters.** sarama: "explain and defend the changes … without relying
+      on AI tools"; OpenTelemetry Python: no AI-written comments, an `Assisted-by:` trailer. Show it on the repo and
+      at Gate 2, and add the trailer when the repo asks for it (product direction: follow repo AI policy).
+- [ ] **D7. Offer the maintainer courtesy when an issue is already fixed** (#4454 is open after #4455 merged): a
+      drafted "fixed by #N" comment, posted only on confirm.
+
+### Repo setup
+
+- [ ] **S1. The environment image build ran 20 silent minutes** before timing out (multilspy, attempt 1 of 3; 40 of
+      the setup's 43 minutes). Its output is now on the log; also lower the limit (5 to 10 minutes), and cache
+      package layers across images.
+- [ ] **S2. Setup agent speed** (proposed, not built): attach the log files a failure names, keep the sandbox
+      between attempts instead of rebuilding, and a rule table for known failures (no pip in a uv venv, missing
+      `-dev` packages).
+- [ ] **S3. A "test command" must run tests.** multilspy's environment counts `ls tests/multilspy` as a passing
+      test command; require a test runner (pytest, go test, jest …) and say which parts of the suite were left out
+      (multilspy ran only the Python language-server tests).
+
+### Planning and the checks
+
+- [ ] **P1. The revised plan is not checked again.** The plan check sends must-fix findings back once and the new
+      plan goes to Gate 1 unchecked (the log says so now). Option: re-check only the earlier must-fix findings,
+      at a fraction of the cost.
+- [ ] **P2. Tune the scope check from real runs.** Size limits (400 / 1,000 / 2,500 changed lines) are a first
+      guess. A lock file the plan did not name sends the change back; a dependency upgrade that truly needs it
+      should be able to ask you instead of re-planning.
+- [ ] **P3. Show regenerated files as a summary,** not a diff: task 72 (laya #50) re-locked ~630 lines in each of
+      two lock files; a reviewer, human or model, needs "these packages changed versions", not the lines.
+- [ ] **P4. Long installs eat the task's 30 minutes** (task 72 stopped at the time limit). Count setup and the
+      baseline apart from the Coder's time, or reuse the repo image so they are not repeated.
+- [ ] Decide the Reviewer policy on error and fallback paths (from above, still open).
+
+### Task lifecycle and the UI
+
+- [ ] **L1. Understanding check before publishing** (product direction): before Gate 2, you explain the change
+      in your own words, or answer two or three questions about it, so you can defend it as repos like sarama
+      require. Nothing is published without it on repos whose policy asks for it.
+- [ ] **L2. A chat thread through the whole life of an issue** (proposed: explain, diagnose a failure, gather
+      evidence, revise, raise and post the PR from one thread with action cards). Not started; a mock-up first.
+- [ ] **L3. Revising keeps no history.** Revising task 72 cleared its diff and results from the database (the last
+      attempt survives only in `reports/…/diff.patch`). Keep each attempt: its diff, checks, review and cost.
+- [ ] **L4. A long sidebar.** With 24 repos the sidebar needs search, pinning, or grouping by "has work".
+- [ ] **L5. Say when the server runs old code.** Changes need a restart of `nightshift serve`, and nothing on the
+      page shows it; show the running version next to the latest.
+- [ ] **L6. CI status of published PRs** on the task and in "Needs you" (the rest of enhancement 2).
+- [ ] **L7. Check the live log on screen:** the running timer, auto-scrolling output and open-while-running
+      states of the new sandbox log were tested through the event stream only.
+
+### Reliability and data
+
+- [ ] **R1. Tests share the development database.** They no longer leave rows or containers behind, but a separate
+      test database (or schema) would make that impossible rather than cleaned up.
+- [ ] **R2. A backup before destructive actions.** `watch remove --purge` and data wipes have no undo; take a
+      `pg_dump` first (the last one is from 2026-10-27).
+- [ ] **R3. Network trouble is reported as each command's own failure.** One flaky connection failed five reports
+      and a GitHub check in a row; detect it once ("GitHub is not reachable"), pause and retry, instead of failing
+      every job.
+
+### Done in this stretch
+
+- [x] Runs write a heartbeat, so a long quiet step (a 30-minute install) is never marked interrupted.
+- [x] Tests no longer start a real repo setup, leak sandbox containers, or leave run events behind.
+- [x] Checks run cheapest first (plan check, scope, test, review, then the full suites once), shown live on the
+      task's Checks tab.
+- [x] The log tells "caught" and "fixed" apart from warnings and errors, and shows times in your time zone.
+- [x] The log shows what happened in the sandbox: each command with its output while it runs, file edits, and
+      folded reads; with an All / Steps / Sandbox filter. Image builds stream there too.
+- [x] The watchlist limit is a setting (`NIGHTSHIFT_WATCHLIST_MAX`, 30) enforced by the CLI and the web app.
+- [x] `watch remove --purge` deletes a repo's run logs too.

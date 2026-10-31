@@ -265,6 +265,8 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
             warnings.append(f"Setup agent: environment {env.status}: {why}")
         warnings += [f"`{p}` does not exist in the repo" for p in planner.unknown_paths(plan, tracked)]
         warnings += [moved] if moved else []
+        # PRs that share the issue's key terms: not proof someone has it, so a warning to check, not a refusal
+        warnings += [f"{w}. Check it before approving" for w in issue.possible(settings.github_login or None)]
         markdown = planner.to_markdown(
             plan, title=f"{full_name}#{number} {issue.title}", warnings=warnings, checks=checks, note=note.strip(),
             plan_check=plancheck.to_markdown(pcheck, revised),
