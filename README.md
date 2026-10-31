@@ -4,21 +4,28 @@ A self-hosted workbench for open-source work. It helps a **contributor** find an
 follow it up, and helps a **maintainer** check incoming pull requests. AI does the work; you approve
 everything public.
 
+- **Find where to contribute:** repos are ranked by how outside pull requests fare there (merged,
+  closed, time to a first answer, AI rules), and every starter issue is checked live so you never pick
+  one someone else is already fixing.
 - **Fix an issue:** NightShift plans the fix, you approve the plan, it writes a test that fails first
-  and then the fix inside a Docker sandbox, a second model reviews it, and you publish the PR from your
-  own GitHub account.
-- **Check a PR:** paste a pull request; NightShift checks its template and evidence, runs it on the
-  merge preview (its tests must fail without the change and pass with it), reviews it, and lists
-  must-fix and should-fix findings. Nothing is posted.
-- **Follow up:** review threads, reviews, comments and comments on the closing issue come back to you
-  with drafted replies or a revision, pushed as a follow-up commit, never forced.
+  and then the fix inside a Docker sandbox, a second model reviews it, you answer a short understanding
+  check, and you publish the PR from your own GitHub account, following the repo's AI policy.
+- **Check a PR:** paste a pull request, or let NightShift check new PRs on repos you maintain. It checks
+  the template and evidence, reads the PR's own CI, runs it in the sandbox (its tests must fail without
+  the change and pass with it, and the tests related to the change must not regress), reviews it, and
+  lists must-fix and should-fix findings. Posting the review is one click, never automatic.
+- **Follow up:** review comments, red CI and replies on your published PRs reach "Needs you" on their
+  own. NightShift drafts replies or a revision, pushed as a follow-up commit, never forced; when a merged
+  fix leaves its issue open, it drafts a "fixed by" note.
 
 It never merges, never force-pushes and never posts without a click from you.
 
-> **Status:** pre-release. The engine works end to end and has opened real, merged PRs
-> (for example [ai-job-search#768](https://github.com/ai-job-search-dev/ai-job-search/pull/768)).
-> The first release (R1) is being built: a repo-first workspace and a shared prompt builder.
-> See the [PRD](docs/PRD.md) for where it is going.
+> **Status:** pre-release, used daily. Of the 9 pull requests it has made to other people's projects,
+> 3 are merged (for example [laya#62](https://github.com/aayushch/laya/pull/62)), 3 approved and 3
+> waiting, none rejected, usually for under $1 each. The PR checker has been scored against
+> maintainers' own decisions on pydantic, opentelemetry-python and opentelemetry-go-contrib
+> (`nightshift bench`): it rarely blocks a PR maintainers merged, but still misses many they reject.
+> See the [PRD](docs/PRD.md) for where it is going and the [backlog](docs/BACKLOG.md) for what is next.
 
 ## Quick start
 
@@ -45,7 +52,7 @@ flowchart LR
     A[Add a repo] --> B[Setup agent<br/>proves install and tests<br/>in the sandbox]
     B --> C{Issue or PR?}
     C -->|issue you fix| D[Plan] --> G1([Gate 1: approve plan]) --> E[Fix: failing test, then the fix] --> F[Verify and review] --> G2([Gate 2: publish]) --> H[Follow up]
-    C -->|incoming PR| P[Check guidelines and evidence] --> R[Run on merge preview] --> V[Review: must and should findings]
+    C -->|incoming PR| P[Check guidelines, evidence and CI] --> R[Run in the sandbox] --> V[Review: must and should findings]
 ```
 
 - **Checks, cheapest first:** a fix passes five checks in order, so a wrong change is caught before the
@@ -67,13 +74,20 @@ flowchart LR
   outcomes. Spend caps are checked before every call; `nightshift kill` stops all of them.
 - **Memory:** repo knowledge (environment, PR guide, code map) is built once per repo and reused; model
   answers are cached by their inputs; every call is recorded with its cost.
-- **GitHub:** NightShift reads with a read-only token. Publishing, replies and claims use your own `gh`
-  login, only after you approve them.
+- **GitHub:** NightShift reads with a read-only token. Publishing, replies, reviews and claims use your
+  own `gh` login, only after you approve them. A background sync (hourly by default) brings back new
+  feedback, CI results and merges, and waits out a GitHub outage instead of failing every job.
+- **Resume, not restart:** a stopped or revised task continues from where it stopped, keeping its change
+  and test baseline, so a fix that fails at review is not paid for again from the plan.
 
 ## Use
 
-The web app (`nightshift serve`) has Tasks, Repos, PR checks, Jobs and Models pages. The same work is
-available from the CLI:
+The web app (`nightshift serve`) opens on **Overview**: what needs you across repos (plans to approve,
+fixes to publish, review comments, red CI, incoming PR checks) and every repo at a glance. Each repo in
+the sidebar has its own workspace (Overview, Issues & PRs, Map, Knowledge), and a chat beside every
+issue or PR can run its next step. **Where to contribute** ranks your watchlist, **Track record** shows
+what happened to every PR you made, and **Settings** holds the kill switch, spend, and the older pages
+(models, jobs, all tasks, all PR checks, repos). The same work is available from the CLI:
 
 ```bash
 uv run nightshift watch add owner/repo                  # add a repo
@@ -81,10 +95,13 @@ uv run nightshift sandbox setup owner/repo              # find and prove its ins
 uv run nightshift task plan owner/repo 123              # plan a fix for issue #123; stops at Gate 1
 uv run nightshift task approve 1 && uv run nightshift task run 1
 uv run nightshift task publish 1 --yes                  # Gate 2: opens the PR from your account
+uv run nightshift task revise 1 --note "…"             # run it again from where it stopped, with a correction
 uv run nightshift check-pr https://github.com/owner/repo/pull/45
 uv run nightshift task from-pr https://github.com/owner/repo/pull/67   # follow up a PR you opened by hand
+uv run nightshift bench owner/repo --merged 10 --closed 10              # score the PR checker; posts nothing
 uv run nightshift models                                # which model each agent uses, and how each has done
 uv run nightshift spend
+uv run nightshift backup                                # dump the database to backups/
 uv run nightshift kill                                  # block every model call; `nightshift resume` clears it
 ```
 
