@@ -564,3 +564,35 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 .cmd.is-stopped .sb-status { color: var(--warn); }
 @media (max-width: 600px) { .step { grid-template-columns: 60px 1fr; } .step .sb-status, .step > span:last-child { grid-column: 2; } }
 .log-bar .seg button { flex: none; padding: 0 12px; }
+
+/* Where to contribute: the watchlist ranked */
+.compare .page-head h1 { margin: 0; }
+.compare-actions { display: flex; align-items: center; gap: 10px; }
+.lamp-text { color: var(--lamp); font-size: 13px; }
+.warn-text { color: var(--warn); }
+.compare-sort { display: inline-flex; margin: 0 0 10px; }
+.compare-sort button { flex: none; padding: 0 12px; }
+.compare-grid td { white-space: nowrap; }
+.compare-row { cursor: pointer; }
+.compare-row:hover td, .compare-row.open td { background: var(--hover); }
+.compare-repo { font-weight: 500; margin-right: 8px; }
+.compare-detail td { background: var(--bg-sunk); white-space: normal; padding-top: 12px; padding-bottom: 16px; }
+.compare-detail p { margin: 0 0 10px; }
+.ai-chip { font: 500 11px var(--sans); padding: 2px 7px; border-radius: 4px; color: var(--warn); background: var(--warn-soft); }
+.ai-rules { margin: 0 0 12px; font-size: 13px; }
+.ai-rules ul { margin: 4px 0 0; padding-left: 18px; color: var(--ink-2); }
+.detail-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 8px; font-size: 13px; }
+.small-link { margin-left: auto; font-size: 13px; }
+.starters { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.starters li { font-size: 13px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-raise); }
+.starters li p { margin: 4px 0 0; font-size: 12.5px; }
+.starters li.taken { opacity: 0.6; }
+.starters li.taken .starter-title { text-decoration: line-through; }
+.starter-title { margin-right: 8px; }
+.size { font: 500 11px var(--mono); padding: 1px 6px; border-radius: 4px; margin-right: 6px; background: var(--hover); color: var(--ink-2); }
+.size-small { color: var(--ok); background: var(--ok-soft); }
+.size-medium { color: var(--lamp); background: var(--lamp-soft); }
+.taken-why { color: var(--bad); }
+@media (max-width: 700px) { .compare-grid td { white-space: normal; } }
+.compare-grid td:nth-child(2) { white-space: normal; min-width: 220px; }
+.compare-grid td:nth-child(2) .verdict { display: inline-block; margin-top: 2px; }

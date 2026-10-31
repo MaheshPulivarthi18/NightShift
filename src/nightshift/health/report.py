@@ -320,6 +320,14 @@ def is_opportunity(o: dict[str, Any]) -> bool:
     )
 
 
+def starters(opportunities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The report's "Good places to start": issues an outsider can take without asking first, smallest first."""
+    return sorted(
+        (o for o in opportunities if is_opportunity(o) and not o["needs_maintainer_ok"]),
+        key=lambda o: (SIZE_ORDER[o["size"]], KIND_ORDER[o["kind"]], -o["number"]),
+    )
+
+
 def _days(value: float | None) -> str:
     return "no responses seen" if value is None else f"{value:g} days"
 
@@ -417,7 +425,7 @@ async def render_contributor_report(
         missing = o.get("unverified_paths") or []
         return f" (not found in the repo, check: {', '.join(missing)})" if missing else ""
 
-    start = sorted((o for o in actionable if not o["needs_maintainer_ok"]), key=order)
+    start = starters(opportunities)
     out += ["## Good places to start", ""]
     if start:
         out += ["| Issue | Type | Size | What to do | First step |", "| --- | --- | --- | --- | --- |"]

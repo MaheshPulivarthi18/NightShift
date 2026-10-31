@@ -39,6 +39,28 @@ export interface LiveCheck {
   at: string;
 }
 
+// One watched repo on the Compare page, from its latest contributor report (no pulse: no report yet).
+export interface CompareRow {
+  repo: string;
+  refresh: "queued" | "running" | "done" | "failed" | null;
+  report_at: string | null;
+  run_id: string | null;
+  pulse: {
+    verdict: string;
+    verdict_reason: string;
+    merge_rate: number | null;
+    outside_prs_merged: number;
+    outside_prs_closed_unmerged: number;
+    outside_prs_waiting: number;
+    median_pr_response_days: number | null;
+    median_issue_response_days: number | null;
+    last_merge: string | null;
+  } | null;
+  starters: { number: number; title: string; size: "small" | "medium" | "large"; kind: string; summary: string; first_step: string }[];
+  ask_first: number;
+  ai_rules: string[];
+}
+
 export interface ReportView {
   repo: string;
   role: string;
@@ -387,6 +409,8 @@ export const api = {
   runReport: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/run`, {}),
   removeRepo: (repo: string) => call<RepoRow[]>(`/repos/${repo}/remove`, {}),
   setupRepo: (repo: string) => call<{ run_id: string }>(`/repos/${repo}/setup`, {}),
+  compare: () => call<CompareRow[]>("/compare"),
+  refreshCompare: (staleDays = 7) => call<{ queued: string[]; already: boolean }>("/compare/refresh", { stale_days: staleDays }),
   reportLive: (repo: string, runId: string) => call<LiveCheck>(`/repos/${repo}/report/live?run_id=${runId}`),
   report: (repo: string, runId?: string) => call<ReportView>(`/repos/${repo}/report${runId ? `?run_id=${runId}` : ""}`),
   jobs: () => call<JobRow[]>("/jobs"),

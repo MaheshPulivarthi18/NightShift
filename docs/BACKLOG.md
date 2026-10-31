@@ -5,8 +5,7 @@ and the move of every page into the React app; extended 2026-10-31 with what the
 task, the multilspy setup and the 20-repo comparison showed. Tick items off as they land; add the UI bugs you
 found under "Found by you".
 
-**Next up, in order:** the
-watchlist comparison (D4), the understanding check before publishing (L1), the image build limit (S1).
+**Next up, in order:** reports listing taken issues as free (D8), the understanding check before publishing (L1), the image build limit (S1).
 
 ## Found by you
 
@@ -113,10 +112,17 @@ watchlist comparison (D4), the understanding check before publishing (L1), the i
       Fixed: a slow or dropped answer shrinks the page like a 504; a list that still fails at the smallest page
       is left incomplete after two tries, the report says what is missing, and the next run asks for it again.
       A fetch that got nothing still fails.
-- [ ] **D4. Compare the watchlist: "where should I contribute first?"** Today that took 20 CLI reports and a
+- [x] **D4. Compare the watchlist: "where should I contribute first?"** Today that took 20 CLI reports and a
       script. One page ranking watched repos on outside-PR merge rate and response time (last 90 days), PRs left
       unanswered, free starter issues by size, and the repo's AI policy; with "report all" running a few at a time
       and showing progress. Includes enhancement 3 (free issues across the watchlist).
+      Done: the "Where to contribute" page (`#/compare`): every watched repo ranked (best first, merge rate,
+      response time, starter issues), its AI rules, and its starter issues with a live "still free?" check;
+      "Refresh stale reports" reruns missing or week-old reports two at a time.
+- [ ] **D8. Reports list taken issues as free.** redis-py's report listed 10 starter issues; the live check found
+      9 taken (open PRs that close or name them, one assigned, one fixed by a PR named only in a comment). The report
+      should run the live check's sources on its starter list before rendering it, and rank the comparison by
+      live-checked counts.
 - [ ] **D5. Fit with you.** Ranking by stack fit needs a profile: languages, frameworks and past PRs (from your
       GitHub), so "fit" is not typed in by hand.
 - [ ] **D6. Show a repo's AI policy where it matters.** sarama: "explain and defend the changes … without relying
