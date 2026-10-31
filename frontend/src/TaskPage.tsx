@@ -278,6 +278,33 @@ function AttachPr({ task, onChange }: { task: TaskDetail; onChange: () => void }
 
 // Send a finished or stopped task back with a correction: the note joins the approved plan, and the run
 // starts again (from the same commit, or the latest one). A published task's PR and claim are kept.
+// The Coder needs a lock or generated file the plan did not name (a dependency upgrade re-locks): you decide.
+function PermissionPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const p = task.permission!;
+  const answer = (allow: boolean) => {
+    setBusy(true);
+    api.permission(task.id, allow).then(onChange, (e: Error) => (setMsg(e.message), setBusy(false)));
+  };
+  return (
+    <section className="gate">
+      <header>
+        <span className="gate-mark">Needs you</span>
+        <h2>Keep the regenerated files?</h2>
+      </header>
+      <p>The change also rewrote {p.files.map((f) => <code key={f}>{f} </code>)}, which the plan does not name. The Coder says why:</p>
+      <blockquote className="muted">{p.reason}</blockquote>
+      <p className="muted small-print">Either way the run continues from where it stopped. See the files in the Diff tab.</p>
+      <div className="actions">
+        <button className="primary" disabled={busy} onClick={() => answer(true)}>Allow and continue</button>
+        <button disabled={busy} onClick={() => answer(false)}>Restore them and continue</button>
+        {msg && <span className="error">{msg}</span>}
+      </div>
+    </section>
+  );
+}
+
 function RevisePanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   const [note, setNote] = useState("");
   const [latest, setLatest] = useState(false);
@@ -344,6 +371,7 @@ function ActionPanel({ task, onChange }: { task: TaskDetail; onChange: () => voi
       </>
     );
   if (task.status === "approved") return <RunPanel task={task} onChange={onChange} />;
+  if (task.status === "needs_operator" && task.permission) return <PermissionPanel task={task} onChange={onChange} />;
   return null;
 }
 

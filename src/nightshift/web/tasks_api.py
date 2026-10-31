@@ -166,6 +166,7 @@ async def get_task(task_id: int) -> dict[str, Any]:
         "understanding": understanding.view(res),
         "ai_rules": ai_rules(understanding.pr_rules(res.get("brief", ""))),
         "checks": res.get("checks", []),
+        "permission": res.get("permission") if t.status == "needs_operator" else None,
         # Earlier attempts, kept when the task was revised; where the next run picks up, if it continues
         "attempts": res.get("attempts", []),
         "resume": {k: res["resume"][k] for k in ("stopped_at", "todo")} if res.get("resume") else None,
@@ -385,6 +386,21 @@ class Publish(BaseModel):
     remember: bool = False  # keep the attribution and branch prefix for this repo
     replies: dict[str, str] | None = None  # follow-up: the operator's edits to the drafted replies, by comment id
     post_replies: bool = False  # follow-up: post the replies after pushing
+
+
+class PermissionIn(BaseModel):
+    allow: bool  # keep the regenerated files the Coder asked about, or have them restored
+
+
+@router.post("/tasks/{task_id}/permission", dependencies=[Guard])
+async def permission(task_id: int, body: PermissionIn) -> dict[str, Any]:
+    """Answer the Coder's question about regenerated files, then continue the run from where it stopped."""
+    try:
+        await worker.answer_permission(task_id, body.allow)
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+    _background(f"task-{task_id}", worker.run_task(task_id))
+    return await get_task(task_id)
 
 
 class Answers(BaseModel):

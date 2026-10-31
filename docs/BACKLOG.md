@@ -168,9 +168,13 @@ found under "Found by you".
       not, with where; the log says so, the plan shows it, the Checks ladder's plan row passes only if all are
       addressed, and Gate 1 warns about any that are not (no second revision). Live: laya #50's revised plan,
       addressed, with the steps that fix it.
-- [ ] **P2. Tune the scope check from real runs.** Size limits (400 / 1,000 / 2,500 changed lines) are a first
+- [x] **P2. Tune the scope check from real runs.** Size limits (400 / 1,000 / 2,500 changed lines) are a first
       guess. A lock file the plan did not name sends the change back; a dependency upgrade that truly needs it
       should be able to ask you instead of re-planning.
+      Done: limits are a setting (`NIGHTSHIFT_SCOPE_LIMITS`), now 250 / 600 / 2,500 from the 20 benchmark PRs
+      maintainers merged (non-test lines: median 8, 90% under 190, largest 376). A lock or generated file the Coder
+      truly needs can be asked for (`keep_generated` on submit): the run stops, you allow or refuse, and it continues
+      from where it stopped.
 - [ ] **P3. Show regenerated files as a summary,** not a diff: task 72 (laya #50) re-locked ~630 lines in each of
       two lock files; a reviewer, human or model, needs "these packages changed versions", not the lines.
 - [ ] **P4. Long installs eat the task's 30 minutes** (task 72 stopped at the time limit). Count setup and the
