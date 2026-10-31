@@ -68,4 +68,4 @@ ignore_missing_imports = true
 "src/nightshift/health/agents.py" = ["E501"]  # prompt text reads better unwrapped
 "src/nightshift/chat.py" = ["E501"]  # prompt and tool descriptions
 "src/nightshift/context/archmap.py" = ["E501"]  # prompt text and page template
-"src/nightshift/worker/{planner,plancheck,coder,reviewer,prwriter,setup_agent,prcheck,feedback}.py" = ["E501"]  # prompts and tool descriptions
+"src/nightshift/worker/{planner,plancheck,coder,reviewer,prwriter,setup_agent,prcheck,feedback,understanding}.py" = ["E501"]  # prompts and tool descriptions

@@ -9,7 +9,6 @@ free is checked live, per repo, by the report's own live check (`/repos/{o}/{n}/
 from __future__ import annotations
 
 import asyncio
-import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -20,6 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from nightshift.db import Item, Repo, Report, session_scope
+from nightshift.health.brief import ai_rules
 from nightshift.health.graph import run_health_report
 from nightshift.health.report import asks_first, is_opportunity, starters
 from nightshift.web.api import _iso
@@ -30,10 +30,6 @@ router = APIRouter(prefix="/api")
 
 STALE_DAYS = 7
 AT_ONCE = 2  # GitHub's search API refuses bursts; reports also call models
-# A PR rule about AI use. "AI-generated" counts; "generated files" (protobuf, mocks) or a path like
-# `tests/llm/` does not.
-AI_RULE = re.compile(r"\bAI\b|(?<![/\w.])LLMs?\b|\bcopilot\b|\bchatgpt\b|assisted-by|machine-generated", re.I)
-
 _refresh: dict[str, str] = {}  # repo -> queued | running | done | failed, for the refresh in progress
 
 
@@ -68,7 +64,7 @@ def _row(repo: Repo, report: Report | None, titles: dict[int, str]) -> dict[str,
             for o in start
         ],  # fmt: skip
         ask_first=sum(1 for o in f.get("opportunities", []) if is_opportunity(o) and asks_first(o)),
-        ai_rules=[r for r in (f.get("brief") or {}).get("pr_rules", []) if AI_RULE.search(r)],
+        ai_rules=ai_rules((f.get("brief") or {}).get("pr_rules", [])),
     )
     return row
 
