@@ -53,11 +53,20 @@ def test_the_command_reuses_the_environments_runner() -> None:
     assert related_command(["npm test"], files, []) is None  # not a runner this module can reuse
 
 
-def test_go_runs_the_changed_packages() -> None:
-    assert go_packages(["exporters/otlp/client.go", "exporters/otlp/client_test.go", "main.go", "README.md"]) == [
-        ".", "./exporters/otlp"
-    ]  # fmt: skip
-    assert related_command(["go test -race ./..."], [], ["./exporters/otlp"]) == "go test ./exporters/otlp"
+def test_go_runs_the_changed_packages_from_their_modules() -> None:
+    """opentelemetry-go-contrib has a go.mod per instrumentation: `go test` runs from each module's folder."""
+    modules = ["go.mod", "instrumentation/net/http/otelhttp/go.mod", "exporters/autoexport/go.mod"]
+    changed = ["instrumentation/net/http/otelhttp/handler.go", "instrumentation/net/http/otelhttp/internal/x.go",
+               "exporters/autoexport/metrics.go", "tools.go", "README.md"]  # fmt: skip
+    go = go_packages(changed, modules)
+    assert go == {"": ["."], "exporters/autoexport": ["."],
+                  "instrumentation/net/http/otelhttp": [".", "./internal"]}  # fmt: skip
+    assert related_command(["go test ./..."], [], go) == (
+        "go test . && (cd exporters/autoexport && go test .) && (cd instrumentation/net/http/otelhttp && "
+        "go test . ./internal)"
+    )
+    assert related_command(["make test-short"], [], go) is not None  # the suite runs through make
+    assert go_packages(["a/b.go"]) == {"": ["./a"]}  # one module at the root
 
 
 async def test_the_report_says_what_ran() -> None:

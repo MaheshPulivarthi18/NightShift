@@ -62,13 +62,23 @@ async def related_python(box: Sandbox, changed: list[str], limit: int = LIMIT) -
     return ranked[:limit]
 
 
-def go_packages(changed: list[str]) -> list[str]:
-    """`./path` for each Go package the PR changes, for `go test`."""
-    dirs = {posixpath.dirname(f) or "." for f in changed if f.endswith(".go")}
-    return sorted(f"./{d}" if d != "." else "." for d in dirs)
+def go_packages(changed: list[str], modules: list[str] | None = None) -> dict[str, list[str]]:
+    """The Go packages the PR changes, grouped by the module (go.mod folder) they belong to: `go test` runs from
+    a module's folder, and a multi-module repo (opentelemetry-go-contrib) has one per instrumentation.
+    {"" (the root module): ["./exporters/otlp"], "instrumentation/x": ["."]}"""
+    roots = sorted((posixpath.dirname(m) for m in (modules or ["go.mod"])), key=len, reverse=True)
+    out: dict[str, set[str]] = {}
+    for f in changed:
+        if not f.endswith(".go"):
+            continue
+        folder = posixpath.dirname(f)
+        root = next((r for r in roots if r == "" or folder == r or folder.startswith(r + "/")), "")
+        rel = folder[len(root) :].lstrip("/") if root else folder
+        out.setdefault(root, set()).add(f"./{rel}" if rel else ".")
+    return {root: sorted(pkgs) for root, pkgs in sorted(out.items())}
 
 
-def related_command(test_commands: list[str], python_tests: list[str], go: list[str]) -> str | None:
+def related_command(test_commands: list[str], python_tests: list[str], go: dict[str, list[str]]) -> str | None:
     """One command running the related tests with the environment's own runner, or None when there are none or
     the environment has no runner this module knows."""
     if python_tests:
@@ -82,21 +92,32 @@ def related_command(test_commands: list[str], python_tests: list[str], go: list[
                     continue
                 files = " ".join(shlex.quote(t) for t in inside)
                 return f"{prefix}{m.group(1)} {files} -q -p no:cacheprovider"
-    if go and any(re.search(r"\bgo\s+test\b", c) for c in test_commands):
-        return "go test " + " ".join(go)
+    if go:  # a repo with a go.mod: its suite may run through make (`make test-short`), but `go test` always works
+        parts = [
+            f"go test {' '.join(pkgs)}" if not root else f"(cd {shlex.quote(root)} && go test {' '.join(pkgs)})"
+            for root, pkgs in go.items()
+        ]
+        return " && ".join(parts)
     return None
 
 
 async def related(box: Sandbox, changed: list[str], test_commands: list[str]) -> tuple[str | None, str]:
     """(the command, a line for the report). The repo is checked out at the base."""
     python_tests = await related_python(box, changed)
-    go = go_packages(changed)
+    go: dict[str, list[str]] = {}
+    if any(f.endswith(".go") for f in changed):
+        tracked = (await box.exec("git ls-tree -r --name-only HEAD")).stdout.splitlines()
+        if modules := [t for t in tracked if posixpath.basename(t) == "go.mod"]:
+            go = go_packages(changed, modules)
     command = related_command(test_commands, python_tests, go)
     if command and python_tests:
         shown = ", ".join(python_tests[:6]) + (" …" if len(python_tests) > 6 else "")
         return command, f"Also ran the {len(python_tests)} test files related to the change: {shown}."
     if command:
-        return command, f"Also ran the tests of the changed Go packages: {', '.join(go)}."
+        packages = [
+            posixpath.join(root, p.removeprefix("./")).rstrip("/.") or "." for root, ps in go.items() for p in ps
+        ]
+        return command, f"Also ran the tests of the changed Go packages: {', '.join(packages)}."
     code = [f for f in changed if not is_test_path(f) and not is_doc_path(f)]
     if code and (python_tests or go):
         return None, "Related tests were found, but the environment's test runner is not one this check can reuse."
