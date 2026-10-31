@@ -86,3 +86,13 @@ def missing_paths(text: str, paths: set[str]) -> list[str]:
             continue
         out.append(cited)
     return out
+
+
+# A PR rule about AI use. "AI-generated" counts; "generated files" (protobuf, mocks) or a path like
+# `tests/llm/` does not.
+AI_RULE = re.compile(r"\bAI\b|(?<![/\w.])LLMs?\b|\bcopilot\b|\bchatgpt\b|assisted-by|machine-generated", re.I)
+
+
+def ai_rules(pr_rules: list[str]) -> list[str]:
+    """The repo's PR rules that are about AI use (sarama: "explain and defend the changes … without AI")."""
+    return [r for r in pr_rules if AI_RULE.search(r)]

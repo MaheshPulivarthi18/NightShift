@@ -205,6 +205,55 @@ def repo_image_name(full_name: str) -> str:
     return "nightshift-repo/" + full_name.lower().replace("/", "__")
 
 
+# A setup that fails part way keeps what it got: after each slow command that succeeded, the sandbox is saved
+# here, and the next setup that starts with the same commands resumes from it instead of running them again.
+CHECKPOINT_SECONDS = 20  # a command faster than this is cheaper to run again than to save
+CHECKPOINTS_KEPT = 2  # per repo; a setup that succeeds removes them all
+LOG_PATH = re.compile(r"(?<![\w.-])(/[\w.@+-]+(?:/[\w.@+-]+)*\.(?:log|txt))\b")
+LOG_LINES = 60
+
+
+def checkpoint_name(full_name: str) -> str:
+    return "nightshift-partial/" + full_name.lower().replace("/", "__")
+
+
+def setup_key(base: str, sums: str, commands: list[str]) -> str:
+    """The image key for a setup: the base image, the dependency files' hashes and the commands run."""
+    return hashlib.sha256((base + sums + "\n".join(commands)).encode()).hexdigest()[:12]
+
+
+async def _checkpoint(box: Sandbox, full_name: str, key: str, base: str) -> None:
+    """Save the sandbox after a slow command that succeeded; keep only the newest few for the repo."""
+    tag = f"{checkpoint_name(full_name)}:{key}"
+    try:
+        await box.commit(tag, base)
+    except SandboxError as e:  # a checkpoint is an optimisation: the setup goes on without it
+        log.warning("setup_checkpoint_not_saved", repo=full_name, error=str(e))
+        return
+    res = await _docker("images", checkpoint_name(full_name), "--format", "{{.Repository}}:{{.Tag}}", timeout=30)
+    for old in [t for t in res.stdout.splitlines() if t and not t.endswith(":<none>")][CHECKPOINTS_KEPT:]:
+        await _docker("rmi", "-f", old, timeout=60)
+
+
+async def _drop_checkpoints(full_name: str) -> None:
+    res = await _docker("images", checkpoint_name(full_name), "--format", "{{.Repository}}:{{.Tag}}", timeout=30)
+    for tag in [t for t in res.stdout.splitlines() if t and not t.endswith(":<none>")]:
+        # -f: the sandbox that just finished may still run from it; only the name goes, and the repo image
+        # built on top of it keeps the layers it needs
+        await _docker("rmi", "-f", tag, timeout=60)
+
+
+async def _log_tails(box: Sandbox, output: str) -> str:
+    """The end of each log file a failed command's output names ("see /tmp/build.log"): often the real error
+    is only there. At most two files."""
+    out = []
+    for path in list(dict.fromkeys(LOG_PATH.findall(output)))[:2]:
+        res = await box.exec(f"tail -n {LOG_LINES} -- {shlex.quote(path)}", workdir="/")
+        if res.ok and res.stdout.strip():
+            out.append(f"\n--- the end of {path} ---\n{res.stdout.strip()[-3000:]}")
+    return "".join(out)
+
+
 class Sandbox:
     """One running container. Use `async with await Sandbox.start(...)` so it is always removed."""
 
@@ -225,6 +274,9 @@ class Sandbox:
             # Package downloads: patient timeouts and retries (no secrets; these are plain tool settings).
             "--env", "UV_HTTP_TIMEOUT=120", "--env", "UV_HTTP_RETRIES=6",
             "--env", "PIP_DEFAULT_TIMEOUT=120", "--env", "npm_config_fetch_retries=5",
+            # A repo image from an earlier run already has a .venv, and `uv venv` refuses to overwrite one
+            # without this; the packages come back from uv's cache in the image.
+            "--env", "UV_VENV_CLEAR=1",
             image, "sleep", "infinity",
         )  # fmt: skip
         if not res.ok:
@@ -393,8 +445,7 @@ async def prepare_repo(
                  if p.rsplit("/", 1)[-1] in DEP_FILES]  # fmt: skip
         sums = (await _must(box, "sha256sum " + " ".join(map(shlex.quote, files)), "hash deps")).stdout if files else ""
         # The base image is part of the key: a repo image built on another base is never reused.
-        key = hashlib.sha256((base + sums + "\n".join(setup)).encode()).hexdigest()[:12]
-        tag = f"{repo_image_name(full_name)}:{key}"
+        tag = f"{repo_image_name(full_name)}:{setup_key(base, sums, setup)}"
 
         if await image_exists(tag):
             await box.remove()
@@ -406,14 +457,28 @@ async def prepare_repo(
 
         # No exact match: start from this repo's newest image, if any, and run the setup on top of it, so
         # only packages that changed are downloaded. Setup commands must tolerate an existing install.
-        if previous := await newest_repo_image(full_name, base):
+        done = 0  # setup commands already run, in a checkpoint this setup resumes from
+        for k in range(len(setup) - 1, 0, -1):
+            saved = f"{checkpoint_name(full_name)}:{setup_key(base, sums, setup[:k])}"
+            if await image_exists(saved):
+                await box.remove()
+                box = await Sandbox.start(saved)
+                await _must(box, "git fetch --quiet --filter=blob:none origin", "fetch")
+                await _checkout(box, ref, fetch_url)
+                done = k
+                await events.record(
+                    events.current_run(), events.FIXED,
+                    f"Setup resumed from a checkpoint: {k} of {len(setup)} commands already done",
+                )  # fmt: skip
+                break
+        if not done and (previous := await newest_repo_image(full_name, base)):
             await box.remove()
             box = await Sandbox.start(previous)
             await _must(box, "git fetch --quiet --filter=blob:none origin", "fetch")
             await _checkout(box, ref, fetch_url)
             log.info("sandbox_from_previous_image", repo=full_name, image=previous)
 
-        for command in setup:
+        for i, command in enumerate(setup[done:], start=done):
             log.info("sandbox_setup", repo=full_name, command=command)
             res = await box.exec(command, show=command, note="setup")
             if not res.ok and not res.timed_out and NETWORK_ERROR.search(res.tail(4000)):
@@ -421,8 +486,12 @@ async def prepare_repo(
                 # a download that timed out usually works the second time
                 res = await box.exec(command, show=command, note="setup, again after a network error")
             if not res.ok:
-                raise SandboxError(f"setup command `{command}` failed (exit {res.code}):\n{res.tail()}")
+                logs = await _log_tails(box, res.tail(8000))
+                raise SandboxError(f"setup command `{command}` failed (exit {res.code}):\n{res.tail()}{logs}")
+            if res.seconds >= CHECKPOINT_SECONDS and i < len(setup) - 1:
+                await _checkpoint(box, full_name, setup_key(base, sums, setup[: i + 1]), base)
         await box.commit(tag, base)
+        await _drop_checkpoints(full_name)  # this setup is saved whole now
         log.info("sandbox_image_saved", repo=full_name, image=tag)
         return box, False
     except BaseException:

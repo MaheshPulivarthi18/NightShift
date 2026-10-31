@@ -99,8 +99,19 @@ FIXTURE = [
 
 async def fake_fetch(
     self: GitHubClient, full_name: str, since: Any, lookback: int, limit: int
-) -> tuple[list[dict[str, Any]], bool]:
-    return FIXTURE, False
+) -> tuple[list[dict[str, Any]], bool, list[str]]:
+    return FIXTURE, False, []
+
+
+class _Free:
+    linked_prs: list[Any] = []
+
+    def blockers(self, operator: str | None) -> list[str]:
+        return []
+
+
+async def free_issue(full_name: str, number: int) -> _Free:
+    return _Free()  # every starter is still free when re-checked
 
 
 async def same_name(self: GitHubClient, full_name: str) -> str:
@@ -219,6 +230,7 @@ async def repo_name(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIte
     monkeypatch.setattr(GitHubClient, "fetch_items", fake_fetch)
     monkeypatch.setattr(GitHubClient, "fetch_repo_docs", fake_docs)
     monkeypatch.setattr(GitHubClient, "canonical_name", same_name)
+    monkeypatch.setattr(graph, "fetch_issue", free_issue)
     monkeypatch.setattr(memory, "embed", fake_embed)
     monkeypatch.setattr(LLMGateway, "__init__", lambda self, run_id, repo_id, client=None: None)
     monkeypatch.setattr(LLMGateway, "parse", fake_parse)

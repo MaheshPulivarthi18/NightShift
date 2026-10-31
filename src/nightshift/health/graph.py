@@ -31,11 +31,13 @@ from nightshift.health.brief import briefer_input, missing_paths
 from nightshift.health.contributor import maintainers, prs_by_issue, pulse, work_status
 from nightshift.health.linker import Edge, candidate_groups, explicit_edges
 from nightshift.health.report import (
+    asks_first,
     build_findings_for_verification,
     is_opportunity,
     render_contributor_report,
     render_report,
     save_report,
+    starters,
 )
 from nightshift.health.signals import pr_signals
 from nightshift.llm import AgentOutputError, BudgetExceeded, KillSwitchActive, LLMGateway, ModelRefused
@@ -47,6 +49,7 @@ from nightshift.memory import (
     refresh_embeddings,
     upsert_items,
 )
+from nightshift.worker.issue import fetch_issue
 
 log = structlog.get_logger()
 
@@ -55,6 +58,7 @@ ASSESS_IF_IDLE_DAYS = 30
 SIMILAR_NEIGHBOURS = 5
 VERIFY_CHUNK = 8
 SCOUT_CHUNK = 8
+RECHECK_LIMIT = 15  # starter issues re-checked on GitHub before a contributor report is saved
 
 
 class HealthState(TypedDict, total=False):
@@ -114,7 +118,7 @@ async def fetch(state: HealthState) -> HealthState:
             # Items stored by an older fetcher lack newer fields: refetch everything once.
             since = repo.last_fetched_at if repo.fetch_version >= FETCH_VERSION else None
             repo_id, role = repo.id, repo.role
-        raw, truncated = await gh.fetch_items(
+        raw, truncated, gaps = await gh.fetch_items(
             state["repo"], since, settings.closed_lookback_days, settings.max_items_per_run
         )
     finally:
@@ -122,12 +126,13 @@ async def fetch(state: HealthState) -> HealthState:
     async with session_scope() as s:
         stored = await s.get(Repo, repo_id)
         assert stored is not None
-        changed = await upsert_items(s, stored, raw)
+        # A partial fetch does not move the "fetched up to" mark, so the next run asks for what was missed.
+        changed = await upsert_items(s, stored, raw, complete=not gaps)
         stored.fetch_version = FETCH_VERSION
     async with session_scope() as s:
         embedded = await refresh_embeddings(s, repo_id)
     log.info("fetched", repo=state["repo"], fetched=len(raw), changed=changed, embedded=embedded, truncated=truncated)
-    stats = {"fetched": len(raw), "changed": changed, "first_run": since is None, "truncated": truncated}
+    stats = {"fetched": len(raw), "changed": changed, "first_run": since is None, "truncated": truncated, "gaps": gaps}
     return {"repo_id": repo_id, "role": role, "stats": stats}
 
 
@@ -350,7 +355,8 @@ async def scout(state: HealthState) -> HealthState:
             worked_on.append({"issue": issue.number, "prs": [], "source": "claimed", "by": ws.claimed_by})
             continue
         related = [by_number[n] for n in sorted(similar_prs.get(issue.number, set()) - set(ws.stalled_prs))]
-        candidates.append((issue, {"status": ws.status, "stalled_prs": ws.stalled_prs}, related[:3]))
+        st = {"status": ws.status, "stalled_prs": ws.stalled_prs, "open_prs": ws.open_stalled}
+        candidates.append((issue, st, related[:3]))
 
     skipped_for_cap = max(0, len(candidates) - settings.max_opportunities)
     candidates = candidates[: settings.max_opportunities]
@@ -369,6 +375,7 @@ async def scout(state: HealthState) -> HealthState:
         # Paths the Scout names that the repo does not have; shown so the reader double-checks them.
         unverified = missing_paths(opp.first_step, repo_paths) if repo_paths else []
         opportunities.append({**opp.model_dump(), **status_of[opp.number], "unverified_paths": unverified})
+    not_rechecked = await recheck_starters(state["repo"], opportunities, worked_on)
 
     stats = {
         **state["stats"],
@@ -376,6 +383,7 @@ async def scout(state: HealthState) -> HealthState:
         "open_prs": sum(1 for it in items if it.kind == "pr" and it.state == "OPEN"),
         "issues_scouted": len(candidates),
         "issues_not_scouted": skipped_for_cap,
+        "starters_not_rechecked": not_rechecked,
         "skipped_groups": skipped,
     }
     return {
@@ -385,6 +393,40 @@ async def scout(state: HealthState) -> HealthState:
         "brief": brief.model_dump() if brief else None,
         "stats": stats,
     }
+
+
+async def recheck_starters(repo: str, opportunities: list[dict[str, Any]], worked_on: list[dict[str, Any]]) -> int:
+    """Ask GitHub about each starter issue, then each "ask first" one (up to RECHECK_LIMIT), with every
+    source planning uses (assignees, fixes named only in a comment, PRs that close or name it, PRs with the same
+    key terms): the stored data misses some, and a listed issue someone already has wastes a contributor's
+    time. A taken one moves to "Already being worked on" with the reason. Returns how many could not be
+    checked (GitHub unreachable)."""
+    login = get_settings().github_login or None
+    gate = asyncio.Semaphore(2)  # GitHub's search API refuses bursts
+
+    async def one(o: dict[str, Any]) -> bool:
+        async with gate:
+            try:
+                view = await fetch_issue(repo, o["number"])
+            except Exception as e:  # GitHubError, or a network error: kept, and the report says so
+                log.warning("starter_not_rechecked", repo=repo, number=o["number"], error=str(e))
+                return False
+        why = view.blockers(login)
+        # Held only by open PRs already found abandoned: still yours to ask about, so it stays under "ask first"
+        holders = {
+            p.number for p in view.linked_prs if p.likely and p.state in ("open", "merged") and p.author != login
+        }
+        if why and holders and holders <= set(o.get("open_prs") or []) and len(why) == len(holders):
+            return True
+        if why:
+            o["claimed"] = True
+            worked_on.append({"issue": o["number"], "prs": [], "source": "checked", "why": "; ".join(why)})
+        return True
+
+    ask = [o for o in opportunities if is_opportunity(o) and asks_first(o)]
+    listed = starters(opportunities) + sorted(ask, key=lambda o: -o["number"])
+    checked = await asyncio.gather(*(one(o) for o in listed[:RECHECK_LIMIT]))
+    return sum(not ok for ok in checked)
 
 
 async def contributor_report(state: HealthState) -> HealthState:

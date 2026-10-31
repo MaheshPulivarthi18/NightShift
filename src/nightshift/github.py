@@ -130,6 +130,20 @@ class GitHubTimeout(GitHubError):
 
 PAGE_SIZE = {"issues": 50, "pullRequests": 25}
 MIN_PAGE_SIZE = 5
+GIVE_UP_AT_MIN = 2  # timeouts at the smallest page before a list is left incomplete
+NETWORK_ERRORS = (httpx.TimeoutException, httpx.TransportError)  # slow reads, resets, dropped connections
+
+
+def _clean(value: Any) -> Any:
+    """GitHub text can hold a null byte (a PR body quoting binary data), which Postgres cannot store: one in
+    jaegertracing/jaeger failed a whole report. Drop them from everything GitHub returns."""
+    if isinstance(value, str):
+        return value.replace("\x00", "") if "\x00" in value else value
+    if isinstance(value, list):
+        return [_clean(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _clean(v) for k, v in value.items()}
+    return value
 
 
 class GitHubClient:
@@ -151,7 +165,10 @@ class GitHubClient:
 
     async def graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         for attempt in range(5):
-            resp = await self._http.post(self._url, json={"query": query, "variables": variables})
+            try:
+                resp = await self._http.post(self._url, json={"query": query, "variables": variables})
+            except NETWORK_ERRORS as e:  # a slow or dropped answer: like a 504, a smaller page usually works
+                raise GitHubTimeout(f"GitHub did not answer the query ({type(e).__name__}).") from e
             if resp.status_code in (502, 504):
                 raise GitHubTimeout(f"GitHub timed out on the query (HTTP {resp.status_code}).")
             if resp.status_code in (403, 429, 503):
@@ -169,7 +186,7 @@ class GitHubClient:
                 raise GitHubTimeout(f"GitHub returned an incomplete response ({e}).") from e
             if payload.get("errors"):
                 raise GitHubError(payload["errors"][0].get("message", "GraphQL error"))
-            data: dict[str, Any] = payload["data"]
+            data: dict[str, Any] = _clean(payload["data"])
             remaining = (data.get("rateLimit") or {}).get("remaining")
             if remaining is not None and remaining < 50:
                 log.warning("github_rate_limit_low", remaining=remaining)
@@ -180,7 +197,14 @@ class GitHubClient:
         """GET a REST endpoint (path relative to the API root), with the same backoff as GraphQL."""
         url = self._url.removesuffix("/graphql") + path
         for attempt in range(5):
-            resp = await self._http.get(url)
+            try:
+                resp = await self._http.get(url)
+            except NETWORK_ERRORS as e:  # a dropped connection is usually gone a few seconds later
+                if attempt == 4:
+                    raise GitHubError(f"GitHub is not reachable ({type(e).__name__}).") from e
+                log.warning("github_network_retry", error=type(e).__name__, attempt=attempt + 1)
+                await asyncio.sleep(2 ** (attempt + 1))
+                continue
             if resp.status_code in (403, 429, 502, 503, 504):
                 wait = float(resp.headers.get("retry-after", 2 ** (attempt + 2)))
                 log.warning("github_backoff", status=resp.status_code, wait_s=wait)
@@ -190,7 +214,7 @@ class GitHubClient:
                 raise GitHubError("GitHub rejected GITHUB_TOKEN (401). Check that it is valid and not expired.")
             if resp.is_error:
                 raise GitHubError(f"GitHub returned HTTP {resp.status_code}: {resp.text[:200]}")
-            return resp.json()
+            return _clean(resp.json())
         raise GitHubError("GitHub kept rate limiting; giving up for now.")
 
     async def canonical_name(self, full_name: str) -> str:
@@ -243,14 +267,16 @@ class GitHubClient:
     async def _pages(self, query: str, variables: dict[str, Any], conn: str) -> AsyncIterator[dict[str, Any]]:
         cursor = None
         size = PAGE_SIZE[conn]
-        timeouts = 0
+        timeouts = at_min = 0
         while True:
             try:
                 data = await self.graphql(query, {**variables, "cursor": cursor, "first": size})
             except GitHubTimeout:
-                # Heavy pages time out on busy repos: retry the same cursor with a smaller page.
+                # Heavy pages time out on busy repos: retry the same cursor with a smaller page. When even the
+                # smallest page keeps failing, stop: the caller keeps what came so far and says what is missing.
                 timeouts += 1
-                if timeouts > 6:
+                at_min += size == MIN_PAGE_SIZE
+                if at_min >= GIVE_UP_AT_MIN or timeouts > 6:
                     raise
                 size = max(MIN_PAGE_SIZE, size // 2)
                 log.warning("github_timeout_shrinking_page", conn=conn, page_size=size)
@@ -268,17 +294,20 @@ class GitHubClient:
 
     async def fetch_items(
         self, full_name: str, since: datetime | None, lookback_days: int, limit: int
-    ) -> tuple[list[dict[str, Any]], bool]:
-        """Return normalized issues and PRs, and whether `limit` cut the fetch short.
+    ) -> tuple[list[dict[str, Any]], bool, list[str]]:
+        """Return normalized issues and PRs, whether `limit` cut the fetch short, and what GitHub did not
+        return: a list GitHub kept timing out on is left incomplete, said in plain words, and the rest goes on.
 
         `since=None` means a first, full run. Issues and PRs each get `limit`, so a repo
         with many issues still has its PRs fetched; open items come before closed ones.
+        Raises when GitHub returned nothing at all.
         """
         owner, name = full_name.split("/", 1)
         base = {"owner": owner, "name": name}
         closed_since = since or datetime.now(UTC) - timedelta(days=lookback_days)
         out: list[dict[str, Any]] = []
         truncated = False
+        gaps: list[str] = []
 
         issues = 0
         for states, after in [(["OPEN"], since), (["CLOSED"], closed_since)]:
@@ -286,28 +315,45 @@ class GitHubClient:
                 truncated = True
                 break
             variables = {**base, "states": states, "since": after.isoformat() if after else None}
-            async for node in self._pages(ISSUES_QUERY, variables, "issues"):
-                out.append(normalize_issue(node))
-                issues += 1
-                if issues >= limit:
-                    truncated = True
-                    break
+            got = 0
+            try:
+                async for node in self._pages(ISSUES_QUERY, variables, "issues"):
+                    out.append(normalize_issue(node))
+                    issues += 1
+                    got += 1
+                    if issues >= limit:
+                        truncated = True
+                        break
+            except GitHubTimeout as e:
+                gaps.append(_gap(f"{states[0].lower()} issues", got, e))
 
         prs = 0
         for states, after in [(["OPEN"], since), (["CLOSED", "MERGED"], closed_since)]:
             if prs >= limit:
                 truncated = True
                 break
-            async for node in self._pages(PRS_QUERY, {**base, "states": states}, "pullRequests"):
-                updated = _ts(node["updatedAt"])
-                if after and updated and updated < after:
-                    break  # ordered by updatedAt desc; the rest is older
-                out.append(normalize_pr(node))
-                prs += 1
-                if prs >= limit:
-                    truncated = True
-                    break
-        return out, truncated
+            got = 0
+            try:
+                async for node in self._pages(PRS_QUERY, {**base, "states": states}, "pullRequests"):
+                    updated = _ts(node["updatedAt"])
+                    if after and updated and updated < after:
+                        break  # ordered by updatedAt desc; the rest is older
+                    out.append(normalize_pr(node))
+                    prs += 1
+                    got += 1
+                    if prs >= limit:
+                        truncated = True
+                        break
+            except GitHubTimeout as e:
+                gaps.append(_gap(f"{states[0].lower()} PRs", got, e))
+        if gaps and not out:
+            raise GitHubError("GitHub returned nothing for this repo: " + "; ".join(gaps))
+        return out, truncated, gaps
+
+
+def _gap(what: str, got: int, e: Exception) -> str:
+    log.warning("github_list_incomplete", what=what, got=got, error=str(e))
+    return f"GitHub kept timing out on {what}, so only the first {got} were read"
 
 
 def _ts(value: str | None) -> datetime | None:

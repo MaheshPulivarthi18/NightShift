@@ -23,7 +23,7 @@ import shlex
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import structlog
 from sqlalchemy import func, select, update
@@ -215,6 +215,8 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
         # An independent check of the plan against the code; must-fix findings send it back to the Planner once.
         # A plan with nothing to code (it asks the maintainers first) has nothing to check.
         pcheck = plancheck.PlanCheck(summary="Not checked: the plan asks questions before any code.", findings=[])
+        rechecked: list[plancheck.Addressed] = []
+        open_findings: list[str] = []  # must-fix findings the revised plan still misses, for Gate 1
         if plan.actionable:
             await events.record(task.run_id, "node_start", "plan check", node="plan_check")
             draft = planner.to_markdown(plan, title=f"{full_name}#{number} {issue.title}", warnings=[])
@@ -232,9 +234,24 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
             )  # fmt: skip
             inputs["plan_check"] = plancheck.as_note(musts)
             plan = await planner.make_plan(llm, planner.plan_prompt(**inputs))
-            await events.record(
-                task.run_id, events.FIXED, "Revised plan ready: it addresses the plan check (checked once, not again)"
-            )
+            revised_draft = planner.to_markdown(plan, title=f"{full_name}#{number} {issue.title}", warnings=[])
+            rechecked = await plancheck.recheck(llm, musts, revised_draft, avoid=family(llm.last_model))
+            still = [f for f, r in zip(musts, rechecked, strict=True) if not r.addressed]
+            if still:  # warned at Gate 1, not re-planned again: one revision is the cap
+                await events.record(
+                    task.run_id, "warning",
+                    f"The revised plan still does not address {len(still)} of {len(musts)} must-fix findings",
+                )  # fmt: skip
+                open_findings = [
+                    f"Plan check: the revised plan does not address `{f.location}`: {f.problem} ({r.how})"
+                    for f, r in zip(musts, rechecked, strict=True) if not r.addressed
+                ]  # fmt: skip
+            else:
+                await events.record(
+                    task.run_id,
+                    events.FIXED,
+                    f"Revised plan re-checked: it addresses all {len(musts)} must-fix findings",
+                )
 
         # Run the setup now, before Gate 1, so a plan whose commands cannot work is caught before any paid run.
         # A failure goes back to the Planner once. Success also saves the repo image the run will start from.
@@ -254,6 +271,7 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
                 await events.record(task.run_id, events.FIXED, "The revised setup commands work in the sandbox")
         checks = ["setup commands ran successfully in the sandbox"] if not setup_error else []
         warnings = [f"setup failed in the sandbox: {setup_error[-600:]}"] if setup_error else []
+        warnings += open_findings
         repro_checks, repro_warnings = reproduction_note(repro)
         checks += repro_checks
         warnings += repro_warnings
@@ -265,9 +283,11 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
             warnings.append(f"Setup agent: environment {env.status}: {why}")
         warnings += [f"`{p}` does not exist in the repo" for p in planner.unknown_paths(plan, tracked)]
         warnings += [moved] if moved else []
+        # PRs that share the issue's key terms: not proof someone has it, so a warning to check, not a refusal
+        warnings += [f"{w}. Check it before approving" for w in issue.possible(settings.github_login or None)]
         markdown = planner.to_markdown(
             plan, title=f"{full_name}#{number} {issue.title}", warnings=warnings, checks=checks, note=note.strip(),
-            plan_check=plancheck.to_markdown(pcheck, revised),
+            plan_check=plancheck.to_markdown(pcheck, revised, rechecked),
         )  # fmt: skip
         (task_dir(full_name, task.id) / "plan.md").write_text(markdown)
         await _save(
@@ -283,7 +303,11 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
                 "reproduced": repro.model_dump() if repro else None,
                 "planning_note": note.strip(),
                 "relevant_files": l2_paths,  # for the context check after the run
-                "plan_check": {**pcheck.model_dump(mode="json"), "revised": revised},
+                "plan_check": {
+                    **pcheck.model_dump(mode="json"),
+                    "revised": revised,
+                    "recheck": [r.model_dump() for r in rechecked],
+                },  # fmt: skip
                 "environment": {"system_packages": env.system_packages, "tools": env.tools}
                 if env.status == "ready"
                 else {},
@@ -374,18 +398,26 @@ async def latest_commit(full_name: str) -> str:
         await gh.aclose()
 
 
+Mode = Literal["continue", "restart"]
+
+
 async def revise(
     task_id: int,
     note: str,
     setup_commands: list[str] | None = None,
     test_commands: list[str] | None = None,
     latest: bool = False,
+    mode: Mode = "continue",
 ) -> Task:
     """Send a finished or stopped task back for another run, with the operator's correction added to
-    the approved plan (and, if given, new setup or test commands). The run starts again from the same
-    base commit; the old result is replaced."""
+    the approved plan (and, if given, new setup or test commands).
+
+    `continue` (the default) picks up where the last attempt stopped: the next run applies its change,
+    reuses its baseline, and gives the Coder only what failed (the review's comments, the regressions, the
+    check's problems) instead of starting from the plan again. `restart` starts from the base commit. Either
+    way the attempt is kept in the task's history (`result["attempts"]`, its diff in the task's folder)."""
     await mark_stale_runs()
-    task, _ = await load_task(task_id)
+    task, repo = await load_task(task_id)
     if task.status not in ("ready", "needs_operator", "failed", "published"):
         raise TaskError(f"Task {task_id} is {task.status}; it cannot be revised now.")
     combined = f"{task.note}\n\nRevision: {note}" if task.note else f"Revision: {note}"
@@ -395,6 +427,10 @@ async def revise(
         for k, v in task.result.items()
         if k in ("brief", "map_commit", "pr_url", "claim_url", "published_diff", "branch")
     }
+    if attempt := _attempt_record(task, task_dir(repo.full_name, task.id)):
+        keep["attempts"] = [*task.result.get("attempts", []), attempt]
+    if mode == "continue" and (resume := resume_point(task)):
+        keep["resume"] = resume
     plan = dict(task.plan)
     if setup_commands:
         plan["setup_commands"] = setup_commands
@@ -403,11 +439,84 @@ async def revise(
     if why := run_blocker(plan):
         raise TaskError(why)
     if latest:  # upstream moved on (Gate 2 drift): redo the fix on the current default branch
-        _, repo = await load_task(task_id)
         base = await latest_commit(repo.full_name)
         combined += f"\n\nRebased from {task.base_commit[:7]} to {base[:7]} (latest default branch)."
         await _save(task, base_commit=base)
     await _save(task, status="approved", note=combined, plan=plan, result=keep, diff=None, error=None)
+    return task
+
+
+def _last_failure(result: dict[str, Any]) -> str | None:
+    """The check the last attempt failed last, from its Checks (plan, scope, test, review, suites)."""
+    failed = [c for c in result.get("checks", []) if not c.get("ok")]
+    return failed[-1]["check"] if failed else None
+
+
+def resume_point(task: Task) -> dict[str, Any] | None:
+    """What the next run needs to pick up where this attempt stopped, or None when there is nothing to keep."""
+    diff = task.diff or task.result.get("partial_diff") or ""
+    if not diff.strip():
+        return None
+    res = task.result
+    stage = _last_failure(res)
+    reviews = res.get("reviews") or []
+    last_review = reviews[-1] if reviews else None
+    if stage == "review" and last_review:
+        fields = {k: v for k, v in last_review.items() if k not in ("round", "markdown")}
+        todo = reviewer.feedback_for_coder(reviewer.Review.model_validate(fields))
+    elif res.get("check") and not res["check"].get("passed"):
+        todo = "The checks failed on the last attempt:\n\n" + FixCheck.model_validate(res["check"]).report()
+    elif task.error:
+        todo = f"The last attempt stopped: {task.error}"
+    else:  # it finished; the operator's revision note says what to change
+        todo = "The last attempt finished; the developer's revision note says what to change."
+    return {
+        "diff": diff,
+        "base": task.base_commit,
+        "baseline": res.get("baseline") or [],
+        "stopped_at": stage or ("time or step limit" if task.error and "limit" in task.error else task.status),
+        "todo": todo,
+    }
+
+
+def _attempt_record(task: Task, folder: Path) -> dict[str, Any] | None:
+    """A finished or stopped attempt, kept when the task is revised: its summary here, its diff in a file."""
+    diff = task.diff or task.result.get("partial_diff") or ""
+    if not diff and not task.result.get("checks"):
+        return None
+    n = len(task.result.get("attempts", [])) + 1
+    (folder / f"attempt-{n}.patch").write_text(diff)
+    return {
+        "n": n, "status": task.status, "error": task.error, "base": task.base_commit,
+        "stopped_at": _last_failure(task.result), "checks": task.result.get("checks", []),
+        "reviews": [{"round": r.get("round"), "verdict": r.get("verdict")} for r in task.result.get("reviews", [])],
+        "cost_usd": task.cost_usd, "diff_file": f"attempt-{n}.patch", "lines": diff.count("\n"),
+        "at": datetime.now(UTC).isoformat(),
+    }  # fmt: skip
+
+
+async def answer_permission(task_id: int, allow: bool) -> Task:
+    """The developer's answer when the Coder asked to keep regenerated files: allowed, they join the plan's
+    allowed files; refused, the Coder is told to restore them. Either way the run continues from where it stopped."""
+    task, _ = await load_task(task_id)
+    asked = task.result.get("permission")
+    if task.status != "needs_operator" or not asked:
+        raise TaskError(f"Task {task_id} is not waiting for an answer about regenerated files.")
+    files = ", ".join(asked["files"])
+    if allow:
+        plan = {**task.plan, "allowed_generated": sorted({*task.plan.get("allowed_generated", []), *asked["files"]})}
+        await _save(task, plan=plan)
+        note = f"The developer allowed the change to regenerate {files} ({asked['reason']}). Submit again."
+    else:
+        restore = f"`git checkout {task.base_commit[:12]} -- <file>`"
+        note = f"The developer wants {files} kept as on the base commit: restore them with {restore} and find a way "
+        note += "that does not need them."
+    await revise(task_id, note)  # continue: the change, the baseline and the reason it stopped are kept
+    task, _ = await load_task(task_id)
+    result = {k: v for k, v in task.result.items() if k != "permission"}
+    if result.get("resume"):  # the developer's answer is what the resumed run works on, not the scope refusal
+        result["resume"] = {**result["resume"], "todo": note}
+    await _save(task, result=result)
     return task
 
 
@@ -540,6 +649,7 @@ async def run_task(task_id: int) -> Task:
     deadline = time.monotonic() + settings.task_minutes * 60
     llm = LLMGateway(task.run_id, repo.id, run_budget_usd=settings.task_budget_usd)
     result: dict[str, Any] = dict(task.result)
+    resume = result.pop("resume", None)  # used by this run only: a later revise records a new one
     await _save(task, status="working", error=None)
     await events.start_run(task.run_id, repo.id)
     beat = start_heartbeat(task.id)
@@ -550,11 +660,33 @@ async def run_task(task_id: int) -> Task:
         env = plan.get("environment") or {}
         image = await ensure_env_image(env.get("system_packages", []), env.get("tools", []))
         box, cached = await prepare_repo(repo.full_name, task.base_commit, plan["setup_commands"], image=image)
-        await events.record(task.run_id, "node_start", "baseline", node="baseline")
-        baseline = await run_commands(box, plan["test_commands"], note="baseline, before any change")
+        kept = [CommandResult.model_validate(b) for b in (resume or {}).get("baseline", [])]
+        if resume and resume["base"] == task.base_commit and [b.command for b in kept] == plan["test_commands"]:
+            # Same commit, same commands: the last attempt's baseline still holds, so it is not run again
+            baseline = kept
+            await events.record(task.run_id, events.FIXED, "Baseline reused from the last attempt (same commit)")
+        else:
+            await events.record(task.run_id, "node_start", "baseline", node="baseline")
+            baseline = await run_commands(box, plan["test_commands"], note="baseline, before any change")
+            await save_recipe(repo.id, task.base_commit, plan["setup_commands"], baseline)
         result["baseline"] = [b.model_dump() for b in baseline]
-        await save_recipe(repo.id, task.base_commit, plan["setup_commands"], baseline)
-        if published := task.result.get("published_diff"):
+        if resume:  # pick up where the last attempt stopped: its change goes back in before the Coder starts
+            await box.write_file(PUBLISHED_PATCH, resume["diff"])
+            applied = await box.exec(f"git apply --3way --whitespace=nowarn {PUBLISHED_PATCH}")
+            if applied.ok:
+                await events.record(
+                    task.run_id, events.FIXED,
+                    f"Continuing from the last attempt, which stopped at {resume['stopped_at']}: its change is applied",
+                )  # fmt: skip
+            else:
+                await events.record(
+                    task.run_id, events.CAUGHT,
+                    f"The last attempt's change no longer applies to {task.base_commit[:7]}: starting from the plan",
+                )  # fmt: skip
+                # tracked files only: untracked ones include the setup's own (a venv, tool caches)
+                await box.exec(f"git reset --quiet && git checkout --quiet --force {task.base_commit} -- .")
+                resume = None
+        elif published := task.result.get("published_diff"):
             # A revision of a published PR starts from the PR as it is, so the Coder changes only what the
             # revision asks; verification still compares the whole change with the base commit.
             await box.write_file(PUBLISHED_PATCH, published)
@@ -600,15 +732,25 @@ async def run_task(task_id: int) -> Task:
                     " The plan's reproduction script fails on the current code; verification runs it again "
                     f"(`{coder.reproduction['command']}`) and it must pass with your fix."
                 )
+        if resume:  # only what failed, not the whole plan again: no re-exploring, fewer tokens
+            instruction = (
+                f"Your previous attempt is already applied in the working tree (`git diff {task.base_commit[:12]}` "
+                f"shows it). It stopped at {resume['stopped_at']}. Keep what is right, fix only what is below and "
+                "anything the developer's revision note in the plan asks, then call submit.\n\n" + resume["todo"]
+            )
         coder.scope = Scope(
-            planned=[f["path"] for f in plan.get("files_to_change", [])], size=plan.get("size", "medium")
-        )
+            planned=[f["path"] for f in plan.get("files_to_change", [])], size=plan.get("size", "medium"),
+            allowed=plan.get("allowed_generated", []),
+        )  # fmt: skip
         # The Checks: each gate as it runs, cheapest first (verify.py), saved as it goes so the page shows it live.
         checks = coder.checks
         if pc := plan.get("plan_check"):
             musts = [f for f in pc.get("findings", []) if f.get("severity") == "must"]
             replanned = " Re-planned once for its must-fix findings." if pc.get("revised") else ""
-            checks.append(step("plan", not musts or bool(pc.get("revised")), 0, 0, pc.get("summary", "") + replanned))
+            # Passed when nothing was must-fix, or the revision addressed every must-fix finding on re-check
+            # (plans made before the re-check: the revision alone)
+            fixed = all(r.get("addressed") for r in pc["recheck"]) if pc.get("recheck") else bool(pc.get("revised"))
+            checks.append(step("plan", not musts or fixed, 0, 0, pc.get("summary", "") + replanned))
         result["checks"] = checks
 
         async def checkpoint() -> None:
@@ -620,6 +762,12 @@ async def run_task(task_id: int) -> Task:
             coder.round = round_no
             await events.record(task.run_id, "node_start", f"coder round {round_no}", node="coder")
             await coder.work(instruction, deadline)
+            if coder.permission:  # a question for the developer, not a failure of the model
+                result["permission"] = coder.permission
+                why = (f"The Coder asks to keep regenerated files ({', '.join(coder.permission['files'])}): "
+                       f"{coder.permission['reason']}")  # fmt: skip
+                await events.record(task.run_id, events.CAUGHT, why + ". Waiting for the developer")
+                break
             await _coder_outcome(task, coder)
             failed = coder.check is None or not coder.check.passed
             if failed and not escalated and time.monotonic() < deadline and coder.escalate():
@@ -873,6 +1021,10 @@ async def gate2(
         )
     if attribution:
         warnings.append(f'The commit ends with the line "{attribution}". Clear it below to leave it out.')
+    from nightshift.worker.understanding import gate_warning  # it builds on this module
+
+    if understood := gate_warning(task.result):  # warns, never blocks (the agreed product rule)
+        warnings.append(understood)
 
     prepared = await publish.prepare(repo, task, task_dir(repo.full_name, task.id) / "publish", branch=branch)
     info = publish.summary(prepared, pr["title"], pr["body"]) | {

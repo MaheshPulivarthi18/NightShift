@@ -83,3 +83,28 @@ def test_findings_go_to_the_planner_and_to_gate_1() -> None:
     assert "src/servers/gopls.py:12" in note and "vague" not in note
     page = "\n".join(plancheck.to_markdown(check, revised=True))
     assert "revised once" in page and "**must** (missing change)" in page and "**should** (vague step)" in page
+
+
+async def test_the_revised_plan_is_rechecked_against_the_findings() -> None:
+    """Before: a revised plan reached Gate 1 unchecked. Now each must-fix finding is marked addressed or not."""
+    findings = [
+        plancheck.Finding(severity="must", kind="wrong_assumption", location="scripts/lock-deps.sh:39",
+                          problem="Installs are wheel-only; no Rust build happens.", evidence="--no-build"),
+        plancheck.Finding(severity="must", kind="vague_step", location="engine/requirements.txt",
+                          problem="No exact litellm version.", evidence="litellm>=1.81"),
+    ]  # fmt: skip
+    seen: list[str] = []
+
+    class Llm:
+        async def parse(self, **kw: Any) -> plancheck.Recheck:
+            seen.append(kw["user"])
+            return plancheck.Recheck(findings=[
+                plancheck.Addressed(addressed=True, how="Step 3 now says installs are wheel-only."),
+            ])  # fmt: skip
+
+    out = await plancheck.recheck(Llm(), findings, "# Plan\n3. Wheel-only installs", avoid=None)  # type: ignore[arg-type]
+    assert [r.addressed for r in out] == [True, False]  # an unanswered finding counts as not addressed
+    assert "<finding n=2>\nengine/requirements.txt: No exact litellm version." in seen[0]
+    md = "\n".join(plancheck.to_markdown(plancheck.PlanCheck(summary="s", findings=findings), True, out))
+    assert "Re-checked after the revision: 1 of 2 addressed." in md
+    assert "**not addressed**: No exact litellm version." in md

@@ -188,5 +188,5 @@ def test_scope_rules() -> None:
     relocked = check_scope({"src/a.py": 30, "ui/package-lock.json": 700, "go.sum": 3}, planned)
     assert relocked.generated == ["ui/package-lock.json", "go.sum"] and relocked.problems
     big = check_scope({"src/a.py": 300, "src/b.py": 200}, planned)
-    assert big.lines == 500 and any("past the 400" in p for p in big.problems)
+    assert big.lines == 500 and any("past the 250" in p for p in big.problems)
     assert big.unplanned == ["src/b.py"]  # allowed, listed for the Reviewer
