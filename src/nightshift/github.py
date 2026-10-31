@@ -133,6 +133,12 @@ PAGE_SIZE = {"issues": 50, "pullRequests": 25}
 MIN_PAGE_SIZE = 5
 GIVE_UP_AT_MIN = 2  # timeouts at the smallest page before a list is left incomplete
 NETWORK_ERRORS = (httpx.TimeoutException, httpx.TransportError)  # slow reads, resets, dropped connections
+# No connection at all (no network, DNS failing, GitHub down): not the query's fault, and every job would fail
+# the same way. Detected once; requests wait for GitHub to answer again (one flaky connection once failed five
+# reports and a PR check in a row).
+UNREACHABLE = (httpx.ConnectError, httpx.ConnectTimeout)
+PROBE_SECONDS = 5.0  # first wait between checks while GitHub is unreachable; doubles up to 30 s
+outage: dict[str, Any] = {"since": None}  # when GitHub stopped answering, while it does not; shown in the app
 
 
 def _clean(value: Any) -> Any:
@@ -164,10 +170,37 @@ class GitHubClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
+    async def _wait_for_github(self, error: Exception) -> None:
+        """GitHub cannot be connected to: check every few seconds until it answers, for up to
+        `github_outage_seconds`, then fail with one clear message."""
+        if outage["since"] is None:
+            outage["since"] = datetime.now(UTC).isoformat()
+            log.warning("github_unreachable", error=f"{type(error).__name__}: {error}"[:200])
+        limit, waited, wait = get_settings().github_outage_seconds, 0.0, PROBE_SECONDS
+        while waited < limit:
+            step = min(wait, limit - waited)
+            await asyncio.sleep(step)
+            waited, wait = waited + step, min(wait * 2, 30)
+            try:
+                await self._http.get(self._url.removesuffix("/graphql") + "/zen")  # any answer will do
+            except UNREACHABLE:
+                continue
+            except NETWORK_ERRORS:
+                pass  # it answered, slowly
+            if outage["since"] is not None:
+                log.info("github_reachable_again", since=outage["since"])
+                outage["since"] = None
+            return
+        raise GitHubError(f"GitHub is not reachable (since {outage['since'][11:16]} UTC). Check the network, "
+                          "then run this again.")  # fmt: skip
+
     async def graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         for attempt in range(5):
             try:
                 resp = await self._http.post(self._url, json={"query": query, "variables": variables})
+            except UNREACHABLE as e:
+                await self._wait_for_github(e)
+                continue
             except NETWORK_ERRORS as e:  # a slow or dropped answer: like a 504, a smaller page usually works
                 raise GitHubTimeout(f"GitHub did not answer the query ({type(e).__name__}).") from e
             if resp.status_code in (502, 504):
@@ -200,6 +233,9 @@ class GitHubClient:
         for attempt in range(5):
             try:
                 resp = await self._http.get(url)
+            except UNREACHABLE as e:
+                await self._wait_for_github(e)
+                continue
             except NETWORK_ERRORS as e:  # a dropped connection is usually gone a few seconds later
                 if attempt == 4:
                     raise GitHubError(f"GitHub is not reachable ({type(e).__name__}).") from e

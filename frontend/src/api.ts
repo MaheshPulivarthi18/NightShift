@@ -8,6 +8,7 @@ export interface Overview {
 export interface RepoRow {
   full_name: string;
   role: "contributor" | "maintainer";
+  auto_check: boolean; // others' open PRs checked on every background sync
   verdict: string | null;
   opportunities: number;
   findings: number | null;
@@ -160,6 +161,7 @@ export interface TaskSummary {
   updated_at: string | null;
   feedback: number; // unanswered review feedback on its open PR, or replies to its question, from the sync
   ci_failing: string[]; // CI jobs failing on its open PR, from the sync: a red PR waits on its author
+  fixed_open: boolean; // its PR merged and the issue is still open: a "fixed by" comment is offered
   asking: boolean; // a plan that asks the maintainers before any code
   asked: boolean; // and the question is posted on the issue
 }
@@ -220,6 +222,8 @@ export interface TaskDetail extends TaskSummary {
   claim_comment: string;
   actionable: boolean;
   claim_url: string | null;
+  lock_summaries: Record<string, string[]>; // regenerated lock files in the diff, as the packages they change
+  fixed_comment: string; // the drafted "fixed by" comment, while fixed_open
   baseline: CommandResult[];
   check: FixCheck | null;
   understanding: Understanding | null;
@@ -292,6 +296,8 @@ export interface PRCheckRow {
   created_at: string;
   error: string | null;
   review_url: string | null; // the review posted from this check
+  auto: boolean; // started by the background sync, for a repo that opted in
+  dismissed: boolean; // not to be posted
 }
 
 export interface PRCheckView extends PRCheckRow {
@@ -395,6 +401,7 @@ export interface RepoItem {
   updated_at: string | null;
   feedback?: number;
   ci_failing?: string[];
+  fixed_open?: boolean;
   asking?: boolean;
   asked?: boolean;
 }
@@ -406,6 +413,7 @@ export interface SyncStatus {
   with_feedback: number;
   error: string | null;
   minutes: number;
+  github_down_since?: string | null; // GitHub cannot be connected to; requests wait for it
 }
 
 export interface MapComponent {
@@ -465,6 +473,7 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
 
 export const api = {
   overview: () => call<Overview>("/overview"),
+  version: () => call<{ running: string | null; latest: string | null; old: boolean }>("/version"),
   setKill: (killed: boolean) => call<Overview>("/control/kill", { killed }),
   repos: () => call<RepoRow[]>("/repos"),
   repoItems: (repo: string) => call<RepoItem[]>(`/repos/${repo}/items`),
@@ -518,6 +527,9 @@ export const api = {
     }),
   models: () => call<ModelsPage>("/models"),
   prChecks: () => call<PRCheckRow[]>("/pr-checks"),
+  incomingChecks: () => call<PRCheckRow[]>("/incoming-checks"),
+  dismissCheck: (id: number) => call<{ dismissed: boolean }>(`/pr-checks/${id}/dismiss`, {}),
+  setAutoCheck: (repo: string, on: boolean) => call<RepoRow[]>(`/repos/${repo}/auto-check`, { on }),
   prCheck: (id: number) => call<PRCheckView>(`/pr-checks/${id}`),
   checkPr: (url: string) => call<{ run_id: string }>("/pr-checks", { url }),
   reviewPr: (id: number, confirm: boolean, edits: { body?: string; event?: ReviewEvent; attribution?: boolean } = {}) =>
@@ -527,6 +539,8 @@ export const api = {
   revise: (id: number, note: string, latest: boolean, mode: "continue" | "restart" = "continue") =>
     call<TaskDetail>(`/tasks/${id}/revise`, { note, latest, mode }),
   claim: (id: number, confirm: boolean) => call<{ result: string }>(`/tasks/${id}/claim`, { confirm }),
+  fixedComment: (id: number, body: { confirm?: boolean; text?: string; dismiss?: boolean }) =>
+    call<{ result: string }>(`/tasks/${id}/fixed-comment`, body),
   publish: (id: number, confirm: boolean, edits: PublishEdits = {}) =>
     call<GateInfo>(`/tasks/${id}/publish`, { confirm, ...edits }),
 };

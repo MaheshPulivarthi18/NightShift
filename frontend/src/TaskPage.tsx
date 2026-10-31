@@ -75,6 +75,7 @@ export function TaskPage({ id, embedded = false }: { id: number; embedded?: bool
       </header>
 
       <ActionPanel task={task} onChange={load} />
+      {task.fixed_open && <FixedPanel task={task} onChange={load} />}
       {task.pr_url && FEEDBACK.has(task.status) && <FeedbackPanel task={task} onChange={load} />}
       {REVISABLE.has(task.status) && <RevisePanel task={task} onChange={load} />}
       {!task.pr_url && ATTACHABLE.has(task.status) && <AttachPr task={task} onChange={load} />}
@@ -92,7 +93,7 @@ export function TaskPage({ id, embedded = false }: { id: number; embedded?: bool
         {tab === "Checks" && <Checks task={task} />}
         {tab === "Review" &&
           (task.reviews.length ? task.reviews.map((r) => <Html key={r.round} html={r.html} />) : <p className="muted">No review yet.</p>)}
-        {tab === "Diff" && <Diff text={task.diff} />}
+        {tab === "Diff" && <Diff text={task.diff} locks={task.lock_summaries} />}
         {tab === "PR" &&
           (task.pr ? (
             <article className="pr">
@@ -139,6 +140,33 @@ const FEEDBACK = new Set(["published", "needs_operator", "failed"]);
 
 // What reviewers asked on the PR: read from GitHub on request; tick what to address, then one run makes
 // the changes on top of the PR, and Gate 2 pushes a follow-up commit with a drafted reply to each.
+/** The fix merged but the issue is still open (no "Fixes #N", or the repo does not close issues): offer the
+ * maintainers a short note so they can close it. Posted with your gh login, only on click. */
+function FixedPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
+  const [text, setText] = useState(task.fixed_comment);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const send = (body: { confirm?: boolean; text?: string; dismiss?: boolean }) => {
+    setBusy(true);
+    setMsg(null);
+    api.fixedComment(task.id, body).then(onChange, (e: Error) => setMsg(e.message)).finally(() => setBusy(false));
+  };
+  return (
+    <section className="panel action">
+      <div className="panel-h"><h2>Merged, but #{task.issue} is still open</h2></div>
+      <div className="panel-b">
+        <p className="dim">Your pull request is merged and the issue it fixes is still open. A short note helps the maintainers close it.</p>
+        <textarea rows={3} value={text} onChange={(e) => setText(e.target.value)} aria-label="Comment to post on the issue" />
+        <div className="row-flex">
+          <button disabled={busy || !text.trim()} onClick={() => send({ confirm: true, text })}>Post on #{task.issue}</button>
+          <button className="ghost" disabled={busy} onClick={() => send({ dismiss: true })}>Dismiss</button>
+          {msg && <span className="error">{msg}</span>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function FeedbackPanel({ task, onChange }: { task: TaskDetail; onChange: () => void }) {
   const [comments, setComments] = useState<ReviewComment[] | null>(null);
   const [chosen, setChosen] = useState<Set<string>>(new Set());

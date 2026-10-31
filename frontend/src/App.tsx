@@ -65,10 +65,24 @@ export function App() {
   return (
     <div className="app">
       <Sidebar page={r.page} repo={r.repo} />
-      <main className={r.full ? "main full" : "main"}>{r.el}</main>
+      <main className={r.full ? "main full" : "main"}><OldCode />{r.el}</main>
     </div>
   );
 }
+
+/** Changes need a restart of `nightshift serve`, and nothing else on the page shows it. */
+function OldCode() {
+  const [v] = usePoll(api.version, 60000, []);
+  if (!v?.old) return null;
+  return (
+    <div className="old-code" role="status">
+      NightShift was updated ({v.running?.slice(0, 7)} → {v.latest?.slice(0, 7)}) but this server still runs the old code.
+      Restart <code>nightshift serve</code> to use it.
+    </div>
+  );
+}
+
+const SEARCH_FROM = 8; // repos in the sidebar before it gets a search box
 
 function Sidebar({ page, repo }: { page: string; repo?: string }) {
   const [repos, , reloadRepos] = usePoll<RepoRow[]>(api.repos, 30000, []);
@@ -77,6 +91,12 @@ function Sidebar({ page, repo }: { page: string; repo?: string }) {
   const [theme, setTheme] = useState<Theme>(savedTheme);
   useEffect(() => applyTheme(theme), [theme]);
   const needs = needsYou(tasks ?? []);
+  const [find, setFind] = useState("");
+  const work = (name: string) => needs.filter((t) => t.repo === name).length;
+  // repos that need you first, then by name; the search matches owner or name
+  const shown = (repos ?? [])
+    .filter((r) => r.full_name.toLowerCase().includes(find.trim().toLowerCase()))
+    .sort((a, b) => Number(work(b.full_name) > 0) - Number(work(a.full_name) > 0) || a.full_name.split("/")[1].localeCompare(b.full_name.split("/")[1]));
   return (
     <nav className="side" aria-label="Main">
       <a className="brand" href="#/"><span className="mark" aria-hidden><i /></span>NightShift</a>
@@ -87,8 +107,13 @@ function Sidebar({ page, repo }: { page: string; repo?: string }) {
       <a className={`nav${page === "record" ? " on" : ""}`} href="#/record">Track record</a>
       <a className={`nav${page === "settings" ? " on" : ""}`} href="#/settings">Settings</a>
       <div className="side-label">Repos</div>
-      {(repos ?? []).map((r) => {
-        const n = needs.filter((t) => t.repo === r.full_name).length;
+      {(repos?.length ?? 0) >= SEARCH_FROM && (
+        <input className="side-find" type="search" placeholder="Find a repo" aria-label="Find a repo" value={find}
+          onChange={(e) => setFind(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setFind("")} />
+      )}
+      {find && shown.length === 0 && <div className="side-none dim">No repo matches.</div>}
+      {shown.map((r) => {
+        const n = work(r.full_name);
         const name = r.full_name.split("/")[1];
         return (
           <a key={r.full_name} className={`nav${page === "repo" && repo === r.full_name ? " on" : ""}`} href={`#/r/${r.full_name}/items`} title={r.full_name}>

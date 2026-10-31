@@ -21,6 +21,7 @@ from nightshift.router import CHOOSABLE, agent_routes, choices
 from nightshift.web.common import Guard, model_view, render_markdown
 from nightshift.worker import task as worker
 from nightshift.worker import understanding
+from nightshift.worker.lockfiles import summaries
 from nightshift.worker.prcheck import PRCheckError
 from nightshift.worker.publish import PublishError
 
@@ -57,6 +58,12 @@ def ci_failing(synced: dict[str, Any] | None) -> list[str]:
     return list(ci.get("failed") or ["CI"]) if s.get("pr_state") == "OPEN" and ci.get("state") == "failed" else []
 
 
+def fixed_open(result: dict[str, Any] | None) -> bool:
+    res = result or {}
+    s = res.get("sync") or {}
+    return s.get("pr_state") == "MERGED" and s.get("issue_open") is True and not res.get("fixed_comment_url")
+
+
 def _summary(t: Task, r: Repo) -> dict[str, Any]:
     return {
         "id": t.id,
@@ -77,6 +84,8 @@ def _summary(t: Task, r: Repo) -> dict[str, Any]:
         else 0,
         # the CI jobs failing on the task's open PR, from the sync: a red PR waits on its author
         "ci_failing": ci_failing((t.result or {}).get("sync")),
+        # the PR merged but its issue is still open: a "fixed by" comment is offered
+        "fixed_open": fixed_open(t.result),
         # a plan that asks the maintainers first, and whether the question is posted
         "asking": t.status == "planned" and not (t.plan or {}).get("actionable", True),
         "asked": str((t.result or {}).get("claim_url") or "").startswith("http"),
@@ -166,6 +175,7 @@ async def get_task(task_id: int) -> dict[str, Any]:
         "claim_comment": t.plan.get("claim_comment", ""),
         "actionable": t.plan.get("actionable") is not False,
         "claim_url": res.get("claim_url"),
+        "fixed_comment": worker.fixed_text(t) if fixed_open(res) else "",
         "replies": ((res.get("sync") or {}).get("open") or [])
         if (res.get("sync") or {}).get("kind") == "answers"
         else [],
@@ -185,6 +195,7 @@ async def get_task(task_id: int) -> dict[str, Any]:
             for rv in res.get("reviews", [])
         ],
         "diff": t.diff or res.get("partial_diff") or "",
+        "lock_summaries": summaries(t.diff or res.get("partial_diff") or ""),
         "pr": {"title": pr["title"], "html": _md(pr["body"], r.full_name), "commit": pr["commit_message"]}
         if pr
         else None,
@@ -291,6 +302,24 @@ async def replan(task_id: int, body: Replan) -> dict[str, str]:
 
 class Confirm(BaseModel):
     confirm: bool = False
+
+
+class FixedIn(BaseModel):
+    confirm: bool = False
+    text: str | None = Field(default=None, max_length=5000)
+    dismiss: bool = False
+
+
+@router.post("/tasks/{task_id}/fixed-comment", dependencies=[Guard])
+async def fixed_comment(task_id: int, body: FixedIn) -> dict[str, str]:
+    """The issue's fix is merged and the issue is still open: post a "fixed by" comment, or drop the offer."""
+    try:
+        return {"result": await worker.fixed_comment(task_id, confirm=body.confirm, text=body.text,
+                                                     dismiss=body.dismiss)}  # fmt: skip
+    except worker.TaskError as e:
+        raise HTTPException(409, str(e)) from e
+    except PublishError as e:
+        raise HTTPException(502, str(e)) from e
 
 
 class Fresh(BaseModel):

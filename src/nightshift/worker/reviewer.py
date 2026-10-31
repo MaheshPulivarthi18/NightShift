@@ -17,6 +17,7 @@ from nightshift.health.agents import UNTRUSTED_RULE
 from nightshift.llm import LLMGateway
 from nightshift.prompt import Prompt
 from nightshift.router import RouteHint
+from nightshift.worker.lockfiles import summarize_diff
 
 
 class ReviewIssue(BaseModel):
@@ -119,7 +120,7 @@ def review_prompt(
     p.add("item", "untrusted_github_data", f"<issue>\n{issue}\n</issue>", prompt.ITEM)
     p.add("item", "approved_plan", plan, prompt.ITEM)
     p.add("task", "verification", verification, prompt.ENVIRONMENT * 2)
-    p.add("task", "diff", diff, prompt.DIFF)
+    p.add("task", "diff", summarize_diff(diff), prompt.DIFF)  # a re-locked file as its packages, not its lines
     p.add("task", "change_context", change_context, prompt.ITEM)
     p.add("task", "code_the_docs_describe", sources, prompt.CODE)
     return p
