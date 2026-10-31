@@ -116,6 +116,14 @@ def test_tests_that_could_not_run_are_not_blamed_on_the_pr() -> None:
     prcheck._findings(broken, report, None)
     assert not report.must and "could not run in this sandbox" in report.should[0]
 
+    missing = CommandResult(command=".venv/bin/go test ./...", ok=False, exit_code=127, timed_out=False, seconds=0,
+                            tail="bash: line 1: .venv/bin/go: No such file or directory")  # fmt: skip
+    no_command = FixCheck(passed=False, test_files=["a_test.go"], source_files=["a.go"], fails_without_fix=missing,
+                          passes_with_fix=missing, problems=["the targeted test FAILS with the fix"])  # fmt: skip
+    report = Report(pr=_pr())
+    prcheck._findings(no_command, report, None)  # go-contrib #10019: blocked for a command that never started
+    assert not report.must and ".venv/bin/go: No such file" in report.should[0]
+
     same = run(False, "E   assert 1 == 2\n1 failed")  # the fix did not work: still a result, not an environment limit
     real = FixCheck(passed=False, test_files=["t.py"], source_files=["a.py"], fails_without_fix=same,
                     passes_with_fix=same, problems=["the targeted test FAILS with the fix"])  # fmt: skip
@@ -211,12 +219,12 @@ async def test_a_benchmark_or_coverage_job_failing_is_advice(monkeypatch: pytest
     """pydantic #14104 failed only "CodSpeed Performance Analysis": a judgement about speed, not broken code."""
     head = "h" * 40
     ci = _CI({head: [_run_("CodSpeed Performance Analysis", "failure"), _run_("codecov/patch", "failure"),
-                     _run_("test", "success")], "b" * 40: []}, {})  # fmt: skip
+                     _run_("changelog", "failure"), _run_("test", "success")], "b" * 40: []}, {})  # fmt: skip
     monkeypatch.setattr(prcheck, "GitHubClient", lambda: ci)
     report = Report(pr=_pr())
     await prcheck.check_ci(_pr(), report)
     assert not report.must
     assert report.should == [
-        "A benchmark or coverage job reports a failure: CodSpeed Performance Analysis, codecov/patch. "
-        "Check the numbers."
+        "A benchmark, coverage or changelog job reports a failure: CodSpeed Performance Analysis, changelog, "
+        "codecov/patch. Maintainers often waive these: check what it asks for."
     ]

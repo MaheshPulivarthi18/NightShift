@@ -29,7 +29,13 @@ maintainers rejected, partly because the sandbox runs 3 of pydantic's 257 test f
       the review posted only on your click. Done: "check new PRs" on the Repos page (maintainer view); each sync
       checks up to `NIGHTSHIFT_AUTO_CHECK_PER_SYNC` new PRs or new pushes per repo (no drafts, bots or your own);
       Needs you lists each finished check until its review is posted or it is dismissed.
-- [ ] M6. A third benchmark (a Go repo) after M3 and M4. Target: 8 of 10 merged PRs ready, 5 of 10 rejected blocked.
+- [x] M6. A third benchmark (a Go repo) after M3 and M4. Target: 8 of 10 merged PRs ready, 5 of 10 rejected blocked.
+      Done on opentelemetry-go-contrib (2026-10-31, 365 days; only 5 maintainer-closed PRs from outside): merged
+      8 of 10 ready (target met), closed 2 of 5 blocked (below it), $0.10 and 6.3 min per PR. Both wrong blocks
+      were checker bugs, fixed after: a test command that never started (`.venv/bin/go`, exit 127) counted as
+      failing (#10019), and a red changelog job counted as broken code (#9980); with them, merged 10 of 10.
+      Of the 3 closed PRs it let through, one's CI failed only on codecov, and two had green CI and no finding:
+      maintainers closed them for reasons the code does not show.
 - [ ] M7. The GitHub App, once M5 shows maintainers use the checks.
 
 **Contributors**

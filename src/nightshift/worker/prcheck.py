@@ -428,6 +428,9 @@ def _could_not_run(check: FixCheck) -> str | None:
     before, after = check.fails_without_fix, check.passes_with_fix
     if _all_skipped(before) and _all_skipped(after):
         return "every test was skipped, e.g. a tool they need is missing"
+    if after and after.exit_code in (126, 127):  # the command itself could not start (go-contrib #10019 got
+        # `.venv/bin/go test`, a Python habit in a Go repo): nothing was tested, so nothing failed
+        return next((x for x in after.tail.splitlines() if x.strip()), f"exit {after.exit_code}").strip()
     if after and not after.ok and (m := CANNOT_RUN.search(after.tail)):
         line = next((x for x in after.tail.splitlines() if m.group(0) in x), m.group(0))
         return line.strip()
@@ -514,7 +517,8 @@ async def check_ci(pr: PullRequest, report: Report) -> None:
         report.must.append(f"CI fails on this PR at {pr.head_sha[:7]}: {', '.join(new[:8])}.")
     if judged := [j for j in head["failed"] if j not in already and ADVISORY_JOB.search(j)]:
         report.should.append(
-            f"A benchmark or coverage job reports a failure: {', '.join(judged[:8])}. Check the numbers."
+            f"A benchmark, coverage or changelog job reports a failure: {', '.join(judged[:8])}. Maintainers often "
+            "waive these: check what it asks for."
         )
     if old := [j for j in head["failed"] if j in already]:
         report.should.append(f"CI also fails on the base branch, so not because of this PR: {', '.join(old[:8])}.")
