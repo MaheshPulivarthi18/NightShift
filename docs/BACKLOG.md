@@ -244,7 +244,7 @@ once, L4 sidebar search, L5 a banner when the server runs old code.
 - [ ] **L4. A long sidebar.** With 24 repos the sidebar needs search, pinning, or grouping by "has work".
 - [ ] **L5. Say when the server runs old code.** Changes need a restart of `nightshift serve`, and nothing on the
       page shows it; show the running version next to the latest.
-- [ ] **L6. CI status of published PRs** on the task and in "Needs you" (the rest of enhancement 2).
+- [x] **L6. CI status of published PRs** on the task and in "Needs you" (the rest of enhancement 2). Done with C3.
 - [ ] **L7. Check the live log on screen:** the running timer, auto-scrolling output and open-while-running
       states of the new sandbox log were tested through the event stream only.
 
@@ -254,9 +254,10 @@ once, L4 sidebar search, L5 a banner when the server runs old code.
       test database (or schema) would make that impossible rather than cleaned up.
 - [ ] **R2. A backup before destructive actions.** `watch remove --purge` and data wipes have no undo; take a
       `pg_dump` first (the last one is from 2026-10-27).
-- [ ] **R3. Network trouble is reported as each command's own failure.** One flaky connection failed five reports
+- [x] **R3. Network trouble is reported as each command's own failure.** One flaky connection failed five reports
       and a GitHub check in a row; detect it once ("GitHub is not reachable"), pause and retry, instead of failing
-      every job.
+      every job. Fixed: no connection to GitHub is logged once; requests check every 5-30 s for up to
+      `NIGHTSHIFT_GITHUB_OUTAGE_SECONDS` (300) and go on when it answers; the sync bar says "GitHub unreachable".
 
 ### Done in this stretch
 

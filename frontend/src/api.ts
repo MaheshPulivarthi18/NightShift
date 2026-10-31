@@ -406,6 +406,7 @@ export interface SyncStatus {
   with_feedback: number;
   error: string | null;
   minutes: number;
+  github_down_since?: string | null; // GitHub cannot be connected to; requests wait for it
 }
 
 export interface MapComponent {
