@@ -189,3 +189,35 @@ def test_the_testing_section_quotes_the_summary_and_the_failure_only() -> None:
     assert "collected" not in quoted and "WARNING" not in quoted and "test session starts" not in quoted
     assert prwriter.essential_lines("Ran 4 tests in 0.1s\n\nOK") == "Ran 4 tests in 0.1s\nOK"
     assert prwriter.essential_lines("just\nsome\noutput") == "just\nsome\noutput"  # nothing recognised: the last lines
+
+
+async def test_your_own_repo_is_published_without_a_fork(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GitHub refuses to fork your own repo ("A single user account cannot own both a parent and fork")."""
+    from nightshift.config import get_settings
+
+    ran: list[tuple[str, ...]] = []
+
+    async def run(*args: str, **kw: object) -> str:
+        ran.append(args)
+        if args[:3] == ("gh", "repo", "view"):
+            return "git@github.com:me/tool.git\n"
+        if args[:3] == ("gh", "pr", "create"):
+            return "https://github.com/me/tool/pull/7\n"
+        return ""
+
+    async def fresh(*a: object) -> list[str]:
+        return []
+
+    monkeypatch.setattr(get_settings(), "github_login", "Me")
+    monkeypatch.setattr(publish, "_run", run)
+    monkeypatch.setattr(publish, "freshness", fresh)
+    prepared = publish.Prepared(workdir=str(tmp_path), branch="nightshift/7-x", default_branch="main", head="h",
+                                drift=[], files=["a.py"])  # fmt: skip
+    url = await publish.publish(Repo(full_name="me/tool"), Task(), prepared, title="t", body="b", message="m")
+    assert url == "https://github.com/me/tool/pull/7"
+    assert not any(a[:3] == ("gh", "repo", "fork") for a in ran)  # no fork of your own repo
+    assert ("git", "push", "--quiet", "git@github.com:me/tool.git", "HEAD:refs/heads/nightshift/7-x") in ran
+
+    ran.clear()
+    await publish.publish(Repo(full_name="other/tool"), Task(), prepared, title="t", body="b", message="m")
+    assert any(a[:3] == ("gh", "repo", "fork") for a in ran)  # someone else's: through your fork
