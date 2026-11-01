@@ -61,7 +61,10 @@ DEP_FILES = {
 # Failures worth one retry: the network, not the repo.
 NETWORK_ERROR = re.compile(
     r"operation timed out|timed out|Request failed after \d+ retries|ECONNRESET|ETIMEDOUT|EAI_AGAIN"
-    r"|Temporary failure in name resolution|Connection reset|Read timed out|503 Service Unavailable",
+    r"|Temporary failure in name resolution|Connection reset|Read timed out|503 Service Unavailable"
+    # a download cut off halfway: go, uv, pip, npm and curl
+    r"|unexpected EOF|error decoding response body|request or response body error"
+    r"|connection closed before message completed|Connection broken|IncompleteRead|socket hang up|curl: \((18|56)\)",
     re.IGNORECASE,
 )
 
