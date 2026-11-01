@@ -138,7 +138,9 @@ async def prepare(repo: Repo, task: Task, workdir: Path, url: str | None = None,
 
 
 async def publish(repo: Repo, task: Task, prepared: Prepared, *, title: str, body: str, message: str) -> str:
-    """Commit, push to the operator's fork, open the PR. Returns the PR URL. Gate 2 must already be passed."""
+    """Commit, push to the operator's fork, open the PR. Returns the PR URL. Gate 2 must already be passed.
+    In a repo the operator owns there is no fork (GitHub refuses to fork your own repo): the branch goes to the
+    repo itself."""
     login = get_settings().github_login
     if not login:
         raise PublishError("Set NIGHTSHIFT_GITHUB_LOGIN to the account that will open the PR.")
@@ -151,8 +153,10 @@ async def publish(repo: Repo, task: Task, prepared: Prepared, *, title: str, bod
         )  # fmt: skip
     wd = Path(prepared.workdir)
     await _run("git", "commit", "--quiet", "-F", "-", cwd=wd, stdin=message)
-    await _run("gh", "repo", "fork", repo.full_name, "--clone=false")  # no-op when the fork exists
-    name = repo.full_name.split("/", 1)[1]
+    owner, name = repo.full_name.split("/", 1)
+    own = owner.lower() == login.lower()
+    if not own:
+        await _run("gh", "repo", "fork", repo.full_name, "--clone=false")  # no-op when the fork exists
     fork = ""
     for _ in range(12):  # GitHub creates forks asynchronously
         fork = await _run("gh", "repo", "view", f"{login}/{name}", "--json", "sshUrl", "--jq", ".sshUrl", check=False)
