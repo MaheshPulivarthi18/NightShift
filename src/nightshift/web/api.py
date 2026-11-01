@@ -135,6 +135,7 @@ def _environment_view(env: Environment, at: datetime) -> dict[str, Any]:
         "tests": [{"command": t.command, "ok": t.ok} for t in env.tests],
         "system_packages": env.system_packages,
         "tools": env.tools,
+        "services": env.services,  # run inside the sandbox, e.g. postgres
         "sources": env.sources,
         "attempts": env.attempts,
         "cost_usd": env.cost_usd,
