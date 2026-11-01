@@ -332,7 +332,7 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
     if env.status != "ready":
         report.not_run.append(f"Nothing was run: the repo's environment is {env.status} ({env.blocker or env.detail}).")
         return ""
-    image = await ensure_env_image(env.system_packages, env.tools)
+    image = await ensure_env_image(env.system_packages, env.tools, env.services)
     box, _ = await prepare_repo(pr.repo, pr.base_sha, env.setup_commands, image=image)
     async with box:
         base_commit, target, how = await _fetch_pr(box, pr)

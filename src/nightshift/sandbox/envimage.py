@@ -14,6 +14,8 @@ import shlex
 
 from nightshift.config import get_settings
 from nightshift.sandbox.docker import NETWORK_ERROR, SandboxError, docker_shown, image_exists
+from nightshift.sandbox.services import PACKAGES as SERVICE_PACKAGES
+from nightshift.sandbox.services import SERVICE_FILE, packages_for
 
 APT_NAME = re.compile(r"^[a-z0-9][a-z0-9+.-]{0,62}$")  # Debian package names (no version pins or options)
 MAX_PACKAGES = 40
@@ -31,8 +33,10 @@ TOOLS: dict[str, str] = {
 NEEDS_CURL = {"go", "rust"}
 
 
-def check_request(packages: list[str], tools: list[str]) -> None:
+def check_request(packages: list[str], tools: list[str], services: list[str] | None = None) -> None:
     """Raise SandboxError, with the reason, if the agent asked for something that cannot go in an image."""
+    if unknown := [s for s in services or [] if s not in SERVICE_PACKAGES]:
+        raise SandboxError(f"unknown services: {', '.join(unknown)} (available: {', '.join(SERVICE_PACKAGES)})")
     bad = [p for p in packages if not APT_NAME.match(p)]
     if bad:
         raise SandboxError(f"not valid Debian package names: {', '.join(bad)} (give plain names, no versions)")
@@ -57,7 +61,7 @@ def _apt(packages: list[str]) -> str:
     )
 
 
-def dockerfile(base: str, packages: list[str], tools: list[str]) -> str:
+def dockerfile(base: str, packages: list[str], tools: list[str], services: list[str] | None = None) -> str:
     """Toolchains first, each its own layer in a fixed order, then the repo's packages: images that need the
     same toolchain share those layers whatever their packages, so only the package layer is built again."""
     tools = sorted(set(tools))
@@ -68,29 +72,33 @@ def dockerfile(base: str, packages: list[str], tools: list[str]) -> str:
     if "rust" in tools:
         lines.append("ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo")
     lines += [f"RUN {TOOLS[t]}" for t in tools]
-    rest = sorted(set(packages) - ({"curl"} if curl_first else set()))
+    rest = sorted((set(packages) | set(packages_for(services or []))) - ({"curl"} if curl_first else set()))
     if rest:
         lines.append(_apt(rest))
+    if services:  # every sandbox from this image (and repo images built on it) starts them (sandbox/services.py)
+        names = " ".join(sorted(set(services)))
+        lines.append(f"RUN mkdir -p /etc/nightshift && echo {shlex.quote(names)} > {SERVICE_FILE}")
     lines.append("USER worker")
     return "\n".join(lines) + "\n"
 
 
-def env_image_name(packages: list[str], tools: list[str]) -> str:
+def env_image_name(packages: list[str], tools: list[str], services: list[str] | None = None) -> str:
     """The image for this request. With nothing extra to install, that is the base image itself."""
     base = get_settings().sandbox_image
-    if not packages and not tools:
+    if not packages and not tools and not services:
         return base
-    return "nightshift-env:" + hashlib.sha256(dockerfile(base, packages, tools).encode()).hexdigest()[:12]
+    text = dockerfile(base, packages, tools, services)
+    return "nightshift-env:" + hashlib.sha256(text.encode()).hexdigest()[:12]
 
 
-async def ensure_env_image(packages: list[str], tools: list[str]) -> str:
+async def ensure_env_image(packages: list[str], tools: list[str], services: list[str] | None = None) -> str:
     """Build the environment image if it does not exist yet, and return its tag."""
-    check_request(packages, tools)
-    tag = env_image_name(packages, tools)
+    check_request(packages, tools, services)
+    tag = env_image_name(packages, tools, services)
     if await image_exists(tag):
         return tag
-    content = dockerfile(get_settings().sandbox_image, packages, tools).encode()
-    what = "build the environment image: " + ", ".join([*packages, *tools])
+    content = dockerfile(get_settings().sandbox_image, packages, tools, services).encode()
+    what = "build the environment image: " + ", ".join([*packages, *tools, *(services or [])])
     args = ("build", "--progress=plain", "--tag", tag, "-")
     limit = get_settings().image_build_seconds
     res = await docker_shown(*args, stdin=content, timeout=limit, command=what, note="environment image")

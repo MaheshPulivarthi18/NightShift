@@ -227,7 +227,7 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
         )
         recipe = await load_recipe(repo.id)
         env = await ensure_environment(llm, repo, box, commit)
-        image = await ensure_env_image(env.system_packages, env.tools) if env.status == "ready" else None
+        image = await ensure_env_image(env.system_packages, env.tools, env.services) if env.status == "ready" else None
         tracked = set((await box.exec("git ls-files")).stdout.splitlines())
 
         await events.record(task.run_id, "node_start", "plan", node="plan")
@@ -335,7 +335,7 @@ async def plan_task(full_name: str, number: int, *, base: str | None = None, not
                     "revised": revised,
                     "recheck": [r.model_dump() for r in rechecked],
                 },  # fmt: skip
-                "environment": {"system_packages": env.system_packages, "tools": env.tools}
+                "environment": {"system_packages": env.system_packages, "tools": env.tools, "services": env.services}
                 if env.status == "ready"
                 else {},
             },  # fmt: skip
@@ -720,7 +720,7 @@ async def run_task(task_id: int) -> Task:
         await events.record(task.run_id, "node_start", "setup", node="setup")
         setup_started = time.monotonic()
         env = plan.get("environment") or {}
-        image = await ensure_env_image(env.get("system_packages", []), env.get("tools", []))
+        image = await ensure_env_image(env.get("system_packages", []), env.get("tools", []), env.get("services", []))
         box, cached = await prepare_repo(repo.full_name, task.base_commit, plan["setup_commands"], image=image)
         baseline_started = time.monotonic()
         kept = [CommandResult.model_validate(b) for b in (resume or {}).get("baseline", [])]
