@@ -28,6 +28,7 @@ export interface RepoEnvironment {
   tests: { command: string; ok: boolean }[];
   system_packages: string[];
   tools: string[];
+  services?: string[]; // run inside the sandbox, e.g. postgres
   sources: string[];
   attempts: string[];
   cost_usd: number;

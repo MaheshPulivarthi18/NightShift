@@ -249,6 +249,9 @@ function Knowledge({ repo }: { repo: string }) {
           {env ? (
             <>
               <p className="dim">Proven in the sandbox at <span className="mono">{env.commit.slice(0, 7)}</span>, {ago(env.at)}. {env.detail}</p>
+              {(env.services ?? []).length > 0 && (
+                <p>Runs inside the sandbox: {env.services!.map((s) => <span key={s} className="badge info">{s}</span>)}</p>
+              )}
               <Commands title="Setup" list={env.setup_commands} />
               <Commands title="Tests" list={env.tests.map((t) => `${t.ok ? "passes" : "fails"} · ${t.command}`)} />
               {env.coverage && <p className={`small-print ${env.coverage.includes("whole suite") ? "dim" : "warn-text"}`}>{env.coverage}</p>}

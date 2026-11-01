@@ -24,7 +24,7 @@ from nightshift.health.graph import repo_brief
 from nightshift.llm import LLMGateway
 from nightshift.memory import get_or_create_repo
 from nightshift.sandbox.docker import prepare_repo
-from nightshift.worker.setup_agent import ensure_environment, setup_run_id
+from nightshift.worker.setup_agent import ensure_environment, load_environment, setup_run_id
 
 BRIEF = "brief"  # RepoContext kind: the repo brief as text, at the commit it was written for; "edited": yours
 NOTES = "notes"  # RepoContext kind: your own notes about the repo, one row, read with the brief
@@ -46,7 +46,10 @@ async def onboard(full_name: str, run_id: str | None = None) -> str:
             commit = (await box.exec("git rev-parse HEAD")).stdout.strip()
             step = "environment"
             await events.record(run_id, "node_start", "environment", node="environment")
-            env = await ensure_environment(llm, repo, box, commit)
+            # set up again: a ready environment is kept, but a blocked or failed one is worked out again even at
+            # the same commit (NightShift may have learned to run what blocked it, such as a database)
+            previous = await load_environment(repo.id)
+            env = await ensure_environment(llm, repo, box, commit, force=bool(previous and previous.status != "ready"))
             if env.status != "ready":
                 failed.append(f"environment {env.status}: {env.blocker or env.detail}")
             step = "map"
