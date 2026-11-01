@@ -30,6 +30,7 @@ import structlog
 
 from nightshift import events
 from nightshift.config import get_settings
+from nightshift.sandbox.services import SERVICE_FILE, start_script
 
 log = structlog.get_logger()
 
@@ -422,6 +423,20 @@ async def _checkout(box: Sandbox, ref: str, fetch_url: str | None) -> None:
     await _must(box, attempts, f"checkout {ref}")
 
 
+async def _boot(image: str) -> Sandbox:
+    """A sandbox from `image`, with the services its environment asked for running (sandbox/services.py)."""
+    box = await Sandbox.start(image)
+    listed = await box.exec(f"cat {SERVICE_FILE} 2>/dev/null", workdir="/tmp")  # the repo is not cloned yet
+    if names := listed.stdout.split():
+        res = await box.exec(
+            start_script(names), workdir="/tmp", timeout=120, show=f"start {', '.join(names)}", note="services"
+        )
+        if not res.ok:
+            await box.remove()
+            raise SandboxError(f"could not start {', '.join(names)} in the sandbox:\n{res.tail(2000)}")
+    return box
+
+
 async def prepare_repo(
     full_name: str,
     ref: str,
@@ -438,7 +453,7 @@ async def prepare_repo(
     """
     url = f"https://github.com/{full_name}.git"
     base = image or get_settings().sandbox_image
-    box = await Sandbox.start(base)
+    box = await _boot(base)
     try:
         await _must(box, f"git clone --quiet --filter=blob:none {url} {REPO_DIR}", "clone", 600, "/work")
         await _checkout(box, ref, fetch_url)
@@ -450,7 +465,7 @@ async def prepare_repo(
 
         if await image_exists(tag):
             await box.remove()
-            box = await Sandbox.start(tag)
+            box = await _boot(tag)
             await _must(box, "git fetch --quiet --filter=blob:none origin", "fetch")
             await _checkout(box, ref, fetch_url)
             log.info("sandbox_from_cache", repo=full_name, image=tag)
@@ -463,7 +478,7 @@ async def prepare_repo(
             saved = f"{checkpoint_name(full_name)}:{setup_key(base, sums, setup[:k])}"
             if await image_exists(saved):
                 await box.remove()
-                box = await Sandbox.start(saved)
+                box = await _boot(saved)
                 await _must(box, "git fetch --quiet --filter=blob:none origin", "fetch")
                 await _checkout(box, ref, fetch_url)
                 done = k
@@ -474,7 +489,7 @@ async def prepare_repo(
                 break
         if not done and (previous := await newest_repo_image(full_name, base)):
             await box.remove()
-            box = await Sandbox.start(previous)
+            box = await _boot(previous)
             await _must(box, "git fetch --quiet --filter=blob:none origin", "fetch")
             await _checkout(box, ref, fetch_url)
             log.info("sandbox_from_previous_image", repo=full_name, image=previous)

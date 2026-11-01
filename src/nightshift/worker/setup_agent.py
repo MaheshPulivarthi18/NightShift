@@ -32,6 +32,7 @@ from nightshift.memory import get_or_create_repo
 from nightshift.router import RouteHint
 from nightshift.sandbox.docker import DEP_FILES, Sandbox, SandboxError, prepare_repo
 from nightshift.sandbox.envimage import TOOLS, ensure_env_image
+from nightshift.sandbox.services import DESCRIBED, Service
 from nightshift.worker.verify import CommandResult, run_commands
 
 log = structlog.get_logger()
@@ -132,6 +133,9 @@ class Proposal(BaseModel):
     reasoning: str = Field(description="One or two sentences: what the evidence says and why this step")
     system_packages: list[str] = Field(description="Debian 12 (bookworm) apt package names, no versions")
     tools: list[Tool] = Field(description="Extra toolchains, only from the allowed list")
+    services: list[Service] = Field(
+        default=[], description="Services the tests need, run inside the sandbox: postgres, redis"
+    )
     setup_commands: list[str] = Field(description="Run in order from the repo root; safe to run again")
     test_commands: list[str] = Field(description="The repo's main unit test suites, as CI runs them")
     blocker: Blocker = Field(description="Why the tests cannot run here, when status is blocked; else none")
@@ -147,6 +151,7 @@ class Attempt(BaseModel):
     setup_commands: list[str]
     test_commands: list[str]
     stage: Literal["image", "setup", "tests"]  # the last stage reached
+    services: list[str] = []
     error: str = ""  # why the image or the setup failed
     tests: list[CommandResult] = []
     image: str = ""
@@ -166,7 +171,8 @@ class Attempt(BaseModel):
         return f"tests ran: {sum(t.ok for t in self.tests)} of {len(self.tests)} commands passed"
 
     def text(self, n: int) -> str:
-        lines = [f"<attempt n={n}>", f"system_packages: {self.system_packages}", f"tools: {self.tools}"]
+        lines = [f"<attempt n={n}>", f"system_packages: {self.system_packages}", f"tools: {self.tools}",
+                 f"services: {self.services}"]  # fmt: skip
         lines += ["setup_commands:", *[f"  {c}" for c in self.setup_commands]]
         lines += ["test_commands:", *[f"  {c}" for c in self.test_commands]]
         if self.stage == "image":
@@ -191,6 +197,7 @@ class Environment(BaseModel):
     image: str = ""
     system_packages: list[str] = []
     tools: list[str] = []
+    services: list[str] = []  # run inside every sandbox from its image (sandbox/services.py)
     setup_commands: list[str] = []
     test_commands: list[str] = []
     tests: list[CommandResult] = []
@@ -206,7 +213,8 @@ class Environment(BaseModel):
         if self.status != "ready":
             return f"status: {self.status}\n{self.blocker}: {self.detail}".strip()
         lines = ["status: ready (these commands were run in the sandbox)", f"system_packages: {self.system_packages}"]
-        lines += [f"tools: {self.tools}", "setup_commands:", *[f"  {c}" for c in self.setup_commands]]
+        lines += [f"tools: {self.tools}", f"services: {self.services}"]
+        lines += ["setup_commands:", *[f"  {c}" for c in self.setup_commands]]
         lines += ["test_commands and their result on the default branch:", *[f"  {t.line()}" for t in self.tests]]
         if note := coverage_note(self.coverage):
             lines.append(note)
@@ -215,7 +223,8 @@ class Environment(BaseModel):
 
 SETUP_SYSTEM = f"""You are the Setup agent for NightShift. You work out how to install a GitHub repository's dependencies and run its tests inside a Linux sandbox. The sandbox tries what you propose and you see the result, for a few attempts.
 
-The sandbox: a Debian 12 container with Python 3.12, Node 22 with npm, Bun, uv, git and a C/C++ compiler. Commands run from the repo root as a non-root user with no sudo, each in a fresh bash shell, with network access for package downloads, no services (no database, Redis or Docker) and no secrets. You can add:
+The sandbox: a Debian 12 container with Python 3.12, Node 22 with npm, Bun, uv, git and a C/C++ compiler. Commands run from the repo root as a non-root user with no sudo, each in a fresh bash shell, with network access for package downloads, no Docker and no secrets. You can add:
+- services, run inside the sandbox and started before the setup every time: {"; ".join(f"{k}: {v}" for k, v in DESCRIBED.items())}. When the tests need a database or cache the sandbox can run, ask for it here instead of reporting a blocker, and point the tests at it (e.g. DB_HOST=127.0.0.1 in the test command, or the env vars the repo's CI sets).
 - system_packages: Debian 12 (bookworm) apt package names, installed into the image before the setup, e.g. libpq-dev, pkg-config, libssl-dev, openjdk-17-jdk-headless, maven. Ask only for what the setup or the tests need, and the smallest variant (-headless, -dev, never -doc or full desktop stacks): an image build that runs past its time limit is stopped.
 - tools, only from this list: pnpm, yarn, go (1.23), rust (1.83).
 For another Python version, use uv in the setup, e.g. `uv venv --python 3.11`.
@@ -223,8 +232,8 @@ For another Python version, use uv in the setup, e.g. `uv venv --python 3.11`.
 Where to look, most reliable first: CI workflows (they install and test on every push: copy their steps, translated for this container, dropping setup actions, services and sudo), dev container config, the contributing guide, the README, Dockerfiles (only to learn which system packages are needed; they are never built), toolchain files.
 
 - setup_commands install everything the tests need and must be safe to run again on top of an earlier install. Give one plain command per step, no `||` fallback chains: if a command fails you will see why and can change it. Prefer lock files (`uv sync --frozen`, `npm ci`, `pnpm install --frozen-lockfile`). Use CPU-only builds of GPU libraries, e.g. `uv pip install torch --torch-backend cpu`. A virtualenv is not active in the next command: call `.venv/bin/...` directly.
-- test_commands run the repo's main unit tests, the ones CI runs, without services. Leave out tests that need services, secrets, a GPU or outside network APIs. Use quiet flags. Each command must finish within 5 minutes here: for a large suite, pick the fast unit tests of the main package (one directory, or a -k selection), not everything. A command that times out is a failed attempt. Every test command runs a test runner (pytest, go test, npm test …): one that only lists or prints files is refused. NightShift counts how much of the suite they cover and tells the Planner what is left out.
-- status try: the environment to run next. status done: accept the last attempt, when the setup succeeded and the tests ran, and the failures left are the repo's own failing tests, not a missing tool, package or module. status blocked: the tests cannot run in this sandbox at all (they need a service, secrets, a GPU, another OS, or downloads keep failing); say which in blocker and what exactly in blocker_detail.
+- test_commands run the repo's main unit tests, the ones CI runs, with the services you asked for. Leave out tests that need services, secrets, a GPU or outside network APIs. Use quiet flags. Each command must finish within 5 minutes here: for a large suite, pick the fast unit tests of the main package (one directory, or a -k selection), not everything. A command that times out is a failed attempt. Every test command runs a test runner (pytest, go test, npm test …): one that only lists or prints files is refused. NightShift counts how much of the suite they cover and tells the Planner what is left out.
+- status try: the environment to run next. status done: accept the last attempt, when the setup succeeded and the tests ran, and the failures left are the repo's own failing tests, not a missing tool, package or module. status blocked: the tests cannot run in this sandbox at all (they need a service NightShift cannot run, secrets, a GPU, another OS, or downloads keep failing); say which in blocker and what exactly in blocker_detail.
 - There is no root: install every language package inside the repo, never system-wide. Python into a .venv; Node without -g; Ruby with the gem directory on the same line, e.g. `GEM_HOME=$PWD/.gems gem install solargraph` (and `GEM_HOME=$PWD/.gems PATH=$PWD/.gems/bin:$PATH` before the commands that use it), since each command runs in a fresh shell.
 - A native extension that fails to compile almost always lacks a -dev system package. Find the compiler's real error above the "Results logged to" or "failed to build" line and add the package: yaml.h → libyaml-dev, ffi.h → libffi-dev, openssl → libssl-dev, zlib.h → zlib1g-dev, libxml → libxml2-dev, Python.h → python3-dev.
 - Spend attempts on the repo's own language and main suite. Tests that only exercise an optional integration (another language's toolchain or language server that the repo wraps, a cloud SDK, a GUI) are not the main suite: leave them out of test_commands rather than installing their toolchain, unless every test needs it.
@@ -278,10 +287,10 @@ async def try_environment(full_name: str, commit: str, p: Proposal) -> Attempt:
     """Build the image, run the setup and the tests in a fresh sandbox. A successful setup saves the repo image."""
     attempt = Attempt(
         system_packages=p.system_packages, tools=list(p.tools), setup_commands=p.setup_commands,
-        test_commands=p.test_commands, stage="image",
+        test_commands=p.test_commands, stage="image", services=list(p.services),
     )  # fmt: skip
     try:
-        attempt.image = await ensure_env_image(p.system_packages, list(p.tools))
+        attempt.image = await ensure_env_image(p.system_packages, list(p.tools), list(p.services))
     except SandboxError as e:
         attempt.error = str(e)[-3000:]
         return attempt
@@ -353,6 +362,7 @@ def _parents(path: str) -> list[str]:
 def _environment(status: Literal["ready", "failed"], commit: str, a: Attempt, p: Proposal | None) -> Environment:
     return Environment(
         status=status, commit=commit, image=a.image, system_packages=a.system_packages, tools=a.tools,
+        services=a.services,
         setup_commands=a.setup_commands, test_commands=a.test_commands, tests=a.tests, coverage=a.coverage,
         sources=p.sources if p else [],
         detail="" if status == "ready" else a.summary(),
@@ -453,7 +463,7 @@ async def find_environment(
 
 def _request(p: Proposal) -> dict[str, list[str]]:
     return {
-        "system_packages": p.system_packages, "tools": list(p.tools),
+        "system_packages": p.system_packages, "tools": list(p.tools), "services": list(p.services),
         "setup_commands": p.setup_commands, "test_commands": p.test_commands,
     }  # fmt: skip
 

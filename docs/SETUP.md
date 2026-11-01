@@ -146,6 +146,7 @@ code than the checkout.
 | A model call fails with 401 or 403 | `OPENROUTER_API_KEY` is missing or wrong in `.env` |
 | A sandbox fails to start because its image is missing | `uv run nightshift sandbox build` |
 | A repo's setup is "blocked" | Read the reason on the Repos page; pass working commands to `nightshift sandbox try` |
+| Its tests need a database | PostgreSQL and Redis run inside the sandbox when the Setup agent asks for them (`services`); press **Set up again** on the repo's Knowledge tab for a repo set up before this. Other services (MySQL, Kafka, …) still block the setup |
 | Publishing fails with a permission error | `gh auth status`: `gh` must be logged in as you, and able to fork |
 | The web app shows an old UI | Rebuild it: `cd frontend && npm run build` |
 | Docker runs out of disk | Remove old sandbox images: `docker image ls nightshift-repo/*`, keep the newest per repo |

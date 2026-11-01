@@ -219,3 +219,19 @@ async def test_coverage_says_how_much_of_the_suite_runs() -> None:
     assert whole["files"] == whole["total"] == 6 and "whole suite" in coverage_note(whole)
     folder = await test_coverage(box, ["pytest tests/mypy -q"])  # type: ignore[arg-type]
     assert folder["files"] == 1
+
+
+def test_a_service_goes_into_the_image_and_starts_with_every_sandbox() -> None:
+    """postgres-connector's tests need PostgreSQL on 127.0.0.1:5432: the agent asks for it instead of giving up."""
+    from nightshift.sandbox.services import start_script
+
+    text = dockerfile("nightshift-sandbox:3", ["libpq-dev"], [], ["postgres"])
+    assert "postgresql" in text and "libpq-dev" in text
+    assert "echo postgres > /etc/nightshift/services" in text and text.rstrip().endswith("USER worker")
+    assert env_image_name(["libpq-dev"], [], ["postgres"]) != env_image_name(["libpq-dev"], [])
+    assert env_image_name([], [], ["redis"]).startswith("nightshift-env:")  # a service alone is an image too
+    with pytest.raises(SandboxError, match="unknown services: mysql"):
+        check_request([], [], ["mysql"])
+    script = start_script(["postgres", "redis", "mysql"])
+    assert "initdb" in script and "listen_addresses=127.0.0.1" in script and "redis-server" in script
+    assert "mysql" not in script  # unknown names are never run
