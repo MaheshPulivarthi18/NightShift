@@ -42,7 +42,7 @@ from nightshift.llm import AgentOutputError, BudgetExceeded, LLMGateway, ModelAP
 from nightshift.memory import get_or_create_repo
 from nightshift.sandbox.docker import DEP_FILES, Sandbox, SandboxError, prepare_repo
 from nightshift.sandbox.envimage import ensure_env_image
-from nightshift.worker import publish, reviewer
+from nightshift.worker import injection, lenses, publish, reviewer
 from nightshift.worker.issue import IssueView, fetch_issue
 from nightshift.worker.onboard import your_brief
 from nightshift.worker.planner import Reproduction
@@ -345,6 +345,9 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
             report.environment += f" {note}"
         baseline = await run_commands(box, suites, note="baseline, without the PR")
         patch = (await box.exec(f"git diff {shlex.quote(base_commit)} {target}")).stdout
+        hidden_must, hidden_should = injection.scan(pr.title, pr.body, patch)
+        report.must += hidden_must
+        report.should += hidden_should
         try:
             plan = await plan_check(llm, pr, issue, env, patch)
         except MODEL_ERRORS as e:  # without it the suites are still compared
@@ -371,12 +374,14 @@ async def run_checks(pr: PullRequest, report: Report, llm: LLMGateway, repo: Rep
             rv = await reviewer.review(
                 llm, repo=pr.repo, issue=issue_text(issue) if issue else "(no linked issue)",
                 plan=f"The PR's own description (not a plan approved by anyone):\n{pr.title}\n\n{pr.body}",
-                diff=patch, verification=check.report(), rules=rules, change_context=pack,
+                diff=patch, verification=check.report(), rules=rules, change_context=pack, untrusted=True,
             )  # fmt: skip
         except MODEL_ERRORS as e:  # what was verified by running still stands
             report.not_run.append(f"The code review did not run: {_short(e)}")
             return patch
         # Related code the Reviewer judged fine is noise in a report for a maintainer: keep what needs a change.
+        if focus := lenses.pick(patch):
+            report.environment += f" Review focus: {', '.join(lens.title.lower() for lens in focus)}."
         report.review = reviewer.to_markdown(
             rv.model_copy(update={"related": [c for c in rv.related if c.needs_change]}), 1
         )

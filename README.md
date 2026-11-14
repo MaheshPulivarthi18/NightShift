@@ -13,7 +13,9 @@ everything public.
 - **Check a PR:** paste a pull request, or let NightShift check new PRs on repos you maintain. It checks
   the template and evidence, reads the PR's own CI, runs it in the sandbox (its tests must fail without
   the change and pass with it, and the tests related to the change must not regress), reviews it, and
-  lists must-fix and should-fix findings. Posting the review is one click, never automatic.
+  lists must-fix and should-fix findings. The review adds focused checklists where the diff calls for them
+  (security, swallowed errors, retrieval metrics, test quality), and the check flags hidden characters or
+  text in the PR aimed at AI reviewers. Posting the review is one click, never automatic.
 - **Follow up:** review comments, red CI and replies on your published PRs reach "Needs you" on their
   own. NightShift drafts replies or a revision, pushed as a follow-up commit, never forced; when a merged
   fix leaves its issue open, it drafts a "fixed by" note.
