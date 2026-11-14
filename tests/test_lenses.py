@@ -60,3 +60,10 @@ def test_a_checked_pr_is_untrusted_data() -> None:
     assert text.count("<untrusted_github_data>") == 3  # the issue, the description, the diff
     own = prompt(diff("a.py", "x = 1"))
     assert "<approved_plan>" in own and "<diff>" in own
+
+
+def test_the_injection_rule_spares_ordinary_words_to_maintainers() -> None:
+    from nightshift.worker.reviewer import REVIEWER_SYSTEM
+
+    assert "aimed at an AI or automated reviewer" in REVIEWER_SYSTEM
+    assert "happy to change this if you agree" in REVIEWER_SYSTEM
