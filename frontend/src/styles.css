@@ -588,6 +588,13 @@ details.revise label.check { display: flex; align-items: center; gap: 6px; font-
 .starters { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .starters li { font-size: 13px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-raise); }
 .starters li p { margin: 4px 0 0; font-size: 12.5px; }
+.find-repos { margin-top: 36px; padding-top: 24px; border-top: 1px solid var(--line); }
+.find-repos h2 { margin: 0; font-size: 18px; }
+.scout-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 14px; }
+.scout-chip { display: inline-flex; align-items: center; gap: 4px; font: 12.5px var(--mono); padding: 2px 4px 2px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg-raise); }
+.scout-list input { flex: 1 1 200px; min-width: 0; }
+button.link { background: none; border: none; padding: 0 4px; height: auto; color: var(--ink-3); cursor: pointer; }
+button.link:hover { color: var(--ink); }
 .starters li.taken { opacity: 0.6; }
 .starters li.taken .starter-title { text-decoration: line-through; }
 .starter-title { margin-right: 8px; }

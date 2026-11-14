@@ -91,7 +91,7 @@ flowchart LR
 The web app (`nightshift serve`) opens on **Overview**: what needs you across repos (plans to approve,
 fixes to publish, review comments, red CI, incoming PR checks) and every repo at a glance. Each repo in
 the sidebar has its own workspace (Overview, Issues & PRs, Map, Knowledge), and a chat beside every
-issue or PR can run its next step. **Where to contribute** ranks your watchlist, **Track record** shows
+issue or PR can run its next step. **Where to contribute** ranks your watchlist and scouts repos you might add, **Track record** shows
 what happened to every PR you made, and **Settings** holds the kill switch, spend, and the older pages
 (models, jobs, all tasks, all PR checks, repos). The same work is available from the CLI:
 

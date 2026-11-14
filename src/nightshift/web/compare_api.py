@@ -25,6 +25,7 @@ from nightshift.health.report import asks_first, is_opportunity, starters
 from nightshift.web.api import _iso
 from nightshift.web.common import Guard
 from nightshift.worker.fit import fit
+from nightshift.worker.scout import SUGGESTED, scout
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/api")
@@ -101,6 +102,26 @@ async def compare_fit() -> dict[str, Any]:
     async with session_scope() as s:
         repos = list((await s.execute(select(Repo.full_name).where(Repo.watched.is_(True)))).scalars())
     return await fit(repos)
+
+
+SCOUT_MAX = 40
+
+
+class ScoutIn(BaseModel):
+    repos: list[str]
+
+
+@router.get("/scout/suggested")
+async def scout_suggested() -> dict[str, list[str]]:
+    return {"repos": SUGGESTED}
+
+
+@router.post("/scout", dependencies=[Guard])
+async def scout_repos(body: ScoutIn) -> dict[str, Any]:
+    """Repos you might add, with how their outside PRs fare and how they fit you (worker/scout.py)."""
+    async with session_scope() as s:
+        watched = set((await s.execute(select(Repo.full_name).where(Repo.watched.is_(True)))).scalars())
+    return await scout(body.repos[:SCOUT_MAX], watched)
 
 
 class RefreshIn(BaseModel):

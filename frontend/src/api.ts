@@ -91,6 +91,34 @@ export interface CompareRow {
   ai_rules: string[];
 }
 
+// A repo you might add (Where to contribute → Find repos), from public GitHub data only.
+export interface ScoutRow {
+  repo: string;
+  error?: string;
+  description?: string;
+  stars?: number;
+  size_mb?: number;
+  language?: string | null;
+  archived?: boolean;
+  good_first?: number;
+  help_wanted?: number;
+  guide?: boolean;
+  cla?: boolean;
+  ai_policy?: string[];
+  pulse?: CompareRow["pulse"] & { outside_prs_open: number };
+  covers_days?: number;
+  fit: Fit | null;
+  watched: boolean;
+  rank: number;
+}
+
+export interface ScoutView {
+  rows: ScoutRow[];
+  fit_error: string | null;
+  window_days: number;
+  checked_at: string;
+}
+
 export interface ReportView {
   repo: string;
   role: string;
@@ -545,6 +573,8 @@ export const api = {
   addToRecord: (url: string) => call<TrackRecord>("/track-record", { url }),
   compareFit: () => call<FitView>("/compare/fit"),
   compare: () => call<CompareRow[]>("/compare"),
+  scoutSuggested: () => call<{ repos: string[] }>("/scout/suggested"),
+  scout: (repos: string[]) => call<ScoutView>("/scout", { repos }),
   refreshCompare: (staleDays = 7) => call<{ queued: string[]; already: boolean }>("/compare/refresh", { stale_days: staleDays }),
   reportLive: (repo: string, runId: string) => call<LiveCheck>(`/repos/${repo}/report/live?run_id=${runId}`),
   report: (repo: string, runId?: string) => call<ReportView>(`/repos/${repo}/report${runId ? `?run_id=${runId}` : ""}`),

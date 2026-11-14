@@ -1,5 +1,6 @@
 import { Fragment, useState } from "react";
 import { api, CompareRow, FitView, LiveCheck } from "./api";
+import { FindRepos } from "./FindRepos";
 import { ago, usePoll } from "./ui";
 
 // Where to contribute first: every watched repo, from its latest contributor report, ranked by how outside
@@ -123,6 +124,7 @@ export function Compare({ initial = null }: { initial?: string | null }) {
         answers. Outside contributors are authors who are not the repo's owner, members or collaborators. A report can be
         days old: check its starter issues are still free before you plan one.
       </p>
+      <FindRepos onAdded={reload} />
     </div>
   );
 }

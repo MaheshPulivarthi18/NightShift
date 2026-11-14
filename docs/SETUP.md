@@ -68,7 +68,10 @@ Rebuild the frontend after changing anything in `frontend/`. For UI work, run `n
    built. Later work in that repo reuses all of it. From the CLI, run
    `uv run nightshift sandbox setup owner/repo` yourself.
 2. **Choose where to contribute:** **Where to contribute** ranks your repos by how outside pull requests
-   fare there; a repo's report lists starter issues, each checked live so taken ones are left out.
+   fare there; a repo's report lists starter issues, each checked live so taken ones are left out. To find
+   new repos, **Find repos to add** on the same page scouts any list you give it (it starts with popular
+   Google, Microsoft, Amazon and AI repos) from public GitHub data: outside-PR merge rate, response time,
+   fit with you, starter issues, CLA and AI rules, and size. Nothing is set up until you press **Add**.
 3. **Fix an issue:** choose **plan** next to an issue, or `uv run nightshift task plan owner/repo 123`.
    Approve the plan; NightShift writes a failing test and the fix, verifies it and has it reviewed. Then
    answer the short understanding check, review the diff, PR text, commit message and branch, and
