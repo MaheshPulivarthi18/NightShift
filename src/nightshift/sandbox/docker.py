@@ -76,6 +76,20 @@ NO_LOCKFILE = re.compile(
     r"Pipfile\.lock not found|go\.sum: no such file",
     re.I,
 )
+# A setup command that runs one of the repo's own scripts, on an older commit that does not have it yet:
+# playwright-python's `scripts/upstream.py checkout` arrived after most PRs a benchmark checks were written.
+MISSING_SCRIPT = re.compile(
+    r"can't open file '/work/repo/([^']+)'|(?:^|\s)(?:\./)?([\w./-]+\.(?:sh|py|js|mjs|ts)): No such file"
+)
+
+
+def missing_script(command: str, output: str) -> str | None:
+    """The repo script the command runs that the checked-out commit lacks, if that is why it failed."""
+    m = MISSING_SCRIPT.search(output)
+    path = m and (m.group(1) or m.group(2)).removeprefix("./")
+    return path if path and path in command else None
+
+
 LOCK_FLAGS = re.compile(r"\s--(?:frozen-lockfile|locked|frozen|immutable)\b|\s--no-update\b")
 
 
@@ -525,6 +539,17 @@ async def prepare_repo(
             if not res.ok and NO_LOCKFILE.search(res.tail(4000)) and (loose := unlocked(command)):
                 log.warning("sandbox_setup_without_lockfile", repo=full_name, command=command)
                 res = await box.exec(loose, show=loose, note="setup, without the lock file this commit lacks")
+            if (
+                not res.ok
+                and (script := missing_script(command, res.tail(4000)))
+                and not (await box.exec(f"test -e {shlex.quote(script)}")).ok  # really absent at this commit
+            ):
+                log.warning("sandbox_setup_script_missing", repo=full_name, command=command, script=script)
+                await events.record(
+                    events.current_run(), events.FIXED,
+                    f"Setup skipped `{command}`: this commit has no {script} yet",
+                )  # fmt: skip
+                continue
             if not res.ok:
                 logs = await _log_tails(box, res.tail(8000))
                 raise SandboxError(f"setup command `{command}` failed (exit {res.code}):\n{res.tail()}{logs}")
