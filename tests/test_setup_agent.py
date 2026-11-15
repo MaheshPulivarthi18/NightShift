@@ -182,6 +182,12 @@ def test_a_test_command_must_run_a_test_runner() -> None:
     assert not_test_commands(["ls tests/multilspy", "echo ok", "python -c 'import multilspy'"]) == [
         "ls tests/multilspy", "echo ok", "python -c 'import multilspy'"
     ]  # fmt: skip
+    listing = [
+        "PYTHONPATH=scripts .venv/bin/pytest -q tests/common/test_signals.py --collect-only -q",  # playwright-python
+        "pytest --co -q", "go test -run ^$ ./...", "cargo test --no-run", "jest --listTests", "go vet ./...",
+    ]  # fmt: skip
+    assert not_test_commands(listing) == listing
+    assert not_test_commands(["pytest -q -k 'not collect_only'", "go test -run TestParse ./..."]) == []
 
 
 async def test_a_proposal_without_real_test_commands_is_refused_before_it_runs(
@@ -235,3 +241,17 @@ def test_a_service_goes_into_the_image_and_starts_with_every_sandbox() -> None:
     script = start_script(["postgres", "redis", "mysql"])
     assert "initdb" in script and "listen_addresses=127.0.0.1" in script and "redis-server" in script
     assert "mysql" not in script  # unknown names are never run
+
+
+async def test_a_saved_environment_that_runs_no_tests_is_not_ready() -> None:
+    from nightshift.db import session_scope
+    from nightshift.memory import get_or_create_repo
+    from nightshift.worker.setup_agent import Environment, load_environment, save_environment
+
+    async with session_scope() as s:
+        repo = await get_or_create_repo(s, "acme/listing-only")
+        repo_id = repo.id
+    env = Environment(status="ready", test_commands=[".venv/bin/pytest tests --collect-only -q"], commit="abc")
+    await save_environment(repo_id, env)
+    loaded = await load_environment(repo_id)
+    assert loaded is not None and loaded.status == "failed" and "only list the tests" in loaded.detail

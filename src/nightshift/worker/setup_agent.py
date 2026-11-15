@@ -116,9 +116,23 @@ TEST_FILE = re.compile(
 )
 
 
+# A test runner told only to list or plan the tests: playwright-python's `pytest --collect-only` "passed" as a
+# test command, with no test run.
+LIST_ONLY = re.compile(
+    r"\s(?:--collect-only|--co|--setup-plan|--setup-only|--fixtures|--markers|--dry-run|--list(?:-tests)?|-list)\b"
+    r"|go\s+test\b[^|;&]*\s-run\s+['\"]?\^\$|\bgo\s+(?:vet|build)\b|--no-run\b|--listTests\b",
+    re.I,
+)
+
+
+def runs_tests(command: str) -> bool:
+    return bool(TEST_RUNNER.search(command)) and not LIST_ONLY.search(command)
+
+
 def not_test_commands(commands: list[str]) -> list[str]:
-    """The commands that run no test runner (listing files, echoing, checking a version)."""
-    return [c for c in commands if not TEST_RUNNER.search(c)]
+    """The commands that run no tests: listing files, echoing, checking a version, or a test runner told only
+    to list them."""
+    return [c for c in commands if not runs_tests(c)]
 
 
 Blocker = Literal["none", "services", "secrets", "gpu", "os", "network", "other"]
@@ -384,11 +398,11 @@ async def find_environment(
     settings = get_settings()
     attempts: list[Attempt] = []
     spent, asks, p, result = 0.0, 0, None, None
-    runs_tests = [c for c in (recipe or {}).get("passing", []) if TEST_RUNNER.search(c)]
-    if recipe and runs_tests:
+    passing = [c for c in (recipe or {}).get("passing", []) if runs_tests(c)]
+    if recipe and passing:
         known = Proposal(
             status="try", reasoning="commands that worked in an earlier task here", system_packages=[], tools=[],
-            setup_commands=recipe.get("setup", []), test_commands=runs_tests, blocker="none",
+            setup_commands=recipe.get("setup", []), test_commands=passing, blocker="none",
             blocker_detail="", sources=["an earlier NightShift task in this repo"],
         )  # fmt: skip
         await events.record(
@@ -432,7 +446,7 @@ async def find_environment(
         elif bad := not_test_commands(p.test_commands):  # refused before it runs: an attempt it cannot pass
             attempts.append(Attempt(**_request(p), stage="setup", error=(
                 f"Not run: these test_commands run no test runner: {'; '.join(bad)}. Each test command must run "
-                "tests (pytest, go test, npm test, jest, cargo test …), not list, print or inspect files."
+                "tests (pytest, go test, npm test, jest, cargo test …), not list, collect, print or inspect them."
             )))  # fmt: skip
         else:
             await events.record(llm.run_id, "node_start", f"environment attempt {len(attempts) + 1}", node="setup")
@@ -481,7 +495,18 @@ async def load_environment(repo_id: int) -> Environment | None:
                 .limit(1)
             )
         ).scalar_one_or_none()
-    return Environment.model_validate(row.data) if row else None
+    if not row:
+        return None
+    env = Environment.model_validate(row.data)
+    if (
+        env.status == "ready"
+        and env.test_commands
+        and len(not_test_commands(env.test_commands)) == len(env.test_commands)
+    ):
+        # saved before such commands were refused: it would make every check pass without running a test
+        return env.model_copy(update={"status": "failed", "detail": "its test commands only list the tests, "
+                                      "they never run them; set it up again"})  # fmt: skip
+    return env
 
 
 async def save_environment(repo_id: int, env: Environment) -> None:
