@@ -397,7 +397,10 @@ CI_IGNORED = ("neutral", "skipped", "cancelled", "stale")  # not a verdict on th
 # maintainers' call, not broken code (pydantic #14104 failed only CodSpeed; go-contrib #9980 merged with its
 # changelog job red). Their failures are advice.
 ADVISORY_JOB = re.compile(
-    r"codspeed|codecov|coverage|coveralls|benchmark|performance|perf\b|bundle ?size|changelog", re.I
+    r"codspeed|codecov|coverage|coveralls|benchmark|performance|perf\b|bundle ?size|changelog"
+    # repository housekeeping, not a check of the code: releases, labels, triage, stale and welcome bots
+    r"|pending releases?|release[- ]please|\blabel(?:er|s|ing)?\b|triage|\bstale\b|welcome|auto[- ]?assign",
+    re.I,
 )
 
 

@@ -71,7 +71,7 @@ OPTIONAL_SECTION = re.compile(r"\b(if applicable|optional)\b", re.I)
 # Failures that mean the sandbox could not run a command at all (a missing tool or package), not a test result.
 CANNOT_RUN = re.compile(
     r"command not found|No module named|ModuleNotFoundError|Cannot find module|Cannot find package|ERR_MODULE_NOT_FOUND"
-    r"|failed to load config|not installed|error while loading shared libraries",
+    r"|failed to load config|not installed|error while loading shared libraries|Failed to spawn",
     re.I,
 )
 CONVENTIONAL = re.compile(r"^\w+(\([^)]*\))?!?: \S")
