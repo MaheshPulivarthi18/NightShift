@@ -82,6 +82,9 @@ KNOWN_CAUSES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bgo: (?:command )?not found"), "Add `go` to tools."),
     (re.compile(r"\bpnpm: (?:command )?not found"), "Add `pnpm` to tools."),
     (re.compile(r"\byarn: (?:command )?not found"), "Add `yarn` to tools."),
+    (re.compile(r"Executable doesn't exist at .*ms-playwright|Host system is missing dependencies|playwright install"),
+     "The tests drive a browser: add `playwright` to tools, and install the matching Chromium in the setup "
+     "(`.venv/bin/playwright install chromium` or `npx playwright install chromium`, without --with-deps)."),
     (re.compile(r"Permission denied.*(?:/usr/|/opt/|/root|/etc/)|EACCES.*(?:/usr/|/opt/)|are you root\?", re.I),
      "There is no root in the sandbox: install into the repo (a .venv, node_modules, GEM_HOME=$PWD/.gems), never system paths."),
     (re.compile(r"(?:requires|Requires)[- ]Python\s*[<>=!~]+\s*([\d.]+)"),
@@ -136,7 +139,7 @@ def not_test_commands(commands: list[str]) -> list[str]:
 
 
 Blocker = Literal["none", "services", "secrets", "gpu", "os", "network", "other"]
-Tool = Literal["pnpm", "yarn", "go", "rust"]
+Tool = Literal["pnpm", "yarn", "go", "rust", "playwright"]
 assert set(Tool.__args__) == set(TOOLS)  # type: ignore[attr-defined]
 
 
@@ -240,7 +243,7 @@ SETUP_SYSTEM = f"""You are the Setup agent for NightShift. You work out how to i
 The sandbox: a Debian 12 container with Python 3.12, Node 22 with npm, Bun, uv, git and a C/C++ compiler. Commands run from the repo root as a non-root user with no sudo, each in a fresh bash shell, with network access for package downloads, no Docker and no secrets. You can add:
 - services, run inside the sandbox and started before the setup every time: {"; ".join(f"{k}: {v}" for k, v in DESCRIBED.items())}. When the tests need a database or cache the sandbox can run, ask for it here instead of reporting a blocker, and point the tests at it (e.g. DB_HOST=127.0.0.1 in the test command, or the env vars the repo's CI sets).
 - system_packages: Debian 12 (bookworm) apt package names, installed into the image before the setup, e.g. libpq-dev, pkg-config, libssl-dev, openjdk-17-jdk-headless, maven. Ask only for what the setup or the tests need, and the smallest variant (-headless, -dev, never -doc or full desktop stacks): an image build that runs past its time limit is stopped.
-- tools, only from this list: pnpm, yarn, go (1.23), rust (1.83).
+- tools, only from this list: pnpm, yarn, go (1.23), rust (1.83), playwright (Chromium's system libraries and a Chromium, for browser tests; the setup still runs the repo's own `playwright install chromium`, without --with-deps, so the browser matches its Playwright version).
 For another Python version, use uv in the setup, e.g. `uv venv --python 3.11`.
 
 Where to look, most reliable first: CI workflows (they install and test on every push: copy their steps, translated for this container, dropping setup actions, services and sudo), dev container config, the contributing guide, the README, Dockerfiles (only to learn which system packages are needed; they are never built), toolchain files.

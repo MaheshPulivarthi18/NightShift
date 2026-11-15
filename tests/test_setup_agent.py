@@ -10,7 +10,7 @@ from nightshift.config import get_settings
 from nightshift.sandbox.docker import SandboxError
 from nightshift.sandbox.envimage import check_request, dockerfile, env_image_name
 from nightshift.worker import setup_agent
-from nightshift.worker.setup_agent import Attempt, Proposal, find_environment
+from nightshift.worker.setup_agent import Attempt, Proposal, find_environment, known_causes
 from nightshift.worker.verify import CommandResult
 
 
@@ -255,3 +255,16 @@ async def test_a_saved_environment_that_runs_no_tests_is_not_ready() -> None:
     await save_environment(repo_id, env)
     loaded = await load_environment(repo_id)
     assert loaded is not None and loaded.status == "failed" and "only list the tests" in loaded.detail
+
+
+def test_playwright_tool_puts_browsers_where_the_setup_can_add_its_own():
+    lines = dockerfile("nightshift-sandbox:3", [], ["playwright"]).splitlines()
+    env = lines.index("ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright")
+    run = next(i for i, x in enumerate(lines) if "install --with-deps chromium" in x)
+    assert env < run and "chmod -R a+rwX" in lines[run] and lines[-1] == "USER worker"
+    check_request([], ["playwright"])
+
+
+def test_missing_browser_names_the_playwright_tool():
+    out = "browserType.launch: Executable doesn't exist at /home/worker/.cache/ms-playwright/chromium-1148/chrome"
+    assert any("`playwright` to tools" in h for h in known_causes(out))
