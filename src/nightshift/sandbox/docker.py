@@ -69,6 +69,24 @@ NETWORK_ERROR = re.compile(
 )
 
 
+# A commit older than the repo's lock file (an old PR's base) cannot run a setup that insists on one.
+NO_LOCKFILE = re.compile(
+    r"Unable to find lockfile|poetry\.lock (?:was )?not found|(?:requires|with) an existing package-lock|"
+    r"lockfile (?:is )?(?:missing|not found)|No lockfile found|ERR_PNPM_NO_LOCKFILE|"
+    r"Pipfile\.lock not found|go\.sum: no such file",
+    re.I,
+)
+LOCK_FLAGS = re.compile(r"\s--(?:frozen-lockfile|locked|frozen|immutable)\b|\s--no-update\b")
+
+
+def unlocked(command: str) -> str | None:
+    """The command without the flags that require a lock file, or None when it has none to drop.
+    `npm ci` needs package-lock.json outright: `npm install` is its unlocked form."""
+    out = LOCK_FLAGS.sub("", command)
+    out = re.sub(r"\bnpm ci\b", "npm install", out)
+    return out if out != command else None
+
+
 class SandboxError(RuntimeError):
     pass
 
@@ -504,6 +522,9 @@ async def prepare_repo(
                 log.warning("sandbox_setup_network_retry", repo=full_name, command=command)
                 # a download that timed out usually works the second time
                 res = await box.exec(command, show=command, note="setup, again after a network error")
+            if not res.ok and NO_LOCKFILE.search(res.tail(4000)) and (loose := unlocked(command)):
+                log.warning("sandbox_setup_without_lockfile", repo=full_name, command=command)
+                res = await box.exec(loose, show=loose, note="setup, without the lock file this commit lacks")
             if not res.ok:
                 logs = await _log_tails(box, res.tail(8000))
                 raise SandboxError(f"setup command `{command}` failed (exit {res.code}):\n{res.tail()}{logs}")
