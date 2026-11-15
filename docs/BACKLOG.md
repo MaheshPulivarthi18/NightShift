@@ -134,7 +134,7 @@ once, L4 sidebar search, L5 a banner when the server runs old code.
        replies to asked questions into "Needs you"; replies are drafted and posted only on confirm. CI status on the
        PR is still not shown.
 3. [ ] **Free issues across the watchlist:** one live-checked list of issues nobody has taken. Part of D4.
-4. [x] **Toolchains on demand in the sandbox** (Bun for ai-job-search #765, Rust, Go). Done: the Setup agent's environment images (system packages; pnpm, yarn, Go, Rust).
+4. [x] **Toolchains on demand in the sandbox** (Bun for ai-job-search #765, Rust, Go). Done: the Setup agent's environment images (system packages; pnpm, yarn, Go, Rust, Playwright browsers).
 5. [ ] **Repo recipes in the UI:** see and edit each repo's saved setup and test commands.
 6. [x] **Architecture map view** (the L1 data exists; show it per repo). Done: the repo's Map tab (canvas).
 7. [x] **Track record:** PRs opened, merged, time to merge; estimated vs actual cost per task. Done: the Track

@@ -29,8 +29,13 @@ TOOLS: dict[str, str] = {
     "| tar -C /usr/local -xz && ln -s /usr/local/go/bin/go /usr/local/go/bin/gofmt /usr/local/bin/",
     "rust": "curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.83.0 "
     "--no-modify-path && chmod -R a+rwX /opt/rustup /opt/cargo && ln -s /opt/cargo/bin/* /usr/local/bin/",
+    # Browser tests: Chromium's system libraries need root, so they go in here with one Chromium. The folder
+    # stays writable, so the setup's own `playwright install chromium` adds the revision the repo's version wants.
+    "playwright": "npx -y playwright@1.49.1 install --with-deps chromium && rm -rf /root/.npm "
+    "&& chmod -R a+rwX $PLAYWRIGHT_BROWSERS_PATH",
 }
 NEEDS_CURL = {"go", "rust"}
+BROWSERS = "/opt/ms-playwright"
 
 
 def check_request(packages: list[str], tools: list[str], services: list[str] | None = None) -> None:
@@ -71,6 +76,8 @@ def dockerfile(base: str, packages: list[str], tools: list[str], services: list[
         lines.append(_apt(["curl"]))
     if "rust" in tools:
         lines.append("ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo")
+    if "playwright" in tools:
+        lines.append(f"ENV PLAYWRIGHT_BROWSERS_PATH={BROWSERS}")
     lines += [f"RUN {TOOLS[t]}" for t in tools]
     rest = sorted((set(packages) | set(packages_for(services or []))) - ({"curl"} if curl_first else set()))
     if rest:
